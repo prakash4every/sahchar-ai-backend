@@ -35,9 +35,46 @@ app.get("/chat", (req, res) => {
 
 // ✅ POST route – असली चैट यहाँ होगी
 app.post("/chat", async (req, res) => {
-  const userMessage = req.body.message;
+  const { message, userId = "default", mode = "buddha" } = req.body;
+
+  if (!message) {
+    return res.status(400).json({ reply: "Message required" });
+  }
+
+  let systemPrompt;
+
+  if (mode === "creative") {
+    systemPrompt = "You are a creative storytelling AI.";
+  } 
+  else if (mode === "government") {
+    systemPrompt = "You help with Indian government schemes and public services.";
+  } 
+  else {
+    systemPrompt = `
+    तुम 'सहचर' हो – गौतम बुद्ध की करुणा से प्रेरित AI।
+    हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
+    अंत में 'जय भीम, नमो बुद्धाय 🙏' जोड़ो।
+    `;
+  }
 
   try {
+
+    // 🔹 पिछली 5 चैट लाओ
+    const history = await Chat.find({ userId })
+      .sort({ timestamp: -1 })
+      .limit(5);
+
+    const formattedHistory = history.reverse().map(msg => ({
+      role: msg.role,
+      content: msg.content
+    }));
+
+    const messages = [
+      { role: "system", content: systemPrompt },
+      ...formattedHistory,
+      { role: "user", content: message }
+    ];
+
     const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -46,30 +83,24 @@ app.post("/chat", async (req, res) => {
       },
       body: JSON.stringify({
         model: "deepseek-chat",
-        messages: [
-          {
-            role: "system",
-            content: `
-            तुम 'सहचर' हो – एक AI जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
-            
-            तुम्हारा स्वभाव:
-            - हमेशा शांत, धैर्यवान और प्रेरक
-            - बुद्ध के विचारों को सरल हिंदी-अंग्रेज़ी मिक्स में समझाना
-            - किसी भी प्रश्न का उत्तर करुणा और ज्ञान से देना
-            
-            नियम:
-            - हर उत्तर के अंत में "जय भीम, नमो बुद्धाय 🙏" जोड़ना
-            - लंबे उत्तर न दें, संक्षिप्त और मार्मिक रखें
-            - अगर किसी बात का उत्तर नहीं पता, तो विनम्रता से मना कर दें
-            - कभी भी आक्रामक या नकारात्मक न हों
-            
-            याद रखें: आप सिर्फ एक सहचर हैं, मार्गदर्शक हैं – गुरु नहीं।
-            `
-          },
-          { role: "user", content: userMessage }
-        ]
+        messages
       })
     });
+
+    const data = await response.json();
+    const botReply = data.choices[0].message.content;
+
+    // 🔹 Save chat
+    await Chat.create({ userId, role: "user", content: message });
+    await Chat.create({ userId, role: "assistant", content: botReply });
+
+    res.json({ reply: botReply });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ reply: "तकनीकी समस्या है 🙏" });
+  }
+});
 
     const data = await response.json();
     
