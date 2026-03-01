@@ -1,9 +1,22 @@
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import fetch from "node-fetch";
 import mongoose from "mongoose";
 
-mongoose.connect(process.env.MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-});
+dotenv.config();
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+/* =======================
+   MongoDB Connection
+======================= */
+
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log("✅ MongoDB Connected"))
+  .catch(err => console.error("MongoDB Error:", err));
 
 const chatSchema = new mongoose.Schema({
   userId: String,
@@ -13,27 +26,15 @@ const chatSchema = new mongoose.Schema({
 });
 
 const Chat = mongoose.model("Chat", chatSchema);
-import express from "express";
-import cors from "cors";
-import dotenv from "dotenv";
-import fetch from "node-fetch";
 
-dotenv.config();
-const app = express();
+/* =======================
+   Routes
+======================= */
 
-app.use(cors());
-app.use(express.json());
-
-// ✅ GET route – बस यह चेक करने के लिए कि सर्वर चल रहा है
 app.get("/", (req, res) => {
   res.send("🌿 सहचर AI बैकएंड चालू है ✅");
 });
 
-app.get("/chat", (req, res) => {
-  res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅");
-});
-
-// ✅ POST route – असली चैट यहाँ होगी
 app.post("/chat", async (req, res) => {
   const { message, userId = "default", mode = "buddha" } = req.body;
 
@@ -59,7 +60,7 @@ app.post("/chat", async (req, res) => {
 
   try {
 
-    // 🔹 पिछली 5 चैट लाओ
+    // 🔹 Last 5 messages fetch
     const history = await Chat.find({ userId })
       .sort({ timestamp: -1 })
       .limit(5);
@@ -88,33 +89,30 @@ app.post("/chat", async (req, res) => {
     });
 
     const data = await response.json();
+
+    if (!data.choices) {
+      return res.status(500).json({ reply: "AI response error" });
+    }
+
     const botReply = data.choices[0].message.content;
 
-    // 🔹 Save chat
+    // 🔹 Save conversation
     await Chat.create({ userId, role: "user", content: message });
     await Chat.create({ userId, role: "assistant", content: botReply });
 
     res.json({ reply: botReply });
 
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ reply: "तकनीकी समस्या है 🙏" });
-  }
-});
-
-    const data = await response.json();
-    
-    // DeepSeek से जवाब मिला
-    const botReply = data.choices[0].message.content;
-    res.json({ reply: botReply });
-
-  } catch (error) {
     console.error("Sahchar AI Error:", error);
-    res.status(500).json({ 
-      reply: "क्षमा करें, कोई तकनीकी समस्या है। कृपया थोड़ी देर बाद प्रयास करें। 🙏" 
+    res.status(500).json({
+      reply: "तकनीकी समस्या है 🙏"
     });
   }
 });
+
+/* =======================
+   Server Start
+======================= */
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
