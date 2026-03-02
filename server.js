@@ -22,6 +22,10 @@ app.get("/chat", (req, res) => {
 app.post("/chat", async (req, res) => {
   const userMessage = req.body.message;
 
+  if (!userMessage) {
+    return res.status(400).json({ reply: "Message required 🙏" });
+  }
+
   try {
     const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
@@ -36,19 +40,8 @@ app.post("/chat", async (req, res) => {
             role: "system",
             content: `
             तुम 'सहचर' हो – एक AI जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
-            
-            तुम्हारा स्वभाव:
-            - हमेशा शांत, धैर्यवान और प्रेरक
-            - बुद्ध के विचारों को सरल हिंदी-अंग्रेज़ी मिक्स में समझाना
-            - किसी भी प्रश्न का उत्तर करुणा और ज्ञान से देना
-            
-            नियम:
-            - हर उत्तर के अंत में "जय भीम, नमो बुद्धाय 🙏" जोड़ना
-            - लंबे उत्तर न दें, संक्षिप्त और मार्मिक रखें
-            - अगर किसी बात का उत्तर नहीं पता, तो विनम्रता से मना कर दें
-            - कभी भी आक्रामक या नकारात्मक न हों
-            
-            याद रखें: आप सिर्फ एक सहचर हैं, मार्गदर्शक हैं – गुरु नहीं।
+            हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
+            अंत में 'जय भीम, नमो बुद्धाय 🙏' जोड़ो।
             `
           },
           { role: "user", content: userMessage }
@@ -57,9 +50,17 @@ app.post("/chat", async (req, res) => {
     });
 
     const data = await response.json();
-    
-    // DeepSeek से जवाब मिला
-    const botReply = data.choices[0].message.content;
+
+    // 🔹 Safe check – अगर choices undefined है
+    const botReply = data.choices?.[0]?.message?.content;
+
+    if (!botReply) {
+      console.error("DeepSeek API response invalid:", data);
+      return res.status(500).json({ 
+        reply: "क्षमा करें, AI response अभी उपलब्ध नहीं है 🙏" 
+      });
+    }
+
     res.json({ reply: botReply });
 
   } catch (error) {
