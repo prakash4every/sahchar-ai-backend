@@ -49,7 +49,7 @@ app.post("/chat", async (req, res) => {
       })
     });
 
-    const data = await response.json();
+    const data = await response.json(botReply);
 
     // 🔹 Safe check – अगर choices undefined है
     const botReply = data.choices?.[0]?.message?.content;
