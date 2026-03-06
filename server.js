@@ -49,7 +49,7 @@ app.post("/chat", async (req, res) => {
       })
     });
 
-    const data = await response.json(botReply);
+    const data = await response.json();
 
     // 🔹 Safe check – अगर choices undefined है
     const botReply = data.choices?.[0]?.message?.content;
@@ -60,18 +60,3 @@ app.post("/chat", async (req, res) => {
         reply: "क्षमा करें, AI response अभी उपलब्ध नहीं है 🙏" 
       });
     }
-
-    res.json( );
-
-  } catch (error) {
-    console.error("Sahchar AI Error:", error);
-    res.status(500).json( 
-      "क्षमा करें, कोई तकनीकी समस्या है। कृपया थोड़ी देर बाद प्रयास करें। 🙏" 
-    );
-  }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🌿 सहचर AI सर्वर पोर्ट ${PORT} पर चालू है`);
-});
