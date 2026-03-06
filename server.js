@@ -1,31 +1,62 @@
-<script>
-  // ... पिछला कोड ...
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import fetch from "node-fetch";
 
-  function sendMessage() {
-    const input = document.getElementById('messageInput');
-    const message = input.value.trim();
-    if (!message) return;
+dotenv.config();
+const app = express();
 
-    addMessage(message, 'user');
-    input.value = '';
-    addMessage('🤔 सोच रहा हूँ...', 'bot');
+app.use(cors());
+app.use(express.json());
 
-    fetch('https://आपका-बैकएंड-url.onrender.com/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: message })
-    })
-    .then(res => res.json())  // ✅ JSON पार्स करो
-    .then(data => {
-      const lastMsg = document.querySelector('#messages .bot-msg:last-child');
-      if (lastMsg && lastMsg.innerText === '🤔 सोच रहा हूँ...') lastMsg.remove();
-      
-      const reply = data.reply;  // ✅ सिर्फ reply निकालो
-      addMessage(reply, 'bot');
-      speakReply(reply);
-    })
-    .catch(err => {
-      // error handling
-    });
+// ✅ GET route – बस यह चेक करने के लिए कि सर्वर चल रहा है
+app.get("/", (req, res) => {
+  res.send("🌿 सहचर AI बैकएंड चालू है ✅");
+});
+
+app.get("/chat", (req, res) => {
+  res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅");
+});
+
+// ✅ POST route – असली चैट यहाँ होगी
+app.post("/chat", async (req, res) => {
+  const userMessage = req.body.message;
+
+  if (!userMessage) {
+    return res.status(400).json({ reply: "Message required 🙏" });
   }
-</script>
+
+  try {
+    const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        messages: [
+          {
+            role: "system",
+            content: `
+            तुम 'सहचर' हो – एक AI जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
+            हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
+            अंत में 'जय भीम, नमो बुद्धाय 🙏' जोड़ो।
+            `
+          },
+          { role: "user", content: userMessage }
+        ]
+      })
+    });
+
+    const data = await response.json();
+
+    // 🔹 Safe check – अगर choices undefined है
+    const botReply = data.choices?.[0]?.message?.content;
+
+    if (!botReply) {
+      console.error("DeepSeek API response invalid:", data);
+      return res.status(500).json({ 
+        reply: "क्षमा करें, AI response अभी उपलब्ध नहीं है 🙏" 
+      });
+    }
