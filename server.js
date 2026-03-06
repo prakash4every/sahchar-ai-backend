@@ -65,9 +65,9 @@ app.post("/chat", async (req, res) => {
 
   } catch (error) {
     console.error("Sahchar AI Error:", error);
-    res.status(500).json({ 
-      reply: "क्षमा करें, कोई तकनीकी समस्या है। कृपया थोड़ी देर बाद प्रयास करें। 🙏" 
-    });
+    res.status(500).json( 
+      "क्षमा करें, कोई तकनीकी समस्या है। कृपया थोड़ी देर बाद प्रयास करें। 🙏" 
+    );
   }
 });
 
