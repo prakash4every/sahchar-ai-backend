@@ -60,3 +60,20 @@ app.post("/chat", async (req, res) => {
         reply: "क्षमा करें, AI response अभी उपलब्ध नहीं है 🙏" 
       });
     }
+
+    // Success: send bot reply
+    res.json({ reply: botReply });
+
+  } catch (error) {
+    console.error("Error calling DeepSeek API:", error);
+    res.status(500).json({ 
+      reply: "सर्वर में त्रुटि हुई, कृपया बाद में प्रयास करें 🙏" 
+    });
+  }
+});
+
+// Start server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
