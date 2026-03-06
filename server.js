@@ -61,7 +61,7 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    res.json({ reply: botReply });
+    res.json({ botReply });
 
   } catch (error) {
     console.error("Sahchar AI Error:", error);
