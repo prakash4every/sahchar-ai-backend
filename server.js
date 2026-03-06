@@ -75,6 +75,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🌿 सहचर AI सर्वर पोर्ट ${PORT} पर चालू है`);
 });
-res.json({
-  reply: cleanReply
-});
