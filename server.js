@@ -9,22 +9,45 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ GET route – बस यह चेक करने के लिए कि सर्वर चल रहा है
+// 📦 इन-मेमोरी कन्वर्सेशन स्टोरेज (अस्थायी, प्रोडक्शन में डेटाबेस इस्तेमाल करें)
+const conversations = {};
+
+// ✅ GET route – सर्वर चेक
 app.get("/", (req, res) => {
-  res.send("🌿 सहचर AI बैकएंड चालू है ✅");
+  res.send("🌿 सहचर AI बैकएंड चालू है ✅ (मेमोरी अपडेट)");
 });
 
 app.get("/chat", (req, res) => {
   res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅");
 });
 
-// ✅ POST route – असली चैट यहाँ होगी
+// ✅ POST route – मेमोरी के साथ चैट
 app.post("/chat", async (req, res) => {
-  const userMessage = req.body.message;
+  const { message, sessionId } = req.body;
 
-  if (!userMessage) {
+  if (!message) {
     return res.status(400).json({ reply: "Message required 🙏" });
   }
+
+  // यदि sessionId नहीं दिया तो डिफ़ॉल्ट "default" का उपयोग करें
+  const sid = sessionId || "default";
+
+  // इस सत्र के लिए हिस्ट्री प्राप्त करें (न हो तो नई बनाएँ)
+  if (!conversations[sid]) {
+    conversations[sid] = [
+      {
+        role: "system",
+        content: `
+        तुम 'सहचर' हो – एक AI जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
+        हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
+        अंत में 'जय भीम, नमो बुद्धाय 🙏' जोड़ो।
+        `
+      }
+    ];
+  }
+
+  // यूजर का संदेश हिस्ट्री में जोड़ें
+  conversations[sid].push({ role: "user", content: message });
 
   try {
     const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
@@ -35,23 +58,11 @@ app.post("/chat", async (req, res) => {
       },
       body: JSON.stringify({
         model: "deepseek-chat",
-        messages: [
-          {
-            role: "system",
-            content: `
-            तुम 'सहचर' हो – एक AI जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
-            हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
-            अंत में 'जय भीम, नमो बुद्धाय 🙏' जोड़ो।
-            `
-          },
-          { role: "user", content: userMessage }
-        ]
+        messages: conversations[sid]   // पूरी हिस्ट्री भेजें
       })
     });
 
     const data = await response.json();
-
-    // 🔹 Safe check – अगर choices undefined है
     const botReply = data.choices?.[0]?.message?.content;
 
     if (!botReply) {
@@ -61,7 +72,19 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // Success: send bot reply
+    // बॉट का जवाब हिस्ट्री में जोड़ें
+    conversations[sid].push({ role: "assistant", content: botReply });
+
+    // हिस्ट्री को बहुत लंबा होने से बचाने के लिए पुराने संदेश हटा सकते हैं (यहाँ वैकल्पिक)
+    // उदाहरण: अगर 20 से अधिक संदेश हों तो पहले वाले हटाएँ (system message छोड़कर)
+    if (conversations[sid].length > 30) {
+      // system message (index 0) को छोड़कर बाकी में से सबसे पुराने 10 हटाएँ
+      conversations[sid] = [
+        conversations[sid][0],
+        ...conversations[sid].slice(-20)
+      ];
+    }
+
     res.json({ reply: botReply });
 
   } catch (error) {
@@ -72,8 +95,8 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// Start server
+// सर्वर शुरू करें
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT} with memory`);
 });
