@@ -6,13 +6,25 @@ import fetch from "node-fetch";
 dotenv.config();
 const app = express();
 
+// 🔥 लंबे संदेशों और JSON पार्सिंग के लिए सेटिंग
 app.use(cors());
-app.use(express.json({ limit: "10mb" })); // 🔥 लंबे संदेशों के लिए लिमिट बढ़ाई
+app.use(express.json({ limit: "10mb" }));
+
+// ✅ JSON पार्सिंग एरर हैंडल करने के लिए मिडलवेयर (सबसे महत्वपूर्ण सुधार)
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    console.error('❌ Invalid JSON received:', err.message);
+    return res.status(400).json({ 
+      reply: "क्षमा करें, मैसेज का फॉर्मेट सही नहीं है। कृपया किसी भी प्रकार के स्पेशल कैरेक्टर (जैसे कि कोट्स, बैकस्लैश) को हटाकर दोबारा भेजें। 🙏" 
+    });
+  }
+  next(err);
+});
 
 // 📦 इन-मेमोरी कन्वर्सेशन स्टोरेज
 const conversations = {};
 
-// ✅ GET route
+// ✅ GET route – सर्वर चेक
 app.get("/", (req, res) => {
   res.send("🌿 सहचर AI बैकएंड चालू है ✅ (मेमोरी अपडेट)");
 });
@@ -48,7 +60,7 @@ app.post("/chat", async (req, res) => {
     // यूजर का संदेश हिस्ट्री में जोड़ें
     conversations[sid].push({ role: "user", content: message });
 
-    // 🔥 टोकन लिमिट के अनुमान के लिए एक सरल गिनती (वैकल्पिक)
+    // 🔥 टोकन अनुमान फंक्शन (मोटा अनुमान)
     const estimateTokens = (msgs) => {
       return msgs.reduce((acc, msg) => acc + JSON.stringify(msg).length / 4, 0);
     };
@@ -76,7 +88,7 @@ app.post("/chat", async (req, res) => {
 
     // 🔥 अगर API एरर लौटाता है, तो उसे भी हैंडल करें
     if (!response.ok) {
-      console.error("DeepSeek API error:", data);
+      console.error("❌ DeepSeek API error:", data);
       return res.status(500).json({
         reply: `क्षमा करें, API त्रुटि: ${data.error?.message || "अज्ञात त्रुटि"} 🙏`
       });
@@ -85,7 +97,7 @@ app.post("/chat", async (req, res) => {
     const botReply = data.choices?.[0]?.message?.content;
 
     if (!botReply) {
-      console.error("DeepSeek API response invalid:", data);
+      console.error("❌ DeepSeek API response invalid:", data);
       return res.status(500).json({ 
         reply: "क्षमा करें, AI response अभी उपलब्ध नहीं है 🙏" 
       });
@@ -105,7 +117,7 @@ app.post("/chat", async (req, res) => {
     res.json({ reply: botReply });
 
   } catch (error) {
-    console.error("Server error:", error);
+    console.error("❌ Server error:", error);
     res.status(500).json({ 
       reply: "सर्वर में त्रुटि हुई, कृपया बाद में प्रयास करें 🙏" 
     });
