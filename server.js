@@ -94,9 +94,13 @@ app.post("/chat", async (req, res) => {
 
     const data = await response.json();
 
-    // 🔥 अगर API एरर लौटाता है, तो उसे भी हैंडल करें
+    // 🔥 अगर API एरर लौटाता है, तो उसे विस्तार से लॉग करें
     if (!response.ok) {
-      console.error("❌ DeepSeek API error:", JSON.stringify(data, null, 2));
+      console.error("❌ DeepSeek API error status:", response.status);
+      // Headers को भी लॉग करें (उपयोगी हो सकता है)
+      console.error("❌ DeepSeek API error headers:", JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2));
+      console.error("❌ DeepSeek API error body:", JSON.stringify(data, null, 2));
+      
       return res.status(500).json({
         reply: `क्षमा करें, API त्रुटि: ${data.error?.message || "अज्ञात त्रुटि"} 🙏`
       });
