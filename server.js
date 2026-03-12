@@ -6,11 +6,11 @@ import fetch from "node-fetch";
 dotenv.config();
 const app = express();
 
-// 🔥 लंबे संदेशों और JSON पार्सिंग के लिए सेटिंग
+// 🔥 लंबे संदेशों के लिए JSON लिमिट बढ़ाई
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// ✅ JSON पार्सिंग एरर हैंडल करने के लिए मिडलवेयर (सबसे महत्वपूर्ण सुधार)
+// ✅ JSON पार्सिंग एरर हैंडलिंग मिडलवेयर
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
     console.error('❌ Invalid JSON received:', err.message);
@@ -65,13 +65,18 @@ app.post("/chat", async (req, res) => {
       return msgs.reduce((acc, msg) => acc + JSON.stringify(msg).length / 4, 0);
     };
 
-    // 🔥 अगर अनुमानित टोकन 4000 से अधिक हों, तो पुराने संदेश हटाएँ (system message छोड़कर)
-    while (estimateTokens(conversations[sid]) > 4000 && conversations[sid].length > 2) {
+    // 🔥 टोकन लिमिट बढ़ाकर 8000 करें (DeepSeek की संभावित लिमिट ज्यादा है)
+    while (estimateTokens(conversations[sid]) > 8000 && conversations[sid].length > 2) {
       // system message (index 0) के बाद का पहला सबसे पुराना संदेश हटाएँ
       conversations[sid].splice(1, 1);
     }
 
-    // DeepSeek API कॉल
+    // 📤 लॉग: कितने संदेश और टोकन भेज रहे हैं
+    console.log(`📤 Session ${sid}: Sending ${conversations[sid].length} messages, ~${Math.round(estimateTokens(conversations[sid]))} tokens`);
+
+    // DeepSeek API कॉल से पहले लॉग
+    console.log("📤 Calling DeepSeek API...");
+
     const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -84,11 +89,14 @@ app.post("/chat", async (req, res) => {
       })
     });
 
+    // API कॉल के बाद स्टेटस लॉग
+    console.log(`📥 DeepSeek API response status: ${response.status}`);
+
     const data = await response.json();
 
     // 🔥 अगर API एरर लौटाता है, तो उसे भी हैंडल करें
     if (!response.ok) {
-      console.error("❌ DeepSeek API error:", data);
+      console.error("❌ DeepSeek API error:", JSON.stringify(data, null, 2));
       return res.status(500).json({
         reply: `क्षमा करें, API त्रुटि: ${data.error?.message || "अज्ञात त्रुटि"} 🙏`
       });
@@ -97,7 +105,7 @@ app.post("/chat", async (req, res) => {
     const botReply = data.choices?.[0]?.message?.content;
 
     if (!botReply) {
-      console.error("❌ DeepSeek API response invalid:", data);
+      console.error("❌ DeepSeek API response invalid:", JSON.stringify(data, null, 2));
       return res.status(500).json({ 
         reply: "क्षमा करें, AI response अभी उपलब्ध नहीं है 🙏" 
       });
@@ -117,7 +125,12 @@ app.post("/chat", async (req, res) => {
     res.json({ reply: botReply });
 
   } catch (error) {
-    console.error("❌ Server error:", error);
+    // 🔥 एरर को विस्तार से लॉग करें
+    console.error("❌ Server error:", {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
     res.status(500).json({ 
       reply: "सर्वर में त्रुटि हुई, कृपया बाद में प्रयास करें 🙏" 
     });
