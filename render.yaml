@@ -1,0 +1,17 @@
+# Exported from Render on 2026-03-12T15:16:57Z
+# यहाँ आप अपनी सर्विस की परिभाषा डाल सकते हैं
+services:
+  - type: web
+    name: sahchar-ai-backend
+    runtime: node
+    repo: https://github.com/prakash4every/sahchar-ai-backend
+    plan: starter
+    envVars:
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: MONGO_URI
+        sync: false
+    region: oregon
+    buildCommand: 'npm install '
+    startCommand: node server.js
+    autoDeployTrigger: commit
