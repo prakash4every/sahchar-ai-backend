@@ -5,6 +5,9 @@ import fetch from "node-fetch";
 import { MongoClient } from 'mongodb';
 
 dotenv.config();
+if (!process.env.MONGODB_URI) {
+  console.warn("⚠️ MONGODB_URI environment variable is not set. Database features will be disabled.");
+}
 const app = express();
 
 // 🔥 लंबे संदेशों के लिए JSON लिमिट बढ़ाई
