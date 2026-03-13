@@ -5,9 +5,12 @@ import fetch from "node-fetch";
 import { MongoClient } from 'mongodb';
 
 dotenv.config();
+
+// MONGODB_URI की उपस्थिति की जाँच करें और चेतावनी दें
 if (!process.env.MONGODB_URI) {
   console.warn("⚠️ MONGODB_URI environment variable is not set. Database features will be disabled.");
 }
+
 const app = express();
 
 // 🔥 लंबे संदेशों के लिए JSON लिमिट बढ़ाई
@@ -25,24 +28,30 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
-// 📦 MongoDB कनेक्शन सेटअप
-const mongoClient = new MongoClient(process.env.MONGODB_URI);
-let db;
+// 📦 MongoDB कनेक्शन सेटअप (अब सुरक्षित तरीके से)
+let mongoClient;
+let db = null;
 
-async function connectToMongoDB() {
-  try {
-    await mongoClient.connect();
-    console.log("✅ Connected to MongoDB");
-    db = mongoClient.db(); // डेटाबेस हैंडल प्राप्त करें (डिफ़ॉल्ट डेटाबेस)
-    // यदि आप कोई विशेष डेटाबेस नाम देना चाहते हैं, जैसे 'sahchar_db', तो:
-    // db = mongoClient.db('sahchar_db');
-  } catch (error) {
-    console.error("❌ MongoDB connection error:", error.message);
-    // कनेक्ट न होने पर भी सर्वर चलता रहेगा, लेकिन डेटा सेव नहीं होगा
-    db = null;
+if (process.env.MONGODB_URI) {
+  mongoClient = new MongoClient(process.env.MONGODB_URI);
+
+  async function connectToMongoDB() {
+    try {
+      await mongoClient.connect();
+      console.log("✅ Connected to MongoDB");
+      db = mongoClient.db(); // डिफ़ॉल्ट डेटाबेस का उपयोग
+      // यदि कोई विशेष डेटाबेस नाम देना चाहते हैं, तो:
+      // db = mongoClient.db('sahchar_db');
+    } catch (error) {
+      console.error("❌ MongoDB connection error:", error.message);
+      db = null; // कनेक्ट न होने पर db को null कर दें
+    }
   }
+
+  connectToMongoDB(); // कनेक्शन शुरू करें
+} else {
+  console.warn("⚠️ MongoDB client not initialized because MONGODB_URI is missing.");
 }
-connectToMongoDB();
 
 // ग्लोबल एरर हैंडलर (किसी भी अनहैंडल्ड एरर को पकड़ने के लिए)
 process.on('unhandledRejection', (reason, promise) => {
