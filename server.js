@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
+import { MongoClient } from 'mongodb';
 
 dotenv.config();
 const app = express();
@@ -21,12 +22,40 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
-// 📦 इन-मेमोरी कन्वर्सेशन स्टोरेज
+// 📦 MongoDB कनेक्शन सेटअप
+const mongoClient = new MongoClient(process.env.MONGODB_URI);
+let db;
+
+async function connectToMongoDB() {
+  try {
+    await mongoClient.connect();
+    console.log("✅ Connected to MongoDB");
+    db = mongoClient.db(); // डेटाबेस हैंडल प्राप्त करें (डिफ़ॉल्ट डेटाबेस)
+    // यदि आप कोई विशेष डेटाबेस नाम देना चाहते हैं, जैसे 'sahchar_db', तो:
+    // db = mongoClient.db('sahchar_db');
+  } catch (error) {
+    console.error("❌ MongoDB connection error:", error.message);
+    // कनेक्ट न होने पर भी सर्वर चलता रहेगा, लेकिन डेटा सेव नहीं होगा
+    db = null;
+  }
+}
+connectToMongoDB();
+
+// ग्लोबल एरर हैंडलर (किसी भी अनहैंडल्ड एरर को पकड़ने के लिए)
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+});
+
+// 📦 इन-मेमोरी कन्वर्सेशन स्टोरेज (फॉलबैक के लिए)
 const conversations = {};
 
 // ✅ GET route – सर्वर चेक
 app.get("/", (req, res) => {
-  res.send("🌿 सहचर AI बैकएंड चालू है ✅ (मेमोरी अपडेट)");
+  res.send("🌿 सहचर AI बैकएंड चालू है ✅ (मेमोरी अपडेट + MongoDB)");
 });
 
 app.get("/chat", (req, res) => {
@@ -67,16 +96,13 @@ app.post("/chat", async (req, res) => {
 
     // 🔥 टोकन लिमिट बढ़ाकर 8000 करें (DeepSeek की संभावित लिमिट ज्यादा है)
     while (estimateTokens(conversations[sid]) > 8000 && conversations[sid].length > 2) {
-      // system message (index 0) के बाद का पहला सबसे पुराना संदेश हटाएँ
       conversations[sid].splice(1, 1);
     }
 
     // 📤 लॉग: कितने संदेश और टोकन भेज रहे हैं
     console.log(`📤 Session ${sid}: Sending ${conversations[sid].length} messages, ~${Math.round(estimateTokens(conversations[sid]))} tokens`);
 
-    // DeepSeek API कॉल से पहले लॉग
-    console.log("📤 Calling DeepSeek API...");
-
+    // DeepSeek API कॉल
     const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -89,18 +115,11 @@ app.post("/chat", async (req, res) => {
       })
     });
 
-    // API कॉल के बाद स्टेटस लॉग
-    console.log(`📥 DeepSeek API response status: ${response.status}`);
-
     const data = await response.json();
 
-    // 🔥 अगर API एरर लौटाता है, तो उसे विस्तार से लॉग करें
     if (!response.ok) {
       console.error("❌ DeepSeek API error status:", response.status);
-      // Headers को भी लॉग करें (उपयोगी हो सकता है)
-      console.error("❌ DeepSeek API error headers:", JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2));
       console.error("❌ DeepSeek API error body:", JSON.stringify(data, null, 2));
-      
       return res.status(500).json({
         reply: `क्षमा करें, API त्रुटि: ${data.error?.message || "अज्ञात त्रुटि"} 🙏`
       });
@@ -118,7 +137,7 @@ app.post("/chat", async (req, res) => {
     // बॉट का जवाब हिस्ट्री में जोड़ें
     conversations[sid].push({ role: "assistant", content: botReply });
 
-    // 🔥 हिस्ट्री को बहुत लंबा होने से रोकें (30 से अधिक न हो)
+    // 🔥 हिस्ट्री को बहुत लंबा होने से रोकें
     if (conversations[sid].length > 30) {
       conversations[sid] = [
         conversations[sid][0],
@@ -126,10 +145,27 @@ app.post("/chat", async (req, res) => {
       ];
     }
 
+    // 💾 बातचीत को MongoDB में सेव करें (यदि कनेक्शन हो)
+    if (db) {
+      try {
+        const messagesCollection = db.collection('conversations');
+        await messagesCollection.insertOne({
+          sessionId: sid,
+          userMessage: message,
+          botReply: botReply,
+          timestamp: new Date()
+        });
+        console.log(`✅ Conversation saved to MongoDB for session ${sid}`);
+      } catch (dbError) {
+        console.error("❌ MongoDB insert error:", dbError.message);
+      }
+    } else {
+      console.log("⚠️ MongoDB not connected, conversation not saved.");
+    }
+
     res.json({ reply: botReply });
 
   } catch (error) {
-    // 🔥 एरर को विस्तार से लॉग करें
     console.error("❌ Server error:", {
       message: error.message,
       stack: error.stack,
@@ -143,5 +179,5 @@ app.post("/chat", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT} with memory`);
+  console.log(`🚀 Server running on port ${PORT} with memory and MongoDB`);
 });
