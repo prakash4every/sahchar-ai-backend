@@ -88,7 +88,7 @@ app.post("/chat", async (req, res) => {
     if (!conversations[sid]) {
       conversations[sid] = [
        {
-  {
+  
   role: "system",
   content: `
   तुम 'सहचर' हो – एक AI सहायक हो जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
