@@ -3,6 +3,13 @@ import cors from "cors";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
 import { MongoClient } from 'mongodb';
+import multer from 'multer';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
@@ -12,6 +19,9 @@ if (!process.env.MONGODB_URI) {
 }
 
 const app = express();
+
+// Multer configuration for file uploads
+const upload = multer({ dest: 'uploads/' });
 
 // 🔥 लंबे संदेशों के लिए JSON लिमिट बढ़ाई
 app.use(cors());
@@ -74,7 +84,7 @@ app.get("/chat", (req, res) => {
   res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅");
 });
 
-// ✅ POST route – मेमोरी के साथ चैट
+// ✅ POST route – मेमोरी के साथ चैट (मौजूदा, बिना बदलाव)
 app.post("/chat", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
@@ -193,6 +203,60 @@ app.post("/chat", async (req, res) => {
   }
 });
 
+// ==================== NEW FEATURES ====================
+
+// Image generation endpoint (placeholder)
+app.post("/api/image/generate", async (req, res) => {
+  const { prompt, language = "hi" } = req.body;
+  if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
+
+  try {
+    // Replace with actual image generation API (e.g., Replicate, OpenAI)
+    const dummyImageUrl = `https://picsum.photos/512/512?random=${Date.now()}`;
+    res.json({ imageUrl: dummyImageUrl });
+  } catch (err) {
+    console.error("Image generation error:", err);
+    res.status(500).json({ error: "इमेज जनरेशन फेल हो गया" });
+  }
+});
+
+// Audio transcription endpoint (file upload)
+app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "ऑडियो फाइल जरूरी है" });
+
+  try {
+    // Replace with actual transcription API (Google Cloud Speech, AssemblyAI)
+    const dummyText = "यह एक नमूना ट्रांसक्रिप्शन है। असली API से कनेक्ट करें।";
+    res.json({ transcription: dummyText, confidence: 0.95 });
+  } catch (err) {
+    console.error("Transcription error:", err);
+    res.status(500).json({ error: "ट्रांसक्रिप्शन फेल" });
+  } finally {
+    // Clean up uploaded file
+    if (req.file?.path) {
+      fs.unlink(req.file.path, (err) => {
+        if (err) console.error("File deletion error:", err);
+      });
+    }
+  }
+});
+
+// Video generation endpoint (placeholder)
+app.post("/api/video/generate", async (req, res) => {
+  const { prompt, duration = 10, language = "hi" } = req.body;
+  if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
+
+  try {
+    // Replace with actual video generation API
+    const dummyVideoUrl = `https://via.placeholder.com/1280x720?text=${encodeURIComponent(prompt)}`;
+    res.json({ videoUrl: dummyVideoUrl, status: "processing" });
+  } catch (err) {
+    console.error("Video generation error:", err);
+    res.status(500).json({ error: "वीडियो जनरेशन फेल" });
+  }
+});
+
+// ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT} with memory and MongoDB`);
