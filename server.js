@@ -7,6 +7,7 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import axios from 'axios';   // ✅ अब सही जगह पर
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -103,7 +104,7 @@ app.post("/chat", async (req, res) => {
   तुम 'सहचर' हो – एक AI सहायक हो जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
   
   महत्वपूर्ण निर्देश:
-  - तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है। यह ऐप DeepSeek API का उपयोग करता है। (यह जानकारी केवल तभी दो जब कोई विशेष रूप से पूछे।)
+  - तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है।  (यह जानकारी केवल तभी दो जब कोई विशेष रूप से पूछे।)
   - हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
   - उत्तर को अधिक अभिव्यंजक (expressive) बनाने के लिए उपयुक्त इमोजी का प्रयोग करो, जैसे कि 🙏, 🌿, 🪷, आदि। (याद रखो, इमोजी केवल विजुअल डिस्प्ले के लिए हैं।)
   - उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जोड़ना न भूलें।
@@ -205,10 +206,7 @@ app.post("/chat", async (req, res) => {
 
 // ==================== NEW FEATURES ====================
 
-// Make sure you have installed axios if not already: npm install axios
-import axios from 'axios';
-
-// ==================== IMAGE GENERATION (OpenAI DALL·E) ====================
+// Image generation (OpenAI DALL·E)
 app.post("/api/image/generate", async (req, res) => {
   const { prompt, language = "hi" } = req.body;
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
@@ -223,7 +221,7 @@ app.post("/api/image/generate", async (req, res) => {
     const response = await axios.post(
       "https://api.openai.com/v1/images/generations",
       {
-        model: "dall-e-3",       // or "dall-e-2" for faster/cheaper
+        model: "dall-e-3",
         prompt: prompt,
         n: 1,
         size: "1024x1024",
