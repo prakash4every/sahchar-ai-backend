@@ -205,18 +205,42 @@ app.post("/chat", async (req, res) => {
 
 // ==================== NEW FEATURES ====================
 
-// Image generation endpoint (placeholder)
+// Make sure you have installed axios if not already: npm install axios
+import axios from 'axios';
+
+// ==================== IMAGE GENERATION (OpenAI DALL·E) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt, language = "hi" } = req.body;
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
 
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    console.error("OPENAI_API_KEY not set");
+    return res.status(500).json({ error: "API key not configured" });
+  }
+
   try {
-    // Replace with actual image generation API (e.g., Replicate, OpenAI)
-    const dummyImageUrl = `https://picsum.photos/512/512?random=${Date.now()}`;
-    res.json({ imageUrl: dummyImageUrl });
-  } catch (err) {
-    console.error("Image generation error:", err);
-    res.status(500).json({ error: "इमेज जनरेशन फेल हो गया" });
+    const response = await axios.post(
+      "https://api.openai.com/v1/images/generations",
+      {
+        model: "dall-e-3",       // or "dall-e-2" for faster/cheaper
+        prompt: prompt,
+        n: 1,
+        size: "1024x1024",
+      },
+      {
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    const imageUrl = response.data.data[0].url;
+    res.json({ imageUrl });
+  } catch (error) {
+    console.error("OpenAI API error:", error.response?.data || error.message);
+    res.status(500).json({ error: "इमेज जनरेशन फेल" });
   }
 });
 
