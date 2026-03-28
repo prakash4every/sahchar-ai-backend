@@ -85,7 +85,7 @@ app.get("/chat", (req, res) => {
   res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅");
 });
 
-// ✅ POST route – मेमोरी के साथ चैट (मौजूदा, बिना बदलाव)
+// ✅ POST route – मेमोरी के साथ चैट
 app.post("/chat", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
@@ -95,54 +95,71 @@ app.post("/chat", async (req, res) => {
   }
 
   try {
-    const currentDate = new Date().toLocaleDateString('hi-IN', {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-});
+    // 🔥 हर बार fresh current date & time calculate करें (IST timezone)
+    const now = new Date();
+    const currentDateTime = now.toLocaleString('hi-IN', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: true,
+      timeZone: 'Asia/Kolkata'
+    });
 
-if (!conversations[sid]) {
-    conversations[sid] = [
-     {
-  role: "system",
-  content: `
-  तुम 'सहचर' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
+    // सेशन की शुरुआत में system prompt सेट करें
+    if (!conversations[sid]) {
+      conversations[sid] = [
+        {
+          role: "system",
+          content: `
+तुम 'सहचर' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
 
-  महत्वपूर्ण निर्देश:
-  - तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है। यह ऐप DeepSeek API का उपयोग करता है।
-  - आज की तारीख है: ${currentDate}
-  - **अभिवादन का सम्मान करो:** जब कोई 'नमस्ते', 'सत श्री अकाल', 'अस्सलामु अलैकुम', 'जय भीम', 'गुड मॉर्निंग', 'गुड इवनिंग', आदि कहे, तो उसी भाषा/शैली में प्रतिउत्तर दो। उदाहरण: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम'।
-  - हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
-  - उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
-  - उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जोड़ना न भूलें।
-  `
-}
-    ];
-}
+महत्वपूर्ण निर्देश:
+- तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है। 
+- वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
+- जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो।
+- अभिवादन का सम्मान करो: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम' आदि।
+- हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
+- उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
+- उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।
+          `
+        }
+      ];
+    } 
+    // अगर session पहले से मौजूद है, तो system prompt में तारीख अपडेट करें
+    else {
+      const systemMsg = conversations[sid][0];
+      if (systemMsg && systemMsg.role === "system") {
+        // पुरानी तारीख को नई तारीख से replace करें (सुरक्षित तरीका)
+        systemMsg.content = systemMsg.content.replace(
+          /वर्तमान तारीख और समय है:.*?(?=\n|$)/,
+          वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
+        );
+      }
+    }
 
     // यूजर का संदेश हिस्ट्री में जोड़ें
     conversations[sid].push({ role: "user", content: message });
 
-    // 🔥 टोकन अनुमान फंक्शन (मोटा अनुमान)
+    // टोकन अनुमान और trimming (आपका पुराना कोड)
     const estimateTokens = (msgs) => {
       return msgs.reduce((acc, msg) => acc + JSON.stringify(msg).length / 4, 0);
     };
 
-    // 🔥 टोकन लिमिट बढ़ाकर 8000 करें (DeepSeek की संभावित लिमिट ज्यादा है)
     while (estimateTokens(conversations[sid]) > 8000 && conversations[sid].length > 2) {
       conversations[sid].splice(1, 1);
     }
 
-    // 📤 लॉग: कितने संदेश और टोकन भेज रहे हैं
-    console.log(`📤 Session ${sid}: Sending ${conversations[sid].length} messages, ~${Math.round(estimateTokens(conversations[sid]))} tokens`);
+    console.log(📤 Session ${sid}: Sending \( {conversations[sid].length} messages, \~ \){Math.round(estimateTokens(conversations[sid]))} tokens);
 
-    // DeepSeek API कॉल
+    // DeepSeek API कॉल (आपका बाकी कोड वैसा ही)
     const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`
+        "Authorization": Bearer ${process.env.DEEPSEEK_API_KEY}
       },
       body: JSON.stringify({
         model: "deepseek-chat",
@@ -154,25 +171,21 @@ if (!conversations[sid]) {
 
     if (!response.ok) {
       console.error("❌ DeepSeek API error status:", response.status);
-      console.error("❌ DeepSeek API error body:", JSON.stringify(data, null, 2));
       return res.status(500).json({
-        reply: `क्षमा करें, API त्रुटि: ${data.error?.message || "अज्ञात त्रुटि"} 🙏`
+        reply: क्षमा करें, API त्रुटि: ${data.error?.message || "अज्ञात त्रुटि"} 🙏
       });
     }
 
     const botReply = data.choices?.[0]?.message?.content;
 
     if (!botReply) {
-      console.error("❌ DeepSeek API response invalid:", JSON.stringify(data, null, 2));
       return res.status(500).json({ 
         reply: "क्षमा करें, AI response अभी उपलब्ध नहीं है 🙏" 
       });
     }
 
-    // बॉट का जवाब हिस्ट्री में जोड़ें
     conversations[sid].push({ role: "assistant", content: botReply });
 
-    // 🔥 हिस्ट्री को बहुत लंबा होने से रोकें
     if (conversations[sid].length > 30) {
       conversations[sid] = [
         conversations[sid][0],
