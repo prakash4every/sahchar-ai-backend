@@ -135,7 +135,7 @@ app.post("/chat", async (req, res) => {
         // पुरानी तारीख को नई तारीख से replace करें (सुरक्षित तरीका)
         systemMsg.content = systemMsg.content.replace(
           /वर्तमान तारीख और समय है:.*?(?=\n|$)/,
-          वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
+          `वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)`
         );
       }
     }
@@ -152,14 +152,14 @@ app.post("/chat", async (req, res) => {
       conversations[sid].splice(1, 1);
     }
 
-    console.log(📤 Session ${sid}: Sending \( {conversations[sid].length} messages, \~ \){Math.round(estimateTokens(conversations[sid]))} tokens);
+    console.log(`📤 Session ${sid}: Sending \( {conversations[sid].length} messages, \~ \){Math.round(estimateTokens(conversations[sid]))} tokens`);
 
     // DeepSeek API कॉल (आपका बाकी कोड वैसा ही)
     const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": Bearer ${process.env.DEEPSEEK_API_KEY}
+        "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`
       },
       body: JSON.stringify({
         model: "deepseek-chat",
@@ -172,7 +172,7 @@ app.post("/chat", async (req, res) => {
     if (!response.ok) {
       console.error("❌ DeepSeek API error status:", response.status);
       return res.status(500).json({
-        reply: क्षमा करें, API त्रुटि: ${data.error?.message || "अज्ञात त्रुटि"} 🙏
+        reply: `क्षमा करें, API त्रुटि: ${data.error?.message || "अज्ञात त्रुटि"} 🙏`
       });
     }
 
@@ -193,7 +193,7 @@ app.post("/chat", async (req, res) => {
       ];
     }
 
-    // 💾 बातचीत को MongoDB में सेव करें (यदि कनेक्शन हो)
+    // MongoDB save (आपका पुराना कोड)
     if (db) {
       try {
         const messagesCollection = db.collection('conversations');
@@ -203,28 +203,20 @@ app.post("/chat", async (req, res) => {
           botReply: botReply,
           timestamp: new Date()
         });
-        console.log(`✅ Conversation saved to MongoDB for session ${sid}`);
       } catch (dbError) {
         console.error("❌ MongoDB insert error:", dbError.message);
       }
-    } else {
-      console.log("⚠️ MongoDB not connected, conversation not saved.");
     }
 
     res.json({ reply: botReply });
 
   } catch (error) {
-    console.error("❌ Server error:", {
-      message: error.message,
-      stack: error.stack,
-      name: error.name
-    });
+    console.error("❌ Server error:", error);
     res.status(500).json({ 
       reply: "सर्वर में त्रुटि हुई, कृपया बाद में प्रयास करें 🙏" 
     });
   }
 });
-
 // ==================== NEW FEATURES ====================
 
 // Image generation (OpenAI DALL·E)
