@@ -7,7 +7,7 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import axios from 'axios';   
+import axios from 'axios';   // ✅ अब सही जगह पर
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -90,43 +90,37 @@ app.post("/chat", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
 
-  // 🔥 हर बार fresh date-time calculate करें
-  const now = new Date();
-  const currentDateTime = now.toLocaleString('hi-IN', {
+  if (!message) {
+    return res.status(400).json({ reply: "Message required 🙏" });
+  }
+
+  try {
+    const currentDate = new Date().toLocaleDateString('hi-IN', {
     weekday: 'long',
     year: 'numeric',
     month: 'long',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: 'numeric',
-    hour12: true,
-    timeZone: 'Asia/Kolkata'  // Bihar के लिए IST
-  });
+    day: 'numeric'
+});
 
-  if (!conversations[sid]) {
+if (!conversations[sid]) {
     conversations[sid] = [
-      {
-        role: "system",
-        content: `
-        तुम 'सहचर' हो... 
+     {
+  role: "system",
+  content: `
+  तुम 'सहचर' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
 
-        महत्वपूर्ण:
-        - तुम्हें राम प्रकाश कुमार ने विकसित किया है।
-        - **वर्तमान तारीख और समय है**: ${currentDateTime} (IST - Asia/Kolkata)
-        - जब भी कोई तारीख, समय, आज, कल, परसों आदि पूछे, तो इसी वर्तमान समय का इस्तेमाल करो।
-        - अभिवादन का सम्मान करो...
-        `
-      }
+  महत्वपूर्ण निर्देश:
+  - तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है। यह ऐप DeepSeek API का उपयोग करता है।
+  - आज की तारीख है: ${currentDate}
+  - **अभिवादन का सम्मान करो:** जब कोई 'नमस्ते', 'सत श्री अकाल', 'अस्सलामु अलैकुम', 'जय भीम', 'गुड मॉर्निंग', 'गुड इवनिंग', आदि कहे, तो उसी भाषा/शैली में प्रतिउत्तर दो। उदाहरण: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम'।
+  - हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
+  - उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
+  - उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जोड़ना न भूलें।
+  `
+}
     ];
-  } else {
-    // अगर session पहले से है, तो system message को update करें (पहले system को fresh date से replace करें)
-    conversations[sid][0].content = conversations[sid][0].content.replace(
-      /वर्तमान तारीख और समय है:.*?(?= - |$)/, 
-      `वर्तमान तारीख और समय है: ${currentDateTime} (IST)`
-    );
-  }
+}
 
-  // ... बाकी कोड वैसा ही
     // यूजर का संदेश हिस्ट्री में जोड़ें
     conversations[sid].push({ role: "user", content: message });
 
