@@ -257,10 +257,6 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-import { RunwayML } from '@runwayml/sdk';
-
-// ... (your existing imports and setup)
-
 // ==================== VIDEO GENERATION (RunwayML SDK) ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, duration = 5, language = "hi" } = req.body;
@@ -288,10 +284,10 @@ app.post("/api/video/generate", async (req, res) => {
 
     // Create a task using the image-to-video model (works with text prompts)
     const task = await client.imageToVideo.create({
-      model: 'gen4.5',                   // as per SDK example
+      model: 'gen4.5',
       promptText: prompt,
       ratio: '1280:720',
-      duration: Math.min(Math.max(parseInt(duration), 4), 10), // between 4 and 10 seconds
+      duration: Math.min(Math.max(parseInt(duration), 4), 10),
     });
 
     // Wait for the video to finish generating
@@ -315,6 +311,7 @@ app.post("/api/video/generate", async (req, res) => {
     });
   }
 });
+
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
