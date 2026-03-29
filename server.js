@@ -256,7 +256,11 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (with fallback) ====================
+import { RunwayML } from '@runwayml/sdk';
+
+// ... (your existing imports and setup)
+
+// ==================== VIDEO GENERATION (RunwayML SDK) ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, duration = 5, language = "hi" } = req.body;
 
@@ -267,6 +271,7 @@ app.post("/api/video/generate", async (req, res) => {
   const apiKey = process.env.RUNWAY_API_KEY;
   if (!apiKey) {
     console.error("❌ RUNWAY_API_KEY missing");
+    // Fallback to dummy video
     return res.json({ 
       videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
       status: "demo",
@@ -277,68 +282,32 @@ app.post("/api/video/generate", async (req, res) => {
   try {
     console.log(`🎥 Video requested: "${prompt.substring(0, 100)}..."`);
 
-    const createResponse = await axios.post(
-      "https://api.dev.runwayml.com/v1/generate",
-      {
-        promptText: prompt,
-        modelVersion: "gen-3",
-        durationSeconds: Math.min(Math.max(parseInt(duration), 4), 10),
-        aspectRatio: "16:9",
-      },
-      {
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "X-Runway-Version": "v1",
-        },
-        timeout: 30000,
-      }
-    );
+    // Initialize RunwayML client with your API key
+    const client = new RunwayML({ apiKey });
 
-    let taskId = createResponse.data.id || createResponse.data.taskId || createResponse.data.requestId;
-    if (!taskId) {
-      console.error("❌ No task ID in Runway response:", createResponse.data);
-      throw new Error("Task ID नहीं मिला");
-    }
-    console.log(`✅ Task created: ${taskId}`);
+    // Create a task using the image-to-video model (it works with text prompts too)
+    const task = await client.imageToVideo.create({
+      model: 'gen4.5',                 // as per SDK example
+      promptText: prompt,
+      ratio: '1280:720',               // you can also use '16:9' or other ratios
+      duration: Math.min(Math.max(parseInt(duration), 4), 10), // between 4 and 10 seconds
+    });
 
-    let videoUrl = null;
-    let attempts = 0;
-    const maxAttempts = 45;
-    const pollInterval = 8000;
+    // Wait for the task to complete and get the video URL
+    const result = await task.waitForTaskOutput();
 
-    while (!videoUrl && attempts < maxAttempts) {
-      await new Promise(r => setTimeout(r, pollInterval));
-      attempts++;
-
-      const statusRes = await axios.get(`https://api.dev.runwayml.com/v1/tasks/${taskId}`, {
-        headers: { 
-          "Authorization": `Bearer ${apiKey}`,
-          "X-Runway-Version": "v1"
-        }
-      });
-
-      const task = statusRes.data;
-      console.log(`Attempt ${attempts}: status = ${task.status}`);
-
-      if (task.status === "SUCCEEDED" || task.status === "completed") {
-        videoUrl = task.output?.[0] || task.videoUrl || task.result?.url;
-        break;
-      } else if (task.status === "FAILED" || task.status === "failed") {
-        throw new Error(task.error || task.message || "Runway generation failed");
-      }
+    if (!result.output || result.output.length === 0) {
+      throw new Error('No video output received');
     }
 
-    if (!videoUrl) {
-      console.warn("⚠️ Video generation timed out");
-      videoUrl = "https://www.w3schools.com/html/mov_bbb.mp4";
-    }
-
+    const videoUrl = result.output[0];
     console.log(`✅ Video ready: ${videoUrl}`);
-    res.json({ videoUrl, status: videoUrl.includes("w3schools") ? "demo" : "success" });
+    res.json({ videoUrl, status: "success" });
 
   } catch (error) {
-    console.error("❌ Video Generation Error:", error.response?.data || error.message);
+    console.error("❌ Video Generation Error:", error);
+
+    // Fallback to dummy video on any failure
     const dummyVideo = "https://www.w3schools.com/html/mov_bbb.mp4";
     res.json({ 
       videoUrl: dummyVideo,
@@ -347,7 +316,6 @@ app.post("/api/video/generate", async (req, res) => {
     });
   }
 });
-
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
