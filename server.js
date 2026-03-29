@@ -257,7 +257,7 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (with optional imageUrl) ====================
+// ==================== VIDEO GENERATION (FIXED) ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, imageUrl, duration = 5, language = "hi" } = req.body;
 
@@ -268,17 +268,18 @@ app.post("/api/video/generate", async (req, res) => {
   const apiKey = process.env.RUNWAY_API_KEY;
   if (!apiKey) {
     console.error("❌ RUNWAY_API_KEY missing");
-    return res.json({ 
+    // Demo mode – but return error clearly
+    return res.status(400).json({ 
+      error: "RUNWAY_API_KEY सेट नहीं है। कृपया एडमिन से संपर्क करें।",
       videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
-      status: "demo",
-      message: "वीडियो जनरेशन अभी डेमो मोड में है। 🙏"
+      demo: true
     });
   }
 
   try {
     console.log(`🎥 Video requested: "${prompt.substring(0, 100)}..."`);
 
-    // यदि imageUrl नहीं दी गई, तो पहले DALL-E से इमेज बनाएँ
+    // 1. यदि imageUrl नहीं दी गई, तो DALL-E से इमेज बनाएँ
     let finalImageUrl = imageUrl;
     if (!finalImageUrl) {
       console.log("🖼️ No imageUrl provided, generating one via DALL-E...");
@@ -301,39 +302,41 @@ app.post("/api/video/generate", async (req, res) => {
       console.log(`🖼️ Generated image URL: ${finalImageUrl}`);
     }
 
-    // RunwayML client
+    // 2. RunwayML client – सही तरीका
     const client = new RunwayML({ apiKey });
 
-    // Create task with the image URL
+    // 3. Task create करें
     const task = await client.imageToVideo.create({
-      model: 'gen4.5',
+      model: 'gen3',               // gen4.5 की जगह gen3 ज्यादा स्थिर है
       promptImage: finalImageUrl,
       promptText: prompt,
       ratio: '1280:720',
       duration: Math.min(Math.max(parseInt(duration), 5), 10),
     });
 
-    const result = await task.waitForTaskOutput();
+    // 4. ⭐ यहाँ सबसे बड़ा सुधार – सही मेथड का इस्तेमाल
+    const output = await task.waitForOutput();   // waitForTaskOutput ❌ → waitForOutput ✅
 
-    if (!result.output || result.output.length === 0) {
+    // output एक object होता है जिसमें video URL array होता है
+    if (!output || !output.output || output.output.length === 0) {
       throw new Error('No video output received');
     }
 
-    const videoUrl = result.output[0];
+    const videoUrl = output.output[0];
     console.log(`✅ Video ready: ${videoUrl}`);
     res.json({ videoUrl, status: "success" });
 
   } catch (error) {
     console.error("❌ Video Generation Error:", error);
-    // Fallback dummy video
-    res.json({ 
+    // अब हमेशा dummy video न भेजें – असली एरर दिखाएँ
+    res.status(500).json({ 
+      error: error.message || "Unknown error",
       videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
-      status: "demo",
-      message: "वीडियो जनरेशन अभी डेमो मोड में है। 🙏"
+      demo: true,
+      details: "Check API credits and model availability"
     });
   }
-});
-// ==================== SERVER START ====================
+});// ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT} with memory and MongoDB`);
