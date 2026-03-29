@@ -272,7 +272,7 @@ app.post("/api/video/generate", async (req, res) => {
   const apiKey = process.env.RUNWAY_API_KEY;
   if (!apiKey) {
     console.error("❌ RUNWAY_API_KEY missing");
-    // Fallback to dummy video
+    // Fallback to a dummy video so the app doesn't break
     return res.json({ 
       videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
       status: "demo",
@@ -283,18 +283,18 @@ app.post("/api/video/generate", async (req, res) => {
   try {
     console.log(`🎥 Video requested: "${prompt.substring(0, 100)}..."`);
 
-    // Initialize RunwayML client with your API key
+    // Initialize the RunwayML client
     const client = new RunwayML({ apiKey });
 
-    // Create a task using the image-to-video model (it works with text prompts too)
+    // Create a task using the image-to-video model (works with text prompts)
     const task = await client.imageToVideo.create({
-      model: 'gen4.5',                 // as per SDK example
+      model: 'gen4.5',                   // as per SDK example
       promptText: prompt,
-      ratio: '1280:720',               // you can also use '16:9' or other ratios
+      ratio: '1280:720',
       duration: Math.min(Math.max(parseInt(duration), 4), 10), // between 4 and 10 seconds
     });
 
-    // Wait for the task to complete and get the video URL
+    // Wait for the video to finish generating
     const result = await task.waitForTaskOutput();
 
     if (!result.output || result.output.length === 0) {
@@ -307,11 +307,9 @@ app.post("/api/video/generate", async (req, res) => {
 
   } catch (error) {
     console.error("❌ Video Generation Error:", error);
-
-    // Fallback to dummy video on any failure
-    const dummyVideo = "https://www.w3schools.com/html/mov_bbb.mp4";
+    // Fallback to dummy video
     res.json({ 
-      videoUrl: dummyVideo,
+      videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
       status: "demo",
       message: "वीडियो जनरेशन अभी डेमो मोड में है। जल्द ही असली सुविधा आएगी। 🙏"
     });
