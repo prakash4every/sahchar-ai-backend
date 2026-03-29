@@ -275,7 +275,7 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION ====================
+// ==================== VIDEO GENERATION (2026 Fixed Version) ====================
 
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, duration = 5, language = "hi" } = req.body;
@@ -286,43 +286,44 @@ app.post("/api/video/generate", async (req, res) => {
 
   const apiKey = process.env.RUNWAY_API_KEY;
   if (!apiKey) {
-    console.error("❌ RUNWAY_API_KEY not set in environment variables");
-    return res.status(500).json({ 
-      error: "Video generation API key कॉन्फ़िगर नहीं है। कृपया admin से संपर्क करें।" 
-    });
+    console.error("❌ RUNWAY_API_KEY missing");
+    return res.status(500).json({ error: "Video generation API key कॉन्फ़िगर नहीं है" });
   }
 
   try {
-    console.log(`🎥 Video generation requested: "${prompt}" | Duration: ${duration}s`);
+    console.log(`🎥 Video requested: "${prompt.substring(0, 80)}..." | Duration: ${duration}s`);
 
-    // Runway ML Text-to-Video API call (2026 के अनुसार Gen-4/Gen-4.5)
+    // 🔥 2026 का सही endpoint (text-to-video भी यहीं से काम करता है)
     const response = await axios.post(
-      "https://api.runwayml.com/v1/text_to_video",   // या image_to_video अगर image भी भेजना हो
+      "https://api.runwayml.com/v1/image_to_video",
       {
-        model: "gen4.5",           // या "gen4_turbo" (फास्टर लेकिन थोड़ा कम क्वालिटी)
+        model: "gen4.5",                    // या "gen4_turbo" (फास्टर)
         promptText: prompt,
-        duration: Math.min(Math.max(duration, 5), 10), // 5-10 सेकंड के बीच रखें (अधिकतर प्लान में लिमिट)
-        ratio: "1280:720",         // 16:9 landscape (आप vertical 720:1280 भी कर सकते हैं)
-        // अगर image-to-video करना हो तो promptImage: "https://image-url..." भी ऐड करें
+        duration: Math.min(Math.max(parseInt(duration), 4), 10),
+        ratio: "1280:720",                  // 16:9
       },
       {
         headers: {
           "Authorization": `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
-        timeout: 120000, // 2 मिनट तक wait (वीडियो जेनरेट होने में समय लगता है)
+        timeout: 180000, // 3 मिनट
       }
     );
 
-    const taskId = response.data.id; // Runway task ID देता है
+    const taskId = response.data.id;   // ← अब यही सही है
 
-    // Runway async है → task complete होने तक poll करना पड़ता है
+    if (!taskId) {
+      throw new Error("Task ID नहीं मिला");
+    }
+
+    // Polling
     let videoUrl = null;
     let attempts = 0;
-    const maxAttempts = 30; // \~2-3 मिनट तक चेक करें
+    const maxAttempts = 40;   // \~4-5 मिनट तक चेक
 
     while (!videoUrl && attempts < maxAttempts) {
-      await new Promise(resolve => setTimeout(resolve, 6000)); // 6 सेकंड wait
+      await new Promise(r => setTimeout(r, 7000)); // 7 सेकंड wait
 
       const statusRes = await axios.get(`https://api.runwayml.com/v1/tasks/${taskId}`, {
         headers: { "Authorization": `Bearer ${apiKey}` }
@@ -330,18 +331,21 @@ app.post("/api/video/generate", async (req, res) => {
 
       const task = statusRes.data;
 
-      if (task.status === "SUCCEEDED" && task.output && task.output[0]) {
-        videoUrl = task.output[0];   // video URL
+      if (task.status === "SUCCEEDED" && task.output && task.output.length > 0) {
+        videoUrl = task.output[0];
         break;
-      } else if (task.status === "FAILED") {
-        throw new Error(task.error || "Video generation failed");
+      } 
+      else if (task.status === "FAILED") {
+        throw new Error(task.error || "Runway task failed");
       }
 
       attempts++;
     }
 
     if (!videoUrl) {
-      return res.status(408).json({ error: "वीडियो जेनरेट होने में ज्यादा समय लग रहा है। बाद में प्रयास करें।" });
+      return res.status(408).json({ 
+        error: "वीडियो जेनरेट होने में ज्यादा समय लग रहा है। बाद में ट्राई करें 🙏" 
+      });
     }
 
     console.log(`✅ Video generated successfully: ${videoUrl}`);
@@ -349,24 +353,21 @@ app.post("/api/video/generate", async (req, res) => {
     res.json({
       videoUrl: videoUrl,
       status: "success",
-      duration: duration + " seconds",
       message: "वीडियो सफलतापूर्वक जेनरेट हो गया है 🙏"
     });
 
   } catch (error) {
-    console.error("❌ Video generation error:", error.response?.data || error.message);
+    console.error("❌ Video Generation Error:", error.response?.data || error.message);
     
-    let errorMsg = "वीडियो जेनरेशन फेल हो गया";
-    if (error.response?.status === 429) errorMsg = "क्रेडिट खत्म हो गए हैं। कृपया बाद में ट्राई करें।";
-    if (error.response?.status === 401) errorMsg = "API Key अमान्य है।";
+    let errorMsg = "वीडियो जेनरेशन फेल हो गया। कृपया बाद में प्रयास करें 🙏";
+    if (error.response?.status === 429) errorMsg = "Runway क्रेडिट खत्म हो गए हैं।";
+    if (error.response?.status === 401) errorMsg = "Runway API Key अमान्य है।";
 
     res.status(500).json({ 
-      error: errorMsg,
-      details: error.message 
+      error: errorMsg 
     });
   }
-});
-// ==================== SERVER START ====================
+});// ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT} with memory and MongoDB`);
