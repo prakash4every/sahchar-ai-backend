@@ -275,7 +275,8 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (Runway API – updated hostname) ====================
+// ==================== VIDEO GENERATION (2026 Corrected - Runway Dev API) ====================
+
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, duration = 5, language = "hi" } = req.body;
 
@@ -292,80 +293,88 @@ app.post("/api/video/generate", async (req, res) => {
   try {
     console.log(`🎥 Video requested: "${prompt.substring(0, 100)}..."`);
 
-    // ✅ Correct hostname: api.dev.runwayml.com
-    const createResponse = await axios.post(
-      "https://api.dev.runwayml.com/v1/generate",   // changed hostname
+    // 🔥 2026 सही Runway Dev API
+    const response = await axios.post(
+      "https://api.dev.runwayml.com/v1/image_to_video",
       {
-        model: "gen3",
-        prompt: prompt,
+        model: "gen4.5",
+        promptText: prompt,
         duration: Math.min(Math.max(parseInt(duration), 4), 10),
-        ratio: "16:9",
+        ratio: "1280:720",
       },
       {
         headers: {
           "Authorization": `Bearer ${apiKey}`,
           "Content-Type": "application/json",
+          "X-Runway-Version": "2024-11-06"   // ←←← यह जरूरी है
         },
-        timeout: 30000,
+        timeout: 180000,
       }
     );
 
-    let taskId = createResponse.data.id || createResponse.data.taskId || createResponse.data.requestId;
+    const taskId = response.data.id || response.data.taskId;
+
     if (!taskId) {
-      console.error("❌ No task ID in Runway response:", createResponse.data);
       throw new Error("Task ID नहीं मिला");
     }
+
     console.log(`✅ Task created: ${taskId}`);
 
+    // Polling
     let videoUrl = null;
     let attempts = 0;
     const maxAttempts = 45;
-    const pollInterval = 8000;
 
     while (!videoUrl && attempts < maxAttempts) {
-      await new Promise(r => setTimeout(r, pollInterval));
-      attempts++;
+      await new Promise(r => setTimeout(r, 8000));
 
       const statusRes = await axios.get(`https://api.dev.runwayml.com/v1/tasks/${taskId}`, {
-        headers: { "Authorization": `Bearer ${apiKey}` }
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "X-Runway-Version": "2024-11-06"
+        }
       });
 
       const task = statusRes.data;
-      console.log(`Attempt ${attempts}: status = ${task.status}`);
+      console.log(`Attempt ${attempts + 1}: Status = ${task.status}`);
 
-      if (task.status === "SUCCEEDED" || task.status === "completed") {
-        videoUrl = task.output?.[0] || task.videoUrl || task.result?.url;
+      if (task.status === "SUCCEEDED" && task.output && task.output.length > 0) {
+        videoUrl = task.output[0];
         break;
-      } else if (task.status === "FAILED" || task.status === "failed") {
-        throw new Error(task.error || task.message || "Runway generation failed");
+      } else if (task.status === "FAILED") {
+        throw new Error(task.error || "Runway task failed");
       }
+
+      attempts++;
     }
 
     if (!videoUrl) {
       return res.status(408).json({ 
-        error: "वीडियो जेनरेट होने में समय लग रहा है। कृपया 1-2 मिनट बाद दोबारा ट्राई करें 🙏"
+        error: "वीडियो जेनरेट होने में समय लग रहा है। बाद में ट्राई करें 🙏" 
       });
     }
 
-    console.log(`✅ Video Success: ${videoUrl}`);
-    res.json({ videoUrl, status: "success" });
+    console.log(`✅ Video generated: ${videoUrl}`);
+
+    res.json({
+      videoUrl: videoUrl,
+      status: "success",
+      message: "वीडियो सफलतापूर्वक जेनरेट हो गया है 🙏"
+    });
 
   } catch (error) {
     console.error("❌ Video Generation Error:", error.response?.data || error.message);
-
+    
     let errorMsg = "वीडियो जेनरेशन फेल हो गया। कृपया बाद में प्रयास करें 🙏";
-    if (error.response) {
-      const status = error.response.status;
-      if (status === 401) errorMsg = "Runway API Key अमान्य है।";
-      else if (status === 429) errorMsg = "Runway क्रेडिट खत्म हो गए हैं।";
-      else if (status === 404) errorMsg = "Runway endpoint गलत है। कृपया डॉक्स चेक करें।";
-      else if (error.response.data?.error) errorMsg = `Runway error: ${error.response.data.error}`;
+    if (error.response?.data?.error?.includes("hostname")) {
+      errorMsg = "Runway API configuration error (hostname)";
     }
+    if (error.response?.status === 429) errorMsg = "Runway क्रेडिट खत्म हो गए हैं।";
+    if (error.response?.status === 401) errorMsg = "Runway API Key अमान्य है।";
 
     res.status(500).json({ error: errorMsg });
   }
-});
-// ==================== SERVER START ====================
+});// ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT} with memory and MongoDB`);
