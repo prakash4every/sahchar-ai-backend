@@ -307,7 +307,7 @@ app.post("/api/video/generate", async (req, res) => {
 
     // 3. Task create करें
     const task = await client.imageToVideo.create({
-      model: 'gen3',               // gen4.5 की जगह gen3 ज्यादा स्थिर है
+      model: 'gen4_turbo',   // या 'gen4' या 'gen4.5',  // gen4.5 की जगह gen3 ज्यादा स्थिर है
       promptImage: finalImageUrl,
       promptText: prompt,
       ratio: '1280:720',
