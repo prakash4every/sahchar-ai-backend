@@ -14,21 +14,18 @@ const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
-// MONGODB_URI की उपस्थिति की जाँच करें और चेतावनी दें
+// MONGODB_URI check
 if (!process.env.MONGODB_URI) {
   console.warn("⚠️ MONGODB_URI environment variable is not set. Database features will be disabled.");
 }
 
 const app = express();
-
-// Multer configuration for file uploads
 const upload = multer({ dest: 'uploads/' });
 
-// 🔥 लंबे संदेशों के लिए JSON लिमिट बढ़ाई
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// ✅ JSON पार्सिंग एरर हैंडलिंग मिडलवेयर
+// JSON parsing error handler
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
     console.error('❌ Invalid JSON received:', err.message);
@@ -39,44 +36,39 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
-// 📦 MongoDB कनेक्शन सेटअप (अब सुरक्षित तरीके से)
+// MongoDB setup
 let mongoClient;
 let db = null;
 
 if (process.env.MONGODB_URI) {
   mongoClient = new MongoClient(process.env.MONGODB_URI);
-
   async function connectToMongoDB() {
     try {
       await mongoClient.connect();
       console.log("✅ Connected to MongoDB");
-      db = mongoClient.db(); // डिफ़ॉल्ट डेटाबेस का उपयोग
-      // यदि कोई विशेष डेटाबेस नाम देना चाहते हैं, तो:
-      // db = mongoClient.db('sahchar_db');
+      db = mongoClient.db();
     } catch (error) {
       console.error("❌ MongoDB connection error:", error.message);
-      db = null; // कनेक्ट न होने पर db को null कर दें
+      db = null;
     }
   }
-
-  connectToMongoDB(); // कनेक्शन शुरू करें
+  connectToMongoDB();
 } else {
   console.warn("⚠️ MongoDB client not initialized because MONGODB_URI is missing.");
 }
 
-// ग्लोबल एरर हैंडलर (किसी भी अनहैंडल्ड एरर को पकड़ने के लिए)
+// Global error handlers
 process.on('unhandledRejection', (reason, promise) => {
   console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
-
 process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught Exception:', error);
 });
 
-// 📦 इन-मेमोरी कन्वर्सेशन स्टोरेज (फॉलबैक के लिए)
+// In-memory conversation storage
 const conversations = {};
 
-// ✅ GET route – सर्वर चेक
+// GET routes
 app.get("/", (req, res) => {
   res.send("🌿 सहचर AI बैकएंड चालू है ✅ (मेमोरी अपडेट + MongoDB)");
 });
@@ -85,7 +77,7 @@ app.get("/chat", (req, res) => {
   res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅");
 });
 
-// ✅ POST route – मेमोरी के साथ चैट
+// POST /chat – main chat endpoint
 app.post("/chat", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
@@ -95,7 +87,6 @@ app.post("/chat", async (req, res) => {
   }
 
   try {
-    // 🔥 हर बार fresh current date & time calculate करें (IST timezone)
     const now = new Date();
     const currentDateTime = now.toLocaleString('hi-IN', {
       weekday: 'long',
@@ -108,7 +99,6 @@ app.post("/chat", async (req, res) => {
       timeZone: 'Asia/Kolkata'
     });
 
-    // सेशन की शुरुआत में system prompt सेट करें
     if (!conversations[sid]) {
       conversations[sid] = [
         {
@@ -117,7 +107,7 @@ app.post("/chat", async (req, res) => {
 तुम 'सहचर' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
 
 महत्वपूर्ण निर्देश:
-- तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है। 
+- तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है. 
 - वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
 - जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो।
 - अभिवादन का सम्मान करो: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम' आदि।
@@ -127,12 +117,9 @@ app.post("/chat", async (req, res) => {
           `
         }
       ];
-    } 
-    // अगर session पहले से मौजूद है, तो system prompt में तारीख अपडेट करें
-    else {
+    } else {
       const systemMsg = conversations[sid][0];
       if (systemMsg && systemMsg.role === "system") {
-        // पुरानी तारीख को नई तारीख से replace करें (सुरक्षित तरीका)
         systemMsg.content = systemMsg.content.replace(
           /वर्तमान तारीख और समय है:.*?(?=\n|$)/,
           `वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)`
@@ -140,10 +127,8 @@ app.post("/chat", async (req, res) => {
       }
     }
 
-    // यूजर का संदेश हिस्ट्री में जोड़ें
     conversations[sid].push({ role: "user", content: message });
 
-    // टोकन अनुमान और trimming (आपका पुराना कोड)
     const estimateTokens = (msgs) => {
       return msgs.reduce((acc, msg) => acc + JSON.stringify(msg).length / 4, 0);
     };
@@ -152,9 +137,8 @@ app.post("/chat", async (req, res) => {
       conversations[sid].splice(1, 1);
     }
 
-    console.log(`📤 Session ${sid}: Sending \( {conversations[sid].length} messages, \~ \){Math.round(estimateTokens(conversations[sid]))} tokens`);
+    console.log(`📤 Session ${sid}: Sending ${conversations[sid].length} messages, ~${Math.round(estimateTokens(conversations[sid]))} tokens`);
 
-    // DeepSeek API कॉल (आपका बाकी कोड वैसा ही)
     const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -193,7 +177,6 @@ app.post("/chat", async (req, res) => {
       ];
     }
 
-    // MongoDB save (आपका पुराना कोड)
     if (db) {
       try {
         const messagesCollection = db.collection('conversations');
@@ -216,9 +199,9 @@ app.post("/chat", async (req, res) => {
       reply: "सर्वर में त्रुटि हुई, कृपया बाद में प्रयास करें 🙏" 
     });
   }
-});// ==================== NEW FEATURES ====================
+});
 
-// Image generation (OpenAI DALL·E)
+// ==================== IMAGE GENERATION ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt, language = "hi" } = req.body;
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
@@ -254,19 +237,17 @@ app.post("/api/image/generate", async (req, res) => {
   }
 });
 
-// Audio transcription endpoint (file upload)
+// ==================== AUDIO TRANSCRIPTION ====================
 app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "ऑडियो फाइल जरूरी है" });
 
   try {
-    // Replace with actual transcription API (Google Cloud Speech, AssemblyAI)
     const dummyText = "यह एक नमूना ट्रांसक्रिप्शन है। असली API से कनेक्ट करें।";
     res.json({ transcription: dummyText, confidence: 0.95 });
   } catch (err) {
     console.error("Transcription error:", err);
     res.status(500).json({ error: "ट्रांसक्रिप्शन फेल" });
   } finally {
-    // Clean up uploaded file
     if (req.file?.path) {
       fs.unlink(req.file.path, (err) => {
         if (err) console.error("File deletion error:", err);
@@ -275,7 +256,7 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (Runway API – with fallback) ====================
+// ==================== VIDEO GENERATION (with fallback) ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, duration = 5, language = "hi" } = req.body;
 
@@ -286,7 +267,6 @@ app.post("/api/video/generate", async (req, res) => {
   const apiKey = process.env.RUNWAY_API_KEY;
   if (!apiKey) {
     console.error("❌ RUNWAY_API_KEY missing");
-    // Fallback to a dummy video URL
     return res.json({ 
       videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
       status: "demo",
@@ -297,14 +277,13 @@ app.post("/api/video/generate", async (req, res) => {
   try {
     console.log(`🎥 Video requested: "${prompt.substring(0, 100)}..."`);
 
-    // Try a different parameter format (based on common Runway API patterns)
     const createResponse = await axios.post(
       "https://api.dev.runwayml.com/v1/generate",
       {
-        promptText: prompt,           // changed from "prompt"
-        modelVersion: "gen-3",        // changed from "gen3"
-        durationSeconds: Math.min(Math.max(parseInt(duration), 4), 10), // changed from "duration"
-        aspectRatio: "16:9",          // changed from "ratio"
+        promptText: prompt,
+        modelVersion: "gen-3",
+        durationSeconds: Math.min(Math.max(parseInt(duration), 4), 10),
+        aspectRatio: "16:9",
       },
       {
         headers: {
@@ -352,7 +331,6 @@ app.post("/api/video/generate", async (req, res) => {
 
     if (!videoUrl) {
       console.warn("⚠️ Video generation timed out");
-      // Fallback to dummy URL instead of error
       videoUrl = "https://www.w3schools.com/html/mov_bbb.mp4";
     }
 
@@ -361,7 +339,6 @@ app.post("/api/video/generate", async (req, res) => {
 
   } catch (error) {
     console.error("❌ Video Generation Error:", error.response?.data || error.message);
-    // Fallback to a dummy video URL so the Android app doesn't break
     const dummyVideo = "https://www.w3schools.com/html/mov_bbb.mp4";
     res.json({ 
       videoUrl: dummyVideo,
@@ -369,7 +346,9 @@ app.post("/api/video/generate", async (req, res) => {
       message: "वीडियो जनरेशन अभी डेमो मोड में है। जल्द ही असली सुविधा आएगी। 🙏"
     });
   }
-});});// ==================== SERVER START ====================
+});
+
+// ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT} with memory and MongoDB`);
