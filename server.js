@@ -275,101 +275,22 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (2026 Fixed & Improved) ====================
-
+// Video generation endpoint (placeholder)
 app.post("/api/video/generate", async (req, res) => {
-  const { prompt, duration = 5, language = "hi" } = req.body;
-
-  if (!prompt) {
-    return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
-  }
-
-  const apiKey = process.env.RUNWAY_API_KEY;
-  if (!apiKey) {
-    console.error("❌ RUNWAY_API_KEY missing");
-    return res.status(500).json({ error: "Video generation API key कॉन्फ़िगर नहीं है" });
-  }
+  const { prompt, duration = 10, language = "hi" } = req.body;
+  if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
 
   try {
-    console.log(`🎥 Video requested: "${prompt.substring(0, 100)}..."`);
-
-    // 2026 का सही endpoint + Gen-4.5
-    const response = await axios.post(
-      "https://api.runwayml.com/v1/image_to_video",   // text-to-video भी इसी endpoint से काम करता है
-      {
-        model: "gen4.5",
-        promptText: prompt,
-        duration: Math.min(Math.max(parseInt(duration), 4), 10),
-        ratio: "1280:720",
-      },
-      {
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        timeout: 180000,
-      }
-    );
-
-    const taskId = response.data.id || response.data.taskId;
-
-    if (!taskId) {
-      throw new Error("Task ID नहीं मिला Runway से");
-    }
-
-    console.log(`Task created: ${taskId}`);
-
-    // Polling with better logging
-    let videoUrl = null;
-    let attempts = 0;
-    const maxAttempts = 45; // \~5 मिनट तक
-
-    while (!videoUrl && attempts < maxAttempts) {
-      await new Promise(r => setTimeout(r, 8000)); // 8 सेकंड wait
-
-      const statusRes = await axios.get(`https://api.runwayml.com/v1/tasks/${taskId}`, {
-        headers: { "Authorization": `Bearer ${apiKey}` }
-      });
-
-      const task = statusRes.data;
-
-      console.log(`Attempt ${attempts + 1}: Status = ${task.status}`);
-
-      if (task.status === "SUCCEEDED" && task.output && task.output.length > 0) {
-        videoUrl = task.output[0];
-        break;
-      } 
-      else if (task.status === "FAILED") {
-        throw new Error(task.error || "Runway video generation failed");
-      }
-
-      attempts++;
-    }
-
-    if (!videoUrl) {
-      return res.status(408).json({ 
-        error: "वीडियो जेनरेट होने में समय लग रहा है। कृपया 1-2 मिनट बाद दोबारा ट्राई करें 🙏" 
-      });
-    }
-
-    console.log(`✅ Video Success: ${videoUrl}`);
-
-    res.json({
-      videoUrl: videoUrl,
-      status: "success",
-      message: "वीडियो सफलतापूर्वक जेनरेट हो गया है 🙏"
-    });
-
-  } catch (error) {
-    console.error("❌ Video Generation Error:", error.response?.data || error.message);
-    
-    let errorMsg = "वीडियो जेनरेशन फेल हो गया। कृपया बाद में प्रयास करें 🙏";
-    if (error.response?.status === 429) errorMsg = "Runway क्रेडिट खत्म हो गए हैं।";
-    if (error.response?.status === 401) errorMsg = "Runway API Key अमान्य है।";
-
-    res.status(500).json({ error: errorMsg });
+    // Replace with actual video generation API
+    const dummyVideoUrl = `https://via.placeholder.com/1280x720?text=${encodeURIComponent(prompt)}`;
+    res.json({ videoUrl: dummyVideoUrl, status: "processing" });
+  } catch (err) {
+    console.error("Video generation error:", err);
+    res.status(500).json({ error: "वीडियो जनरेशन फेल" });
   }
-});});// ==================== SERVER START ====================
+});
+
+// ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT} with memory and MongoDB`);
