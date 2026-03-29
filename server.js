@@ -257,9 +257,9 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (RunwayML SDK) ====================
+// ==================== VIDEO GENERATION (with optional imageUrl) ====================
 app.post("/api/video/generate", async (req, res) => {
-  const { prompt, duration = 5, language = "hi" } = req.body;
+  const { prompt, imageUrl, duration = 5, language = "hi" } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
@@ -268,29 +268,51 @@ app.post("/api/video/generate", async (req, res) => {
   const apiKey = process.env.RUNWAY_API_KEY;
   if (!apiKey) {
     console.error("❌ RUNWAY_API_KEY missing");
-    // Fallback to a dummy video so the app doesn't break
     return res.json({ 
       videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
       status: "demo",
-      message: "वीडियो जनरेशन अभी डेमो मोड में है। जल्द ही असली सुविधा आएगी। 🙏"
+      message: "वीडियो जनरेशन अभी डेमो मोड में है। 🙏"
     });
   }
 
   try {
     console.log(`🎥 Video requested: "${prompt.substring(0, 100)}..."`);
 
-    // Initialize the RunwayML client
+    // यदि imageUrl नहीं दी गई, तो पहले DALL-E से इमेज बनाएँ
+    let finalImageUrl = imageUrl;
+    if (!finalImageUrl) {
+      console.log("🖼️ No imageUrl provided, generating one via DALL-E...");
+      const dalleApiKey = process.env.OPENAI_API_KEY;
+      if (!dalleApiKey) throw new Error("OpenAI API key missing for image generation");
+
+      const dalleResponse = await axios.post(
+        "https://api.openai.com/v1/images/generations",
+        {
+          model: "dall-e-3",
+          prompt: prompt,
+          n: 1,
+          size: "1024x1024",
+        },
+        {
+          headers: { "Authorization": `Bearer ${dalleApiKey}`, "Content-Type": "application/json" },
+        }
+      );
+      finalImageUrl = dalleResponse.data.data[0].url;
+      console.log(`🖼️ Generated image URL: ${finalImageUrl}`);
+    }
+
+    // RunwayML client
     const client = new RunwayML({ apiKey });
 
-    // Create a task using the image-to-video model (works with text prompts)
+    // Create task with the image URL
     const task = await client.imageToVideo.create({
       model: 'gen4.5',
+      promptImage: finalImageUrl,
       promptText: prompt,
       ratio: '1280:720',
-      duration: Math.min(Math.max(parseInt(duration), 4), 10),
+      duration: Math.min(Math.max(parseInt(duration), 5), 10),
     });
 
-    // Wait for the video to finish generating
     const result = await task.waitForTaskOutput();
 
     if (!result.output || result.output.length === 0) {
@@ -303,15 +325,14 @@ app.post("/api/video/generate", async (req, res) => {
 
   } catch (error) {
     console.error("❌ Video Generation Error:", error);
-    // Fallback to dummy video
+    // Fallback dummy video
     res.json({ 
       videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
       status: "demo",
-      message: "वीडियो जनरेशन अभी डेमो मोड में है। जल्द ही असली सुविधा आएगी। 🙏"
+      message: "वीडियो जनरेशन अभी डेमो मोड में है। 🙏"
     });
   }
 });
-
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
