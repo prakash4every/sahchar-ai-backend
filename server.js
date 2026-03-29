@@ -1,4 +1,4 @@
-import { RunwayML } from '@runwayml/sdk';
+import RunwayML from '@runwayml/sdk';
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -33,6 +33,7 @@ app.use((err, req, res, next) => {
     return res.status(400).json({ 
       reply: "क्षमा करें, मैसेज का फॉर्मेट सही नहीं है। कृपया किसी भी प्रकार के स्पेशल कैरेक्टर (जैसे कि कोट्स, बैकस्लैश) को हटाकर दोबारा भेजें। 🙏" 
     });
+    <div class="mt-2 text-sm text-gray-600">Assistant’s response will continue below...</div>
   }
   next(err);
 });
@@ -78,7 +79,7 @@ app.get("/chat", (req, res) => {
   res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅");
 });
 
-// POST /chat – main chat endpoint
+// POST /chat – main chat endpoint (unchanged)
 app.post("/chat", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
@@ -268,7 +269,6 @@ app.post("/api/video/generate", async (req, res) => {
   const apiKey = process.env.RUNWAY_API_KEY;
   if (!apiKey) {
     console.error("❌ RUNWAY_API_KEY missing");
-    // Fallback to a dummy video so the app doesn't break
     return res.json({ 
       videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
       status: "demo",
@@ -303,7 +303,6 @@ app.post("/api/video/generate", async (req, res) => {
 
   } catch (error) {
     console.error("❌ Video Generation Error:", error);
-    // Fallback to dummy video
     res.json({ 
       videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
       status: "demo",
