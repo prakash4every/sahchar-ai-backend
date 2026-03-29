@@ -257,7 +257,8 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (FINAL FIXED VERSION) ====================
+// ==================== VIDEO GENERATION - Fixed for Runway Gen-4.5 (March 2026) ====================
+
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, duration = 5 } = req.body;
 
@@ -265,60 +266,99 @@ app.post("/api/video/generate", async (req, res) => {
     return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
   }
 
-  // 1. API KEY चेक करें
-  const apiKey = process.env.RUNWAYML_API_SECRET;
+  const apiKey = process.env.RUNWAY_API_KEY;
   if (!apiKey) {
-    console.error("❌ RUNWAYML_API_SECRET missing in environment");
-    return res.status(500).json({
-      error: "API key configuration error on server.",
-      videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
-    });
+    return res.status(500).json({ error: "Runway API key कॉन्फ़िगर नहीं है" });
   }
 
   try {
     console.log(`🎥 Video requested: "${prompt.substring(0, 100)}..."`);
 
-    // 2. Runway क्लाइंट बनाएँ
-    const client = new RunwayML({ apiKey });
-
-    // 3. ⭐ सबसे ज़रूरी सुधार: यहाँ 'await' नहीं लगाना है!
-    //    पहले टास्क बनाएँ, फिर उसके पूरा होने का इंतज़ार करें।
-    const task = client.imageToVideo.create({
-      model: 'gen4_turbo',  // यह नाम सही है
+    // Runway Gen-4.5 Text-to-Video (promptImage को omit करके text-only mode)
+    const payload = {
+      model: "gen4.5",
       promptText: prompt,
-      ratio: '1280:720',
-      duration: Math.min(Math.max(parseInt(duration), 2), 10),
-    });
+      duration: Math.min(Math.max(parseInt(duration), 4), 10),
+      ratio: "1280:720",
+      // promptImage को पूरी तरह हटा दें या null रखें — text-only के लिए
+    };
 
-    // 4. अब टास्क के पूरा होने का इंतज़ार करें
-    //    'waitForTaskOutput' सिर्फ 'task' ऑब्जेक्ट पर उपलब्ध है
-    const output = await task.waitForTaskOutput();
+    const response = await axios.post(
+      "https://api.dev.runwayml.com/v1/image_to_video",
+      payload,
+      {
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "X-Runway-Version": "2024-11-06"
+        },
+        timeout: 180000,
+      }
+    );
 
-    // 5. आउटपुट से वीडियो URL निकालें
-    if (!output || !output.output || output.output.length === 0) {
-      throw new Error('No video output received from Runway');
+    const taskId = response.data.id || response.data.taskId;
+
+    if (!taskId) {
+      throw new Error("Task ID नहीं मिला");
     }
 
-    const videoUrl = output.output[0];
-    console.log(`✅ Video ready: ${videoUrl}`);
-    res.json({ videoUrl, status: "success" });
+    console.log(`✅ Task created: ${taskId}`);
+
+    // Polling
+    let videoUrl = null;
+    let attempts = 0;
+    const maxAttempts = 50;
+
+    while (!videoUrl && attempts < maxAttempts) {
+      await new Promise(r => setTimeout(r, 8000));
+
+      const statusRes = await axios.get(`https://api.dev.runwayml.com/v1/tasks/${taskId}`, {
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "X-Runway-Version": "2024-11-06"
+        }
+      });
+
+      const task = statusRes.data;
+      console.log(`Attempt ${attempts + 1}: Status = ${task.status}`);
+
+      if (task.status === "SUCCEEDED" && task.output && task.output.length > 0) {
+        videoUrl = task.output[0];
+        break;
+      } else if (task.status === "FAILED") {
+        throw new Error(task.error || "Runway failed to generate video");
+      }
+
+      attempts++;
+    }
+
+    if (!videoUrl) {
+      return res.status(408).json({ error: "वीडियो जेनरेट होने में बहुत समय लग रहा है। बाद में ट्राई करें 🙏" });
+    }
+
+    console.log(`✅ Video generated successfully: ${videoUrl}`);
+
+    res.json({
+      videoUrl: videoUrl,
+      status: "success",
+      message: "वीडियो सफलतापूर्वक जेनरेट हो गया है 🙏"
+    });
 
   } catch (error) {
-    console.error("❌ Video Generation Error Details:", error);
-    
-    // एरर को और साफ-साफ दिखाने के लिए
-    let errorMessage = error.message;
-    if (error.error?.error === "You do not have enough credits to run this task.") {
-      errorMessage = "Runway API credits are insufficient. Please add credits to your developer account.";
-    }
+    console.error("❌ Video Generation Error:", error.response?.data || error.message);
 
-    res.status(500).json({
-      error: errorMessage,
-      videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
-      demo: true,
-    });
+    let errorMsg = "वीडियो जेनरेशन फेल हो गया। कृपया बाद में प्रयास करें 🙏";
+
+    if (error.response?.data?.error?.includes("Validation")) {
+      errorMsg = "प्रॉम्प्ट में समस्या है। थोड़ा अलग प्रॉम्प्ट ट्राई करें।";
+    }
+    if (error.response?.status === 429) errorMsg = "Runway क्रेडिट खत्म हो गए हैं।";
+    if (error.response?.status === 401) errorMsg = "API Key अमान्य है।";
+
+    res.status(500).json({ error: errorMsg });
   }
-});// ==================== SERVER START ====================
+});
+// ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT} with memory and MongoDB`);
