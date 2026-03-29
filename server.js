@@ -257,19 +257,20 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (FIXED) ====================
+// ==================== VIDEO GENERATION (FINAL FIXED VERSION) ====================
 app.post("/api/video/generate", async (req, res) => {
-  const { prompt, imageUrl, duration = 5, language = "hi" } = req.body;
+  const { prompt, duration = 5 } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
   }
 
-  const apiKey = process.env.RUNWAYML_API_SECRET;  // ✅ सही नाम
+  // 1. API KEY चेक करें
+  const apiKey = process.env.RUNWAYML_API_SECRET;
   if (!apiKey) {
-    console.error("❌ RUNWAYML_API_SECRET missing");
-    return res.status(400).json({ 
-      error: "API key सेट नहीं है।",
+    console.error("❌ RUNWAYML_API_SECRET missing in environment");
+    return res.status(500).json({
+      error: "API key configuration error on server.",
       videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
     });
   }
@@ -277,78 +278,47 @@ app.post("/api/video/generate", async (req, res) => {
   try {
     console.log(`🎥 Video requested: "${prompt.substring(0, 100)}..."`);
 
-    let finalImageUrl = imageUrl;
-    let useTextToVideo = false;
-
-    // कोशिश करें DALL-E से इमेज बनाने की (अगर imageUrl नहीं दी गई)
-    if (!finalImageUrl) {
-      try {
-        console.log("🖼️ Generating image via DALL-E...");
-        const dalleApiKey = process.env.OPENAI_API_KEY;
-        if (dalleApiKey) {
-          const dalleResponse = await axios.post(
-            "https://api.openai.com/v1/images/generations",
-            {
-              model: "dall-e-3",
-              prompt: prompt + ", safe family-friendly content",
-              n: 1,
-              size: "1024x1024",
-            },
-            {
-              headers: { "Authorization": `Bearer ${dalleApiKey}`, "Content-Type": "application/json" },
-            }
-          );
-          finalImageUrl = dalleResponse.data.data[0].url;
-          console.log(`✅ Image generated: ${finalImageUrl}`);
-        }
-      } catch (dalleError) {
-        // अगर DALL-E फेल होता है (content policy violation), तो text-to-video पर जाएँ
-        console.warn("⚠️ DALL-E failed, falling back to text-to-video:", dalleError.response?.data?.error?.message || dalleError.message);
-        useTextToVideo = true;
-      }
-    }
-
+    // 2. Runway क्लाइंट बनाएँ
     const client = new RunwayML({ apiKey });
 
-    let videoUrl;
-    if (!useTextToVideo && finalImageUrl) {
-      // रास्ता 1: Image-to-Video
-      console.log("🎬 Using Image-to-Video mode");
-      const task = await client.imageToVideo.create({
-        model: 'gen4_turbo',  // ✅ allowed model name
-        promptImage: finalImageUrl,
-        promptText: prompt,
-        ratio: '1280:720',
-        duration: Math.min(Math.max(parseInt(duration), 2), 10),
-      });
-      const output = await task.waitForTaskOutput();
-      videoUrl = output.output[0];
-    } else {
-      // रास्ता 2: Text-to-Video (बिना इमेज के)
-      console.log("🎬 Using Text-to-Video mode (fallback)");
-      const task = await client.textToVideo.create({
-        model: 'gen4.5',  // gen4.5 supports text-to-video
-        promptText: prompt,
-        ratio: '1280:720',
-        duration: Math.min(Math.max(parseInt(duration), 2), 10),
-      });
-      const output = await task.waitForTaskOutput();
-      videoUrl = output.output[0];
+    // 3. ⭐ सबसे ज़रूरी सुधार: यहाँ 'await' नहीं लगाना है!
+    //    पहले टास्क बनाएँ, फिर उसके पूरा होने का इंतज़ार करें।
+    const task = client.imageToVideo.create({
+      model: 'gen4_turbo',  // यह नाम सही है
+      promptText: prompt,
+      ratio: '1280:720',
+      duration: Math.min(Math.max(parseInt(duration), 2), 10),
+    });
+
+    // 4. अब टास्क के पूरा होने का इंतज़ार करें
+    //    'waitForTaskOutput' सिर्फ 'task' ऑब्जेक्ट पर उपलब्ध है
+    const output = await task.waitForTaskOutput();
+
+    // 5. आउटपुट से वीडियो URL निकालें
+    if (!output || !output.output || output.output.length === 0) {
+      throw new Error('No video output received from Runway');
     }
 
+    const videoUrl = output.output[0];
     console.log(`✅ Video ready: ${videoUrl}`);
     res.json({ videoUrl, status: "success" });
 
   } catch (error) {
-    console.error("❌ Video Generation Error:", error);
-    res.status(500).json({ 
-      error: error.message,
+    console.error("❌ Video Generation Error Details:", error);
+    
+    // एरर को और साफ-साफ दिखाने के लिए
+    let errorMessage = error.message;
+    if (error.error?.error === "You do not have enough credits to run this task.") {
+      errorMessage = "Runway API credits are insufficient. Please add credits to your developer account.";
+    }
+
+    res.status(500).json({
+      error: errorMessage,
       videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
       demo: true,
     });
   }
-});
-// ==================== SERVER START ====================
+});// ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT} with memory and MongoDB`);
