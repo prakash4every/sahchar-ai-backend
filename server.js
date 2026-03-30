@@ -400,6 +400,8 @@ app.post("/api/video/generate-text", async (req, res) => {
     console.log(`🎥 Text-to-video requested: "${prompt.substring(0, 100)}..."`);
 
     const client = new RunwayML({ apiKey });
+
+    // Create the task (do NOT await for output yet)
     const task = await client.textToVideo.create({
       model: 'gen4.5',          // Use a model that supports text-to-video
       promptText: prompt,
@@ -407,16 +409,57 @@ app.post("/api/video/generate-text", async (req, res) => {
       duration: Math.min(Math.max(parseInt(duration), 2), 10),
     });
 
-    const output = await task.waitForOutput();
-    const videoUrl = output.output[0];
+    // Polling loop (same as image-to-video)
+    let status = 'PENDING';
+    let attempts = 0;
+    const maxAttempts = 90; // 3 minutes
+    let taskStatus = null;
+
+    while (attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      taskStatus = await client.tasks.retrieve(task.id);
+      status = taskStatus.status;
+      console.log(`🔄 Text-to-video status: ${status}`);
+
+      if (status === 'SUCCEEDED') {
+        break;
+      } else if (status === 'FAILED') {
+        throw new Error(`Task failed: ${taskStatus.error?.message || 'Unknown error'}`);
+      }
+      attempts++;
+    }
+
+    if (status !== 'SUCCEEDED') {
+      throw new Error('Timeout: Video generation did not complete in time');
+    }
+
+    // Extract video URL (same logic as image-to-video)
+    let videoUrl = null;
+    if (taskStatus.output && taskStatus.output.output && Array.isArray(taskStatus.output.output)) {
+      videoUrl = taskStatus.output.output[0];
+    } else if (taskStatus.output && Array.isArray(taskStatus.output)) {
+      videoUrl = taskStatus.output[0];
+    } else if (taskStatus.output && taskStatus.output.videoUrl) {
+      videoUrl = taskStatus.output.videoUrl;
+    } else if (taskStatus.output && taskStatus.output.url) {
+      videoUrl = taskStatus.output.url;
+    } else if (taskStatus.videoUrl) {
+      videoUrl = taskStatus.videoUrl;
+    }
+
+    if (!videoUrl) {
+      console.error("❌ Could not extract video URL from response:", JSON.stringify(taskStatus, null, 2));
+      throw new Error('No video URL found in output');
+    }
+
     console.log(`✅ Video ready (text-to-video): ${videoUrl}`);
     res.json({ videoUrl, status: "success" });
+
   } catch (error) {
     console.error("❌ Text-to-video error:", error);
     res.status(500).json({ error: error.message });
   }
 });
-
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
