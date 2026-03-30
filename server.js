@@ -257,7 +257,7 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (FINAL WORKING VERSION) ====================
+// ==================== VIDEO GENERATION (CORRECTED) ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, imageUrl, duration = 5 } = req.body;
 
@@ -277,7 +277,7 @@ app.post("/api/video/generate", async (req, res) => {
   try {
     console.log(`🎥 Video requested: "${prompt.substring(0, 100)}..."`);
 
-    // 1. इमेज URL बनाएँ
+    // 1. इमेज URL बनाएँ (यदि नहीं दी गई)
     let finalImageUrl = imageUrl;
     if (!finalImageUrl) {
       console.log("🖼️ No imageUrl provided, generating via DALL-E...");
@@ -305,7 +305,7 @@ app.post("/api/video/generate", async (req, res) => {
 
     // 3. टास्क बनाएँ
     console.log("📝 Creating image-to-video task...");
-    const createResponse = await client.imageToVideo.create({
+    const task = await client.imageToVideo.create({
       model: 'gen4_turbo',
       promptImage: finalImageUrl,
       promptText: prompt,
@@ -313,38 +313,22 @@ app.post("/api/video/generate", async (req, res) => {
       duration: Math.min(Math.max(parseInt(duration), 2), 10),
     });
 
-    // टास्क बनाएँ
-const task = await client.imageToVideo.create({
-  model: 'gen4_turbo',
-  promptImage: finalImageUrl,
-  promptText: prompt,
-  ratio: '1280:720',
-  duration: Math.min(Math.max(parseInt(duration), 2), 10),
-});
-
-// एक लाइन में पोलिंग और आउटपुट
-const output = await task.waitForOutput();
-
-// वीडियो URL निकालें
-const videoUrl = output.output[0];
-console.log(`✅ Video ready: ${videoUrl}`);
-res.json({ videoUrl });
-
-    // 5. पोलिंग – टास्क पूरा होने तक हर 2 सेकंड में चेक करें
-    let taskStatus;
-    let output = null;
-    const maxAttempts = 90; // 3 मिनट तक प्रतीक्षा (90 * 2 सेकंड)
+    // 4. पोलिंग – हर 2 सेकंड में टास्क स्टेटस चेक करें
+    let status = 'PENDING';
     let attempts = 0;
+    const maxAttempts = 90; // 3 मिनट
+    let output = null;
 
     while (attempts < maxAttempts) {
       await new Promise(resolve => setTimeout(resolve, 2000));
-      taskStatus = await client.tasks.retrieve(taskId);
-      console.log(`🔄 Task status: ${taskStatus.status}`);
+      const taskStatus = await client.tasks.retrieve(task.id); // task.id से टास्क की जानकारी लें
+      status = taskStatus.status;
+      console.log(`🔄 Task status: ${status}`);
 
-      if (taskStatus.status === 'completed') {
+      if (status === 'SUCCEEDED') {
         output = taskStatus.output;
         break;
-      } else if (taskStatus.status === 'failed') {
+      } else if (status === 'FAILED') {
         throw new Error(`Task failed: ${taskStatus.error?.message || 'Unknown error'}`);
       }
       attempts++;
@@ -367,6 +351,7 @@ res.json({ videoUrl });
     });
   }
 });
+
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
