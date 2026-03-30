@@ -257,7 +257,7 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (Image-to-Video) ====================
+// ==================== VIDEO GENERATION (ROBUST VERSION) ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, imageUrl, duration = 5 } = req.body;
 
@@ -381,42 +381,6 @@ app.post("/api/video/generate", async (req, res) => {
     });
   }
 });
-
-// ==================== TEXT-TO-VIDEO (No image required) ====================
-app.post("/api/video/generate-text", async (req, res) => {
-  const { prompt, duration = 5 } = req.body;
-
-  if (!prompt) {
-    return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
-  }
-
-  const apiKey = process.env.RUNWAYML_API_SECRET;
-  if (!apiKey) {
-    console.error("❌ RUNWAYML_API_SECRET missing");
-    return res.status(500).json({ error: "API key missing" });
-  }
-
-  try {
-    console.log(`🎥 Text-to-video requested: "${prompt.substring(0, 100)}..."`);
-
-    const client = new RunwayML({ apiKey });
-    const task = await client.textToVideo.create({
-      model: 'gen4.5',          // Use a model that supports text-to-video
-      promptText: prompt,
-      ratio: '1280:720',
-      duration: Math.min(Math.max(parseInt(duration), 2), 10),
-    });
-
-    const output = await task.waitForOutput();
-    const videoUrl = output.output[0];
-    console.log(`✅ Video ready (text-to-video): ${videoUrl}`);
-    res.json({ videoUrl, status: "success" });
-  } catch (error) {
-    console.error("❌ Text-to-video error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
