@@ -277,12 +277,12 @@ app.post("/api/video/generate", async (req, res) => {
   try {
     console.log(`🎥 Video requested: "${prompt.substring(0, 100)}..."`);
 
-    // 1. यदि imageUrl नहीं दी गई, तो DALL-E से इमेज बनाएँ
+    // 1. इमेज URL बनाएँ
     let finalImageUrl = imageUrl;
     if (!finalImageUrl) {
       console.log("🖼️ No imageUrl provided, generating via DALL-E...");
       const dalleApiKey = process.env.OPENAI_API_KEY;
-      if (!dalleApiKey) throw new Error("OpenAI API key missing for image generation");
+      if (!dalleApiKey) throw new Error("OpenAI API key missing");
 
       const dalleResponse = await axios.post(
         "https://api.openai.com/v1/images/generations",
@@ -303,21 +303,41 @@ app.post("/api/video/generate", async (req, res) => {
     // 2. RunwayML client
     const client = new RunwayML({ apiKey });
 
-    // 3. ⭐ टास्क बनाएँ – अब promptImage अनिवार्य है
+    // 3. टास्क बनाएँ
     console.log("📝 Creating image-to-video task...");
-    const task = await client.imageToVideo.create({
+    const createResponse = await client.imageToVideo.create({
       model: 'gen4_turbo',
-      promptImage: finalImageUrl,   // <-- यह लाइन जोड़ी गई (सबसे जरूरी)
+      promptImage: finalImageUrl,
       promptText: prompt,
       ratio: '1280:720',
       duration: Math.min(Math.max(parseInt(duration), 2), 10),
     });
 
-    // 4. वीडियो तैयार होने तक प्रतीक्षा करें
-    console.log("⏳ Waiting for video generation...");
-    const output = await task.waitForOutput();
+    // 4. टास्क ID प्राप्त करें (यह जरूरी है)
+    const taskId = createResponse.id;
+    console.log(`✅ Task created with ID: ${taskId}`);
 
-    if (!output?.output?.[0]) {
+    // 5. पोलिंग – टास्क पूरा होने तक हर 2 सेकंड में चेक करें
+    let taskStatus;
+    let output = null;
+    const maxAttempts = 90; // 3 मिनट तक प्रतीक्षा (90 * 2 सेकंड)
+    let attempts = 0;
+
+    while (attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      taskStatus = await client.tasks.retrieve(taskId);
+      console.log(`🔄 Task status: ${taskStatus.status}`);
+
+      if (taskStatus.status === 'completed') {
+        output = taskStatus.output;
+        break;
+      } else if (taskStatus.status === 'failed') {
+        throw new Error(`Task failed: ${taskStatus.error?.message || 'Unknown error'}`);
+      }
+      attempts++;
+    }
+
+    if (!output || !output.output || output.output.length === 0) {
       throw new Error('No video URL in output');
     }
 
@@ -327,15 +347,8 @@ app.post("/api/video/generate", async (req, res) => {
 
   } catch (error) {
     console.error("❌ Video Generation Error:", error);
-
-    // दोस्ताना एरर मैसेज
-    let errorMessage = error.message;
-    if (error.error?.error === "You do not have enough credits to run this task.") {
-      errorMessage = "Runway API credits insufficient. Please add credits at dev.runwayml.com/billing";
-    }
-
     res.status(500).json({
-      error: errorMessage,
+      error: error.message,
       videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
       demo: true,
     });
