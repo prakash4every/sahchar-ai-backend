@@ -313,9 +313,22 @@ app.post("/api/video/generate", async (req, res) => {
       duration: Math.min(Math.max(parseInt(duration), 2), 10),
     });
 
-    // 4. टास्क ID प्राप्त करें (यह जरूरी है)
-    const taskId = createResponse.id;
-    console.log(`✅ Task created with ID: ${taskId}`);
+    // टास्क बनाएँ
+const task = await client.imageToVideo.create({
+  model: 'gen4_turbo',
+  promptImage: finalImageUrl,
+  promptText: prompt,
+  ratio: '1280:720',
+  duration: Math.min(Math.max(parseInt(duration), 2), 10),
+});
+
+// एक लाइन में पोलिंग और आउटपुट
+const output = await task.waitForOutput();
+
+// वीडियो URL निकालें
+const videoUrl = output.output[0];
+console.log(`✅ Video ready: ${videoUrl}`);
+res.json({ videoUrl });
 
     // 5. पोलिंग – टास्क पूरा होने तक हर 2 सेकंड में चेक करें
     let taskStatus;
