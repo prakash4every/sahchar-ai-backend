@@ -257,69 +257,72 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION - Runway SDK v3.x (Stable) ====================
-
+// ==================== VIDEO GENERATION (ULTRA DEBUG) ====================
 app.post("/api/video/generate", async (req, res) => {
-  const { prompt, duration = 6 } = req.body;
+  console.log("🔵 /api/video/generate called with body:", req.body);
+
+  const { prompt, duration = 5 } = req.body;
 
   if (!prompt) {
+    console.error("🔴 Missing prompt");
     return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
   }
 
-  const apiKey = process.env.RUNWAY_API_KEY;
+  // 1. API KEY चेक
+  const apiKey = process.env.RUNWAYML_API_SECRET;
+  console.log(`🔑 API Key present: ${apiKey ? "YES (first 10 chars: " + apiKey.substring(0, 10) + "...)" : "NO"}`);
   if (!apiKey) {
-    return res.status(500).json({ error: "Runway API key कॉन्फ़िगर नहीं है" });
+    console.error("❌ RUNWAYML_API_SECRET missing in environment");
+    return res.status(500).json({
+      error: "API key configuration error on server.",
+      videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
+    });
   }
 
   try {
     console.log(`🎥 Video requested: "${prompt.substring(0, 100)}..."`);
+    console.log("🚀 Creating RunwayML client...");
+    const client = new RunwayML({ apiKey });
 
-    const runway = new RunwayML({ 
-      apiKey: apiKey 
-    });
-
-    // Text to Video Generation
-    const task = await runway.imageToVideo.create({
+    // ⭐ IMPORTANT: No 'await' here – we need the task object
+    console.log("📝 Creating task (without await)...");
+    const task = client.imageToVideo.create({
+      model: 'gen4_turbo',
       promptText: prompt,
-      model: "gen-4.5",
-      duration: Math.min(Math.max(parseInt(duration), 4), 10),
-      ratio: "16:9"
+      ratio: '1280:720',
+      duration: Math.min(Math.max(parseInt(duration), 2), 10),
     });
 
-    console.log(`✅ Task created: ${task.id}`);
+    console.log("⏳ Waiting for task output...");
+    const output = await task.waitForTaskOutput();
+    console.log("✅ Task output received:", output);
 
-    // Wait for completion
-    const result = await runway.imageToVideo.waitForTaskOutput(task.id, {
-      timeoutMs: 300000,      // 5 minutes
-      pollIntervalMs: 7000
-    });
-
-    if (result.output && result.output.length > 0) {
-      const videoUrl = result.output[0];
-
-      console.log(`✅ Video generated: ${videoUrl}`);
-
-      return res.json({
-        videoUrl: videoUrl,
-        status: "success",
-        message: "वीडियो सफलतापूर्वक जेनरेट हो गया है 🙏"
-      });
-    } else {
-      throw new Error("Video output empty");
+    if (!output || !output.output || output.output.length === 0) {
+      throw new Error('No video output received from Runway');
     }
+
+    const videoUrl = output.output[0];
+    console.log(`🎬 Video ready: ${videoUrl}`);
+    res.json({ videoUrl, status: "success" });
 
   } catch (error) {
-    console.error("❌ Video Generation Error:", error);
-
-    let errorMsg = "वीडियो जेनरेशन फेल हो गया। बाद में प्रयास करें 🙏";
-
-    if (error.message?.includes("promptImage") || error.message?.includes("Validation")) {
-      errorMsg = "प्रॉम्प्ट सही नहीं है। थोड़ा अलग और स्पष्ट प्रॉम्प्ट ट्राई करें।";
+    console.error("❌ Video Generation Error - FULL ERROR OBJECT:");
+    // पूरा error object console में print करें (JSON में)
+    console.error(JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
+    if (error.response) {
+      console.error("❌ Error response data:", JSON.stringify(error.response.data, null, 2));
     }
-    if (error.status === 429) errorMsg = "Runway क्रेडिट खत्म हो गए हैं।";
-    if (error.status === 401) errorMsg = "Runway API Key अमान्य है।";
+    if (error.error) {
+      console.error("❌ Error.error object:", error.error);
+    }
 
-    res.status(500).json({ error: errorMsg });
+    // अब क्लाइंट को भी विस्तृत एरर दें
+    res.status(500).json({
+      error: error.message,
+      details: error.error?.error || error.error || "Unknown API error",
+      videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
+      demo: true,
+    });
   }
 });
 // ==================== SERVER START ====================
