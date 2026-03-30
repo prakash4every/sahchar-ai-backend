@@ -315,7 +315,7 @@ app.post("/api/video/generate", async (req, res) => {
 
     // 4. वीडियो तैयार होने तक प्रतीक्षा करें
     console.log("⏳ Waiting for video generation...");
-    const output = await task.waitForTaskOutput();
+    const output = await task.waitForOutput();
 
     if (!output?.output?.[0]) {
       throw new Error('No video URL in output');
