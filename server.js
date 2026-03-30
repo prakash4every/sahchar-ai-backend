@@ -257,22 +257,17 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (ULTRA DEBUG) ====================
+// ==================== VIDEO GENERATION (FINAL WORKING VERSION) ====================
 app.post("/api/video/generate", async (req, res) => {
-  console.log("🔵 /api/video/generate called with body:", req.body);
-
-  const { prompt, duration = 5 } = req.body;
+  const { prompt, imageUrl, duration = 5 } = req.body;
 
   if (!prompt) {
-    console.error("🔴 Missing prompt");
     return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
   }
 
-  // 1. API KEY चेक
   const apiKey = process.env.RUNWAYML_API_SECRET;
-  console.log(`🔑 API Key present: ${apiKey ? "YES (first 10 chars: " + apiKey.substring(0, 10) + "...)" : "NO"}`);
   if (!apiKey) {
-    console.error("❌ RUNWAYML_API_SECRET missing in environment");
+    console.error("❌ RUNWAYML_API_SECRET missing");
     return res.status(500).json({
       error: "API key configuration error on server.",
       videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
@@ -281,45 +276,66 @@ app.post("/api/video/generate", async (req, res) => {
 
   try {
     console.log(`🎥 Video requested: "${prompt.substring(0, 100)}..."`);
-    console.log("🚀 Creating RunwayML client...");
+
+    // 1. यदि imageUrl नहीं दी गई, तो DALL-E से इमेज बनाएँ
+    let finalImageUrl = imageUrl;
+    if (!finalImageUrl) {
+      console.log("🖼️ No imageUrl provided, generating via DALL-E...");
+      const dalleApiKey = process.env.OPENAI_API_KEY;
+      if (!dalleApiKey) throw new Error("OpenAI API key missing for image generation");
+
+      const dalleResponse = await axios.post(
+        "https://api.openai.com/v1/images/generations",
+        {
+          model: "dall-e-3",
+          prompt: prompt + ", safe family-friendly content",
+          n: 1,
+          size: "1024x1024",
+        },
+        {
+          headers: { "Authorization": `Bearer ${dalleApiKey}`, "Content-Type": "application/json" },
+        }
+      );
+      finalImageUrl = dalleResponse.data.data[0].url;
+      console.log(`✅ DALL-E image generated: ${finalImageUrl}`);
+    }
+
+    // 2. RunwayML client
     const client = new RunwayML({ apiKey });
 
-    // ⭐ IMPORTANT: No 'await' here – we need the task object
-    console.log("📝 Creating task (without await)...");
-    const task = client.imageToVideo.create({
+    // 3. ⭐ टास्क बनाएँ – अब promptImage अनिवार्य है
+    console.log("📝 Creating image-to-video task...");
+    const task = await client.imageToVideo.create({
       model: 'gen4_turbo',
+      promptImage: finalImageUrl,   // <-- यह लाइन जोड़ी गई (सबसे जरूरी)
       promptText: prompt,
       ratio: '1280:720',
       duration: Math.min(Math.max(parseInt(duration), 2), 10),
     });
 
-    console.log("⏳ Waiting for task output...");
+    // 4. वीडियो तैयार होने तक प्रतीक्षा करें
+    console.log("⏳ Waiting for video generation...");
     const output = await task.waitForTaskOutput();
-    console.log("✅ Task output received:", output);
 
-    if (!output || !output.output || output.output.length === 0) {
-      throw new Error('No video output received from Runway');
+    if (!output?.output?.[0]) {
+      throw new Error('No video URL in output');
     }
 
     const videoUrl = output.output[0];
-    console.log(`🎬 Video ready: ${videoUrl}`);
+    console.log(`✅ Video ready: ${videoUrl}`);
     res.json({ videoUrl, status: "success" });
 
   } catch (error) {
-    console.error("❌ Video Generation Error - FULL ERROR OBJECT:");
-    // पूरा error object console में print करें (JSON में)
-    console.error(JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
-    if (error.response) {
-      console.error("❌ Error response data:", JSON.stringify(error.response.data, null, 2));
-    }
-    if (error.error) {
-      console.error("❌ Error.error object:", error.error);
+    console.error("❌ Video Generation Error:", error);
+
+    // दोस्ताना एरर मैसेज
+    let errorMessage = error.message;
+    if (error.error?.error === "You do not have enough credits to run this task.") {
+      errorMessage = "Runway API credits insufficient. Please add credits at dev.runwayml.com/billing";
     }
 
-    // अब क्लाइंट को भी विस्तृत एरर दें
     res.status(500).json({
-      error: error.message,
-      details: error.error?.error || error.error || "Unknown API error",
+      error: errorMessage,
       videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
       demo: true,
     });
