@@ -257,7 +257,7 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (CORRECTED) ====================
+// ==================== VIDEO GENERATION (ROBUST VERSION) ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, imageUrl, duration = 5 } = req.body;
 
@@ -317,16 +317,15 @@ app.post("/api/video/generate", async (req, res) => {
     let status = 'PENDING';
     let attempts = 0;
     const maxAttempts = 90; // 3 मिनट
-    let output = null;
+    let taskStatus = null;
 
     while (attempts < maxAttempts) {
       await new Promise(resolve => setTimeout(resolve, 2000));
-      const taskStatus = await client.tasks.retrieve(task.id); // task.id से टास्क की जानकारी लें
+      taskStatus = await client.tasks.retrieve(task.id);
       status = taskStatus.status;
       console.log(`🔄 Task status: ${status}`);
 
       if (status === 'SUCCEEDED') {
-        output = taskStatus.output;
         break;
       } else if (status === 'FAILED') {
         throw new Error(`Task failed: ${taskStatus.error?.message || 'Unknown error'}`);
@@ -334,11 +333,42 @@ app.post("/api/video/generate", async (req, res) => {
       attempts++;
     }
 
-    if (!output || !output.output || output.output.length === 0) {
-      throw new Error('No video URL in output');
+    if (status !== 'SUCCEEDED') {
+      throw new Error('Timeout: Video generation did not complete in time');
     }
 
-    const videoUrl = output.output[0];
+    // ⭐ वीडियो URL निकालें – विभिन्न संभावित संरचनाओं को हैंडल करें
+    let videoUrl = null;
+    
+    // लॉग करें पूरा आउटपुट ऑब्जेक्ट (डीबगिंग के लिए)
+    console.log("📦 Task status output structure:", JSON.stringify(taskStatus, null, 2));
+    
+    // केस 1: output.output[0]
+    if (taskStatus.output && taskStatus.output.output && Array.isArray(taskStatus.output.output)) {
+      videoUrl = taskStatus.output.output[0];
+    }
+    // केस 2: output[0] (सीधे array)
+    else if (taskStatus.output && Array.isArray(taskStatus.output)) {
+      videoUrl = taskStatus.output[0];
+    }
+    // केस 3: output.videoUrl
+    else if (taskStatus.output && taskStatus.output.videoUrl) {
+      videoUrl = taskStatus.output.videoUrl;
+    }
+    // केस 4: output.url
+    else if (taskStatus.output && taskStatus.output.url) {
+      videoUrl = taskStatus.output.url;
+    }
+    // केस 5: कहीं और?
+    else if (taskStatus.videoUrl) {
+      videoUrl = taskStatus.videoUrl;
+    }
+    
+    if (!videoUrl) {
+      console.error("❌ Could not extract video URL from response:", JSON.stringify(taskStatus, null, 2));
+      throw new Error('No video URL found in output');
+    }
+
     console.log(`✅ Video ready: ${videoUrl}`);
     res.json({ videoUrl, status: "success" });
 
@@ -351,7 +381,6 @@ app.post("/api/video/generate", async (req, res) => {
     });
   }
 });
-
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
