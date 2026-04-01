@@ -457,27 +457,41 @@ app.post("/api/video/generate-text", async (req, res) => {
     console.warn("⚠️ RUNWAYML_API_SECRET not set, skipping Runway.");
   }
 
-  // ----- Fallback to Replicate -----
+  // ----- Fallback to Replicate (Veo 3.1) using the new API key -----
   try {
-    const replicateApiKey = process.env.REPLICATE_API_KEY_ZEROSCOPE; // <-- यह पुरानी key है
+    const replicateApiKey = process.env.REPLICATE_API_KEY_ZEROSCOPE; // नई key
     if (!replicateApiKey) {
       throw new Error("REPLICATE_API_KEY_ZEROSCOPE missing");
     }
 
-    // Dynamic import to avoid loading the module if not needed
     const Replicate = (await import('replicate')).default;
     const replicate = new Replicate({ auth: replicateApiKey });
 
-    // Use Veo 3.1 – high quality, includes audio
-    console.log(`🎬 Falling back to Replicate Veo 3.1 for: "${prompt.substring(0, 100)}..."`);
-    const output = await replicate.run("google/veo-3.1", {
-      input: { prompt }
-    });
+    console.log(`🎬 Generating Veo 3.1 video for: "${prompt.substring(0, 100)}..."`);
+    const output = await replicate.run("google/veo-3.1", { input: { prompt } });
 
-    // The output is a stream with a `.url()` method
-    const videoUrl = output.url();
-    console.log(`✅ Replicate video ready: ${videoUrl}`);
-    return res.json({ videoUrl, status: "success", provider: "replicate" });
+    // Robust extraction of video URL from the output
+    let videoUrl = null;
+    if (typeof output === 'string') {
+      videoUrl = output;
+    } else if (output && typeof output.url === 'function') {
+      videoUrl = output.url();
+    } else if (output && output.url && typeof output.url === 'string') {
+      videoUrl = output.url;
+    } else if (Array.isArray(output) && output.length > 0) {
+      const first = output[0];
+      if (typeof first === 'string') videoUrl = first;
+      else if (first && typeof first.url === 'function') videoUrl = first.url();
+      else if (first && first.url) videoUrl = first.url;
+    }
+
+    if (!videoUrl) {
+      console.error("❌ Could not extract video URL from Veo output:", output);
+      throw new Error("No video URL found in Veo output");
+    }
+
+    console.log(`✅ Veo video ready: ${videoUrl}`);
+    return res.json({ videoUrl, status: "success", provider: "veo-3.1" });
 
   } catch (fallbackError) {
     console.error("❌ Both Runway and Replicate failed:", fallbackError);
@@ -490,9 +504,6 @@ app.post("/api/video/generate-text", async (req, res) => {
 });
 
 // ==================== ZEROSCOPE VIDEO GENERATION ====================
-// ⭐ यह नया endpoint है – सिर्फ zeroscope-v2-xl के लिए, और यह अलग API key
-// `REPLICATE_API_KEY_ZEROSCOPE` का इस्तेमाल करता है।
-// इसी endpoint को कॉल करें!
 app.post("/api/video/generate-zeroscope", async (req, res) => {
   const {
     prompt,
@@ -517,12 +528,9 @@ app.post("/api/video/generate-zeroscope", async (req, res) => {
   }
 
   try {
-    // Dynamic import of Replicate
     const Replicate = (await import('replicate')).default;
-    // Create client with the dedicated zeroscope key
     const replicateZeroScope = new Replicate({ auth: apiKey });
 
-    // Model version (stable)
     const modelVersion = "anotherjesse/zeroscope-v2-xl:9f747673945c62801b13b84701c783929c0ee784e4748ec062204894dda1a351";
 
     const input = {
@@ -537,10 +545,8 @@ app.post("/api/video/generate-zeroscope", async (req, res) => {
     console.log(`🎬 Generating zeroscope video for: "${prompt.substring(0, 100)}..."`);
     const output = await replicateZeroScope.run(modelVersion, { input });
 
-    // The output is an array of file objects (or direct URLs). Extract the first video URL.
     let videoUrl = null;
     if (Array.isArray(output) && output.length > 0) {
-      // If each element has a .url() method (Replicate's FileOutput)
       if (typeof output[0].url === 'function') {
         videoUrl = output[0].url();
       } else if (typeof output[0] === 'string') {
