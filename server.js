@@ -383,8 +383,7 @@ app.post("/api/video/generate", async (req, res) => {
 });
 
 // ==================== TEXT-TO-VIDEO (No image required) ====================
-// This endpoint tries Runway first; if that fails (credits, error, etc.),
-// it falls back to Replicate (Veo 3.1).
+// This endpoint tries Runway first; if that fails, it falls back to Replicate (Veo 3.1).
 app.post("/api/video/generate-text", async (req, res) => {
   const { prompt, duration = 5 } = req.body;
 
@@ -460,7 +459,7 @@ app.post("/api/video/generate-text", async (req, res) => {
 
   // ----- Fallback to Replicate -----
   try {
-    const replicateApiKey = process.env.REPLICATE_API_TOKEN;
+    const replicateApiKey = process.env.REPLICATE_API_TOKEN; // <-- यह पुरानी key है
     if (!replicateApiKey) {
       throw new Error("REPLICATE_API_TOKEN missing");
     }
@@ -491,7 +490,9 @@ app.post("/api/video/generate-text", async (req, res) => {
 });
 
 // ==================== ZEROSCOPE VIDEO GENERATION ====================
-// New endpoint for zeroscope-v2-xl using dedicated API key
+// ⭐ यह नया endpoint है – सिर्फ zeroscope-v2-xl के लिए, और यह अलग API key
+// `REPLICATE_API_KEY_ZEROSCOPE` का इस्तेमाल करता है।
+// इसी endpoint को कॉल करें!
 app.post("/api/video/generate-zeroscope", async (req, res) => {
   const {
     prompt,
