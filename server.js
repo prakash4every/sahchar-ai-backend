@@ -383,6 +383,8 @@ app.post("/api/video/generate", async (req, res) => {
 });
 
 // ==================== TEXT-TO-VIDEO (No image required) ====================
+// This endpoint tries Runway first; if that fails (credits, error, etc.),
+// it falls back to Replicate (Veo 3.1).
 app.post("/api/video/generate-text", async (req, res) => {
   const { prompt, duration = 5 } = req.body;
 
@@ -390,76 +392,104 @@ app.post("/api/video/generate-text", async (req, res) => {
     return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
   }
 
-  const apiKey = process.env.RUNWAYML_API_SECRET;
-  if (!apiKey) {
-    console.error("❌ RUNWAYML_API_SECRET missing");
-    return res.status(500).json({ error: "API key missing" });
+  // First try Runway
+  const runwayApiKey = process.env.RUNWAYML_API_SECRET;
+  if (runwayApiKey) {
+    try {
+      console.log(`🎥 Trying Runway: "${prompt.substring(0, 100)}..."`);
+
+      const client = new RunwayML({ apiKey: runwayApiKey });
+      const task = await client.textToVideo.create({
+        model: 'gen4.5',          // Use a model that supports text-to-video
+        promptText: prompt,
+        ratio: '1280:720',
+        duration: Math.min(Math.max(parseInt(duration), 2), 10),
+      });
+
+      // Polling loop (same as image-to-video)
+      let status = 'PENDING';
+      let attempts = 0;
+      const maxAttempts = 90; // 3 minutes
+      let taskStatus = null;
+
+      while (attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        taskStatus = await client.tasks.retrieve(task.id);
+        status = taskStatus.status;
+        console.log(`🔄 Runway text-to-video status: ${status}`);
+
+        if (status === 'SUCCEEDED') {
+          break;
+        } else if (status === 'FAILED') {
+          throw new Error(`Runway failed: ${taskStatus.error?.message || 'Unknown error'}`);
+        }
+        attempts++;
+      }
+
+      if (status !== 'SUCCEEDED') {
+        throw new Error('Runway timeout');
+      }
+
+      // Extract video URL
+      let videoUrl = null;
+      if (taskStatus.output && taskStatus.output.output && Array.isArray(taskStatus.output.output)) {
+        videoUrl = taskStatus.output.output[0];
+      } else if (taskStatus.output && Array.isArray(taskStatus.output)) {
+        videoUrl = taskStatus.output[0];
+      } else if (taskStatus.output && taskStatus.output.videoUrl) {
+        videoUrl = taskStatus.output.videoUrl;
+      } else if (taskStatus.output && taskStatus.output.url) {
+        videoUrl = taskStatus.output.url;
+      } else if (taskStatus.videoUrl) {
+        videoUrl = taskStatus.videoUrl;
+      }
+
+      if (!videoUrl) {
+        throw new Error('No video URL from Runway');
+      }
+
+      console.log(`✅ Runway video ready: ${videoUrl}`);
+      return res.json({ videoUrl, status: "success", provider: "runway" });
+
+    } catch (runwayError) {
+      console.warn("⚠️ Runway failed, falling back to Replicate:", runwayError.message);
+    }
+  } else {
+    console.warn("⚠️ RUNWAYML_API_SECRET not set, skipping Runway.");
   }
 
+  // ----- Fallback to Replicate -----
   try {
-    console.log(`🎥 Text-to-video requested: "${prompt.substring(0, 100)}..."`);
+    const replicateApiKey = process.env.REPLICATE_API_TOKEN;
+    if (!replicateApiKey) {
+      throw new Error("REPLICATE_API_TOKEN missing");
+    }
 
-    const client = new RunwayML({ apiKey });
+    // Dynamic import to avoid loading the module if not needed
+    const Replicate = (await import('replicate')).default;
+    const replicate = new Replicate({ auth: replicateApiKey });
 
-    // Create the task (do NOT await for output yet)
-    const task = await client.textToVideo.create({
-      model: 'gen4.5',          // Use a model that supports text-to-video
-      promptText: prompt,
-      ratio: '1280:720',
-      duration: Math.min(Math.max(parseInt(duration), 2), 10),
+    // Use Veo 3.1 – high quality, includes audio
+    console.log(`🎬 Falling back to Replicate Veo 3.1 for: "${prompt.substring(0, 100)}..."`);
+    const output = await replicate.run("google/veo-3.1", {
+      input: { prompt }
     });
 
-    // Polling loop (same as image-to-video)
-    let status = 'PENDING';
-    let attempts = 0;
-    const maxAttempts = 90; // 3 minutes
-    let taskStatus = null;
+    // The output is a stream with a `.url()` method
+    const videoUrl = output.url();
+    console.log(`✅ Replicate video ready: ${videoUrl}`);
+    return res.json({ videoUrl, status: "success", provider: "replicate" });
 
-    while (attempts < maxAttempts) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      taskStatus = await client.tasks.retrieve(task.id);
-      status = taskStatus.status;
-      console.log(`🔄 Text-to-video status: ${status}`);
-
-      if (status === 'SUCCEEDED') {
-        break;
-      } else if (status === 'FAILED') {
-        throw new Error(`Task failed: ${taskStatus.error?.message || 'Unknown error'}`);
-      }
-      attempts++;
-    }
-
-    if (status !== 'SUCCEEDED') {
-      throw new Error('Timeout: Video generation did not complete in time');
-    }
-
-    // Extract video URL (same logic as image-to-video)
-    let videoUrl = null;
-    if (taskStatus.output && taskStatus.output.output && Array.isArray(taskStatus.output.output)) {
-      videoUrl = taskStatus.output.output[0];
-    } else if (taskStatus.output && Array.isArray(taskStatus.output)) {
-      videoUrl = taskStatus.output[0];
-    } else if (taskStatus.output && taskStatus.output.videoUrl) {
-      videoUrl = taskStatus.output.videoUrl;
-    } else if (taskStatus.output && taskStatus.output.url) {
-      videoUrl = taskStatus.output.url;
-    } else if (taskStatus.videoUrl) {
-      videoUrl = taskStatus.videoUrl;
-    }
-
-    if (!videoUrl) {
-      console.error("❌ Could not extract video URL from response:", JSON.stringify(taskStatus, null, 2));
-      throw new Error('No video URL found in output');
-    }
-
-    console.log(`✅ Video ready (text-to-video): ${videoUrl}`);
-    res.json({ videoUrl, status: "success" });
-
-  } catch (error) {
-    console.error("❌ Text-to-video error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (fallbackError) {
+    console.error("❌ Both Runway and Replicate failed:", fallbackError);
+    return res.status(500).json({
+      error: "All video providers failed",
+      videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
+      demo: true,
+    });
   }
 });
+
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
