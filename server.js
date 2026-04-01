@@ -490,6 +490,87 @@ app.post("/api/video/generate-text", async (req, res) => {
   }
 });
 
+// ==================== ZEROSCOPE VIDEO GENERATION ====================
+// New endpoint for zeroscope-v2-xl using dedicated API key
+app.post("/api/video/generate-zeroscope", async (req, res) => {
+  const {
+    prompt,
+    fps = 24,
+    width = 1024,
+    height = 576,
+    guidance_scale = 17.5,
+    negative_prompt = "very blue, dust, noisy, washed out, ugly, distorted, broken"
+  } = req.body;
+
+  if (!prompt) {
+    return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
+  }
+
+  const apiKey = process.env.REPLICATE_API_KEY_ZEROSCOPE;
+  if (!apiKey) {
+    console.error("❌ REPLICATE_API_KEY_ZEROSCOPE not set");
+    return res.status(500).json({
+      error: "Zeroscope API key not configured",
+      demoUrl: "https://www.w3schools.com/html/mov_bbb.mp4"
+    });
+  }
+
+  try {
+    // Dynamic import of Replicate
+    const Replicate = (await import('replicate')).default;
+    // Create client with the dedicated zeroscope key
+    const replicateZeroScope = new Replicate({ auth: apiKey });
+
+    // Model version (stable)
+    const modelVersion = "anotherjesse/zeroscope-v2-xl:9f747673945c62801b13b84701c783929c0ee784e4748ec062204894dda1a351";
+
+    const input = {
+      fps: Math.min(Math.max(parseInt(fps), 8), 30),
+      width: Math.min(Math.max(parseInt(width), 256), 1024),
+      height: Math.min(Math.max(parseInt(height), 256), 576),
+      prompt,
+      guidance_scale: parseFloat(guidance_scale),
+      negative_prompt,
+    };
+
+    console.log(`🎬 Generating zeroscope video for: "${prompt.substring(0, 100)}..."`);
+    const output = await replicateZeroScope.run(modelVersion, { input });
+
+    // The output is an array of file objects (or direct URLs). Extract the first video URL.
+    let videoUrl = null;
+    if (Array.isArray(output) && output.length > 0) {
+      // If each element has a .url() method (Replicate's FileOutput)
+      if (typeof output[0].url === 'function') {
+        videoUrl = output[0].url();
+      } else if (typeof output[0] === 'string') {
+        videoUrl = output[0];
+      } else if (output[0].url) {
+        videoUrl = output[0].url;
+      }
+    } else if (typeof output === 'string') {
+      videoUrl = output;
+    } else if (output && output.url) {
+      videoUrl = output.url;
+    }
+
+    if (!videoUrl) {
+      console.error("❌ Could not extract video URL from zeroscope output:", output);
+      throw new Error("No video URL found in output");
+    }
+
+    console.log(`✅ Zeroscope video ready: ${videoUrl}`);
+    res.json({ videoUrl, status: "success", provider: "zeroscope" });
+
+  } catch (error) {
+    console.error("❌ Zeroscope Video Generation Error:", error);
+    res.status(500).json({
+      error: error.message,
+      demoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
+      demo: true,
+    });
+  }
+});
+
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
