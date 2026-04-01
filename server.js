@@ -459,9 +459,9 @@ app.post("/api/video/generate-text", async (req, res) => {
 
   // ----- Fallback to Replicate -----
   try {
-    const replicateApiKey = process.env.REPLICATE_API_TOKEN; // <-- यह पुरानी key है
+    const replicateApiKey = process.env.REPLICATE_API_KEY_ZEROSCOPE; // <-- यह पुरानी key है
     if (!replicateApiKey) {
-      throw new Error("REPLICATE_API_TOKEN missing");
+      throw new Error("REPLICATE_API_KEY_ZEROSCOPE missing");
     }
 
     // Dynamic import to avoid loading the module if not needed
