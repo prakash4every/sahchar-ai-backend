@@ -67,7 +67,7 @@ process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught Exception:', error);
 });
 
-// In-memory conversation storage
+// In-memory conversation storage (for DeepSeek only)
 const conversations = {};
 
 // GET routes
@@ -79,7 +79,7 @@ app.get("/chat", (req, res) => {
   res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅");
 });
 
-// POST /chat – main chat endpoint
+// ==================== DEEPSEEK CHAT (DEFAULT) ====================
 app.post("/chat", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
@@ -139,7 +139,7 @@ app.post("/chat", async (req, res) => {
       conversations[sid].splice(1, 1);
     }
 
-    console.log(`📤 Session ${sid}: Sending ${conversations[sid].length} messages, ~${Math.round(estimateTokens(conversations[sid]))} tokens`);
+    console.log(`📤 DeepSeek session ${sid}: ${conversations[sid].length} messages, ~${Math.round(estimateTokens(conversations[sid]))} tokens`);
 
     const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
@@ -203,6 +203,70 @@ app.post("/chat", async (req, res) => {
   }
 });
 
+// ==================== OPENAI ASSISTANT (EXPERIMENTAL) ====================
+// Use this endpoint to test your OpenAI Assistant.
+// Set OPENAI_ASSISTANT_ID in environment variables (e.g., asst_r1Xles6p4JL9eeRs6S503QkJ)
+app.post("/chat-assistant", async (req, res) => {
+  const { message, threadId } = req.body;
+
+  if (!message) {
+    return res.status(400).json({ error: "Message required 🙏" });
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  const assistantId = process.env.OPENAI_ASSISTANT_ID;
+
+  if (!apiKey || !assistantId) {
+    console.warn("⚠️ OPENAI_API_KEY or OPENAI_ASSISTANT_ID not set. Assistant unavailable.");
+    return res.status(501).json({ reply: "OpenAI Assistant not configured on server." });
+  }
+
+  try {
+    const openai = new OpenAI({ apiKey });
+
+    // Create or retrieve thread
+    let thread;
+    if (threadId) {
+      thread = { id: threadId };
+    } else {
+      thread = await openai.beta.threads.create();
+    }
+
+    // Add user message
+    await openai.beta.threads.messages.create(thread.id, {
+      role: "user",
+      content: message,
+    });
+
+    // Run assistant
+    const run = await openai.beta.threads.runs.create(thread.id, {
+      assistant_id: assistantId,
+    });
+
+    // Poll for completion
+    let runStatus = run;
+    while (runStatus.status !== "completed" && runStatus.status !== "failed") {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
+    }
+
+    if (runStatus.status === "failed") {
+      throw new Error("Assistant run failed");
+    }
+
+    // Get assistant's reply
+    const messages = await openai.beta.threads.messages.list(thread.id);
+    const assistantMessage = messages.data.find(m => m.role === "assistant");
+    const reply = assistantMessage?.content[0]?.text?.value || "No response from assistant.";
+
+    res.json({ reply, threadId: thread.id });
+
+  } catch (error) {
+    console.error("❌ Assistant API error:", error);
+    res.status(500).json({ reply: "क्षमा करें, असिस्टेंट त्रुटि 🙏" });
+  }
+});
+
 // ==================== IMAGE GENERATION (DALL·E 3) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt, language = "hi" } = req.body;
@@ -239,7 +303,7 @@ app.post("/api/image/generate", async (req, res) => {
   }
 });
 
-// ==================== AUDIO TRANSCRIPTION ====================
+// ==================== AUDIO TRANSCRIPTION (dummy) ====================
 app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "ऑडियो फाइल जरूरी है" });
 
@@ -366,84 +430,22 @@ app.post("/api/video/generate", async (req, res) => {
   }
 });
 
-// ==================== TEXT-TO-VIDEO (OpenAI Sora) with fallback ====================
+// ==================== TEXT-TO-VIDEO (DEMO MODE) ====================
+// Always returns a demo video – no cost.
 app.post("/api/video/generate-text", async (req, res) => {
-  const { prompt, duration = 8, size = "1280x720", model = "sora-2-pro" } = req.body;
+  const { prompt } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
   }
 
   const demoVideoUrl = "https://www.w3schools.com/html/mov_bbb.mp4";
-  const videoApiKey = process.env.OPENAI_VIDEO_API_KEY;
-
-  if (!videoApiKey) {
-    console.warn("⚠️ OPENAI_VIDEO_API_KEY not set. Falling back to demo video.");
-    return res.json({ videoUrl: demoVideoUrl, status: "demo", provider: "demo" });
-  }
-
-  try {
-    const openai = new OpenAI({ apiKey: videoApiKey });
-
-    // Check if videos API is available (Sora access)
-    if (typeof openai.videos?.create !== 'function') {
-      console.warn("⚠️ OpenAI videos API not available. Falling back to demo.");
-      return res.json({ videoUrl: demoVideoUrl, status: "demo", provider: "demo" });
-    }
-
-    console.log(`🎬 Generating Sora video for: "${prompt.substring(0, 100)}..."`);
-
-    // Create the video job
-    const videoJob = await openai.videos.create({
-      model: model,
-      prompt: prompt,
-      seconds: parseInt(duration),
-      size: size,
-    });
-
-    console.log(`📝 Video job created with ID: ${videoJob.id}, initial status: ${videoJob.status}`);
-
-    // Poll for completion
-    let videoStatus = videoJob;
-    const maxAttempts = 90; // 15 minutes max
-    let attempts = 0;
-    const pollIntervalMs = 10000; // 10 seconds
-
-    while (videoStatus.status !== 'completed' && videoStatus.status !== 'failed' && attempts < maxAttempts) {
-      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-      videoStatus = await openai.videos.retrieve(videoJob.id);
-      console.log(`🔄 Video status: ${videoStatus.status}, progress: ${videoStatus.progress || 0}%`);
-      attempts++;
-    }
-
-    if (videoStatus.status === 'failed') {
-      const errorMsg = videoStatus.error?.message || 'Unknown error';
-      throw new Error(`Video generation failed: ${errorMsg}`);
-    }
-
-    if (videoStatus.status !== 'completed') {
-      throw new Error(`Video generation timeout after ${maxAttempts * pollIntervalMs / 1000} seconds`);
-    }
-
-    // Download the video content
-    console.log(`✅ Video completed! Downloading content...`);
-    const videoContent = await openai.videos.downloadContent(videoJob.id);
-    const videoBuffer = Buffer.from(await videoContent.arrayBuffer());
-
-    // Return as data URL (for simplicity). In production, upload to cloud storage.
-    const dataUrl = `data:video/mp4;base64,${videoBuffer.toString('base64')}`;
-    console.log(`✅ Sora video ready (base64 length: ${dataUrl.length})`);
-    return res.json({ videoUrl: dataUrl, status: "success", provider: "sora" });
-
-  } catch (error) {
-    console.error("❌ Sora Video Generation Error:", error.message);
-    // Fallback to demo video on any error
-    console.log("🎬 Falling back to demo video due to error.");
-    return res.json({ videoUrl: demoVideoUrl, status: "demo", provider: "demo" });
-  }
+  console.log(`🎬 DEMO MODE: returning placeholder video for: "${prompt.substring(0, 100)}..."`);
+  return res.json({ videoUrl: demoVideoUrl, status: "demo", provider: "demo" });
 });
 
 // ==================== ZEROSCOPE VIDEO GENERATION (Replicate) ====================
+// Will only work if REPLICATE_API_KEY_ZEROSCOPE is set and has credits.
 app.post("/api/video/generate-zeroscope", async (req, res) => {
   const {
     prompt,
