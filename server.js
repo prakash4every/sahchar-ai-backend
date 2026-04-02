@@ -9,6 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import axios from 'axios';
+import OpenAI from 'openai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -202,7 +203,7 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ==================== IMAGE GENERATION ====================
+// ==================== IMAGE GENERATION (DALL·E 3) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt, language = "hi" } = req.body;
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
@@ -257,7 +258,7 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (Image-to-Video) ====================
+// ==================== VIDEO GENERATION (Image-to-Video via Runway) ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, imageUrl, duration = 5 } = req.body;
 
@@ -365,20 +366,84 @@ app.post("/api/video/generate", async (req, res) => {
   }
 });
 
-// ==================== TEXT-TO-VIDEO (DEMO MODE) ====================
+// ==================== TEXT-TO-VIDEO (OpenAI Sora) with fallback ====================
 app.post("/api/video/generate-text", async (req, res) => {
-  const { prompt } = req.body;
+  const { prompt, duration = 8, size = "1280x720", model = "sora-2-pro" } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
   }
 
   const demoVideoUrl = "https://www.w3schools.com/html/mov_bbb.mp4";
-  console.log(`🎬 DEMO MODE: returning placeholder video for: "${prompt.substring(0, 100)}..."`);
-  return res.json({ videoUrl: demoVideoUrl, status: "demo", provider: "demo" });
+  const videoApiKey = process.env.OPENAI_VIDEO_API_KEY;
+
+  if (!videoApiKey) {
+    console.warn("⚠️ OPENAI_VIDEO_API_KEY not set. Falling back to demo video.");
+    return res.json({ videoUrl: demoVideoUrl, status: "demo", provider: "demo" });
+  }
+
+  try {
+    const openai = new OpenAI({ apiKey: videoApiKey });
+
+    // Check if videos API is available (Sora access)
+    if (typeof openai.videos?.create !== 'function') {
+      console.warn("⚠️ OpenAI videos API not available. Falling back to demo.");
+      return res.json({ videoUrl: demoVideoUrl, status: "demo", provider: "demo" });
+    }
+
+    console.log(`🎬 Generating Sora video for: "${prompt.substring(0, 100)}..."`);
+
+    // Create the video job
+    const videoJob = await openai.videos.create({
+      model: model,
+      prompt: prompt,
+      seconds: parseInt(duration),
+      size: size,
+    });
+
+    console.log(`📝 Video job created with ID: ${videoJob.id}, initial status: ${videoJob.status}`);
+
+    // Poll for completion
+    let videoStatus = videoJob;
+    const maxAttempts = 90; // 15 minutes max
+    let attempts = 0;
+    const pollIntervalMs = 10000; // 10 seconds
+
+    while (videoStatus.status !== 'completed' && videoStatus.status !== 'failed' && attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+      videoStatus = await openai.videos.retrieve(videoJob.id);
+      console.log(`🔄 Video status: ${videoStatus.status}, progress: ${videoStatus.progress || 0}%`);
+      attempts++;
+    }
+
+    if (videoStatus.status === 'failed') {
+      const errorMsg = videoStatus.error?.message || 'Unknown error';
+      throw new Error(`Video generation failed: ${errorMsg}`);
+    }
+
+    if (videoStatus.status !== 'completed') {
+      throw new Error(`Video generation timeout after ${maxAttempts * pollIntervalMs / 1000} seconds`);
+    }
+
+    // Download the video content
+    console.log(`✅ Video completed! Downloading content...`);
+    const videoContent = await openai.videos.downloadContent(videoJob.id);
+    const videoBuffer = Buffer.from(await videoContent.arrayBuffer());
+
+    // Return as data URL (for simplicity). In production, upload to cloud storage.
+    const dataUrl = `data:video/mp4;base64,${videoBuffer.toString('base64')}`;
+    console.log(`✅ Sora video ready (base64 length: ${dataUrl.length})`);
+    return res.json({ videoUrl: dataUrl, status: "success", provider: "sora" });
+
+  } catch (error) {
+    console.error("❌ Sora Video Generation Error:", error.message);
+    // Fallback to demo video on any error
+    console.log("🎬 Falling back to demo video due to error.");
+    return res.json({ videoUrl: demoVideoUrl, status: "demo", provider: "demo" });
+  }
 });
 
-// ==================== ZEROSCOPE VIDEO GENERATION ====================
+// ==================== ZEROSCOPE VIDEO GENERATION (Replicate) ====================
 app.post("/api/video/generate-zeroscope", async (req, res) => {
   const {
     prompt,
