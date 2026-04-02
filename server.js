@@ -8,7 +8,8 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import axios from 'axios';  
+import axios from 'axios';
+import OpenAI from 'openai';   // <-- OpenAI SDK for Sora
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -202,7 +203,7 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ==================== IMAGE GENERATION ====================
+// ==================== IMAGE GENERATION (DALL·E 3) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt, language = "hi" } = req.body;
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
@@ -257,9 +258,7 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (Image-to-Video) ====================
-// This endpoint remains unchanged – it may still call RunwayML and DALL-E if used.
-// If you want to also demo this endpoint, you can modify it similarly.
+// ==================== VIDEO GENERATION (Image-to-Video via Runway) ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, imageUrl, duration = 5 } = req.body;
 
@@ -384,29 +383,60 @@ app.post("/api/video/generate", async (req, res) => {
   }
 });
 
-// ==================== TEXT-TO-VIDEO (No image required) ====================
-// 🔁 **DEMO MODE** – Always returns a static demo video. No API calls, no cost.
+// ==================== TEXT-TO-VIDEO (OpenAI Sora) ====================
+// Uses OpenAI Sora-2 (or Sora-2-pro) to generate videos from text prompts.
 app.post("/api/video/generate-text", async (req, res) => {
-  const { prompt, duration = 5 } = req.body;
+  const { prompt, duration = 8, size = "1280x720", model = "sora-2-pro" } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
   }
 
-  // Static demo video URL (safe, always available)
-  const demoVideoUrl = "https://www.w3schools.com/html/mov_bbb.mp4";
-  console.log(`🎬 DEMO MODE: returning placeholder video for: "${prompt.substring(0, 100)}..."`);
-  return res.json({ videoUrl: demoVideoUrl, status: "demo", provider: "demo" });
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    console.error("❌ OPENAI_API_KEY not set");
+    return res.status(500).json({ error: "OpenAI API key not configured" });
+  }
 
-  // -------------------------------------------------------------
-  // (Original real video generation code is removed to avoid costs)
-  // -------------------------------------------------------------
+  try {
+    // Initialize OpenAI client
+    const openai = new OpenAI({ apiKey });
+
+    console.log(`🎬 Generating Sora video for: "${prompt.substring(0, 100)}..."`);
+
+    // Create and poll until completion (max 5 minutes)
+    const video = await openai.videos.createAndPoll({
+      model: model,               // 'sora-2-pro' or 'sora-2'
+      prompt: prompt,
+      seconds: duration,          // duration in seconds (2-10 for Sora-2-pro)
+      size: size,                 // e.g., "1280x720"
+    });
+
+    if (video.status !== 'completed') {
+      throw new Error(`Video generation failed. Status: ${video.status}`);
+    }
+
+    // The completed video object contains a `url` field (direct download link)
+    const videoUrl = video.url;
+    if (!videoUrl) {
+      console.error("❌ No URL found in video object:", video);
+      throw new Error("No video URL in response");
+    }
+
+    console.log(`✅ Sora video ready: ${videoUrl}`);
+    res.json({ videoUrl, status: "success", provider: "sora" });
+
+  } catch (error) {
+    console.error("❌ Sora Video Generation Error:", error);
+    res.status(500).json({
+      error: error.message,
+      videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
+      demo: true,
+    });
+  }
 });
 
-// ==================== ZEROSCOPE VIDEO GENERATION ====================
-// This endpoint is kept but will only work if you have Replicate credits.
-// Since you have an outstanding balance, it will return 402 error.
-// You may comment it out if you want to avoid any accidental calls.
+// ==================== ZEROSCOPE VIDEO GENERATION (kept for fallback, but not used by default) ====================
 app.post("/api/video/generate-zeroscope", async (req, res) => {
   const {
     prompt,
