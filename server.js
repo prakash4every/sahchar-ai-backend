@@ -205,7 +205,7 @@ app.post("/chat", async (req, res) => {
 
 // ==================== OPENAI ASSISTANT (EXPERIMENTAL) ====================
 // Use this endpoint to test your OpenAI Assistant.
-// Set OPENAI_ASSISTANT_ID in environment variables (e.g., asst_r1Xles6p4JL9eeRs6S503QkJ)
+// Set OPENAI_ASSISTANT_ID in environment variables 
 app.post("/chat-assistant", async (req, res) => {
   const { message, threadId } = req.body;
 
