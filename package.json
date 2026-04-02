@@ -23,7 +23,7 @@
     "nodemon": "^2.0.22"
   },
 "dependencies": {
-  ...
+  
   "openai": "^4.0.0"
 }
   "engines": {
