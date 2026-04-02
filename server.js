@@ -9,7 +9,6 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import axios from 'axios';
-import OpenAI from 'openai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -203,7 +202,7 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ==================== IMAGE GENERATION (DALL·E 3) ====================
+// ==================== IMAGE GENERATION ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt, language = "hi" } = req.body;
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
@@ -258,7 +257,7 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (Image-to-Video via Runway) ====================
+// ==================== VIDEO GENERATION (Image-to-Video) ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, imageUrl, duration = 5 } = req.body;
 
@@ -366,98 +365,17 @@ app.post("/api/video/generate", async (req, res) => {
   }
 });
 
-// ==================== TEXT-TO-VIDEO (OpenAI Sora with Manual Polling) ====================
+// ==================== TEXT-TO-VIDEO (DEMO MODE) ====================
 app.post("/api/video/generate-text", async (req, res) => {
-  const { prompt, duration = 8, size = "1280x720", model = "sora-2-pro" } = req.body;
+  const { prompt } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    console.error("❌ OPENAI_API_KEY not set");
-    return res.status(500).json({ error: "OpenAI API key not configured" });
-  }
-
-  try {
-    const openai = new OpenAI({ apiKey });
-    console.log(`🎬 Generating Sora video for: "${prompt.substring(0, 100)}..."`);
-
-    // Step 1: Create the video job
-    const videoJob = await openai.videos.create({
-      model: model,
-      prompt: prompt,
-      seconds: parseInt(duration),
-      size: size,
-    });
-
-    console.log(`📝 Video job created with ID: ${videoJob.id}, initial status: ${videoJob.status}`);
-
-    // Step 2: Manual polling until completion
-    let videoStatus = videoJob;
-    const maxAttempts = 90; // 90 * 10s = 15 minutes max
-    let attempts = 0;
-    const pollIntervalMs = 10000; // 10 seconds between polls
-
-    while (videoStatus.status !== 'completed' && videoStatus.status !== 'failed' && attempts < maxAttempts) {
-      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-      videoStatus = await openai.videos.retrieve(videoJob.id);
-      console.log(`🔄 Video status: ${videoStatus.status}, progress: ${videoStatus.progress || 0}%`);
-      attempts++;
-    }
-
-    if (videoStatus.status === 'failed') {
-      const errorMsg = videoStatus.error?.message || 'Unknown error';
-      throw new Error(`Video generation failed: ${errorMsg}`);
-    }
-
-    if (videoStatus.status !== 'completed') {
-      throw new Error(`Video generation timeout after ${maxAttempts * pollIntervalMs / 1000} seconds`);
-    }
-
-    // Step 3: Download the video content
-    console.log(`✅ Video completed! Downloading content...`);
-    const videoContent = await openai.videos.downloadContent(videoJob.id);
-    
-    // Get the video data as buffer
-    const videoBuffer = Buffer.from(await videoContent.arrayBuffer());
-    
-    // Upload to a temporary storage or return as data URL?
-    // For now, we'll save to a temporary file and return a public URL
-    // Option 1: Return a temporary URL (you may want to upload to cloud storage)
-    // Option 2: Return base64 data URL (not recommended for large files)
-    
-    // We'll use a simple approach: save to /tmp and return a download URL
-    const fileName = `sora_${videoJob.id}.mp4`;
-    const filePath = path.join('/tmp', fileName);
-    fs.writeFileSync(filePath, videoBuffer);
-    
-    console.log(`✅ Video saved to: ${filePath}`);
-    
-    // Return a URL that can be downloaded
-    // Note: This temporary URL may not be accessible externally. Consider using cloud storage.
-    const videoUrl = `/tmp/videos/${fileName}`;
-    
-    // For production, you should upload to a CDN or cloud storage like AWS S3
-    // For now, we'll return a data URL as fallback
-    const dataUrl = `data:video/mp4;base64,${videoBuffer.toString('base64')}`;
-    
-    res.json({ 
-      videoUrl: dataUrl, 
-      status: "success", 
-      provider: "sora",
-      videoId: videoJob.id
-    });
-
-  } catch (error) {
-    console.error("❌ Sora Video Generation Error:", error);
-    res.status(500).json({
-      error: error.message,
-      videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
-      demo: true,
-    });
-  }
+  const demoVideoUrl = "https://www.w3schools.com/html/mov_bbb.mp4";
+  console.log(`🎬 DEMO MODE: returning placeholder video for: "${prompt.substring(0, 100)}..."`);
+  return res.json({ videoUrl: demoVideoUrl, status: "demo", provider: "demo" });
 });
 
 // ==================== ZEROSCOPE VIDEO GENERATION ====================
