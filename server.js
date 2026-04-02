@@ -211,7 +211,6 @@ app.post("/chat-assistant", async (req, res) => {
     return res.status(400).json({ error: "Message required 🙏" });
   }
 
-  // Assistant के लिए OPENAI_VIDEO_API_KEY का उपयोग करें
   const apiKey = process.env.OPENAI_VIDEO_API_KEY;
   const assistantId = process.env.OPENAI_ASSISTANT_ID;
 
@@ -221,15 +220,62 @@ app.post("/chat-assistant", async (req, res) => {
   }
 
   try {
-    const openai = new OpenAI({ apiKey });  // अब सही key से
+    const openai = new OpenAI({ apiKey });
 
-    // बाकी कोड वैसा ही रहेगा (thread बनाना, run करना, जवाब लेना)
-    // ...
+    // 1. Create or retrieve thread
+    let thread;
+    if (threadId) {
+      thread = { id: threadId };
+    } else {
+      thread = await openai.beta.threads.create();
+      console.log(`✅ Created new thread: ${thread.id}`);
+    }
+
+    // 2. Add user message to thread
+    await openai.beta.threads.messages.create(thread.id, {
+      role: "user",
+      content: message,
+    });
+
+    // 3. Run the assistant
+    const run = await openai.beta.threads.runs.create(thread.id, {
+      assistant_id: assistantId,
+    });
+
+    // 4. Poll for completion (max 60 seconds)
+    let runStatus = run;
+    let attempts = 0;
+    const maxAttempts = 60;
+    while (runStatus.status !== "completed" && runStatus.status !== "failed" && attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
+      console.log(`🔄 Run status: ${runStatus.status} (attempt ${attempts+1})`);
+      attempts++;
+    }
+
+    if (runStatus.status === "failed") {
+      console.error("❌ Assistant run failed:", runStatus.last_error);
+      throw new Error(runStatus.last_error?.message || "Assistant run failed");
+    }
+
+    if (runStatus.status !== "completed") {
+      throw new Error("Assistant run timeout after 60 seconds");
+    }
+
+    // 5. Get assistant's reply
+    const messages = await openai.beta.threads.messages.list(thread.id);
+    const assistantMessage = messages.data.find(m => m.role === "assistant");
+    const reply = assistantMessage?.content[0]?.text?.value || "No response from assistant.";
+
+    console.log(`✅ Assistant reply: "${reply.substring(0, 100)}..."`);
+    res.json({ reply, threadId: thread.id });
+
   } catch (error) {
     console.error("❌ Assistant API error:", error);
     res.status(500).json({ reply: "क्षमा करें, असिस्टेंट त्रुटि 🙏" });
   }
 });
+
 // ==================== IMAGE GENERATION (DALL·E 3) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt, language = "hi" } = req.body;
@@ -394,7 +440,6 @@ app.post("/api/video/generate", async (req, res) => {
 });
 
 // ==================== TEXT-TO-VIDEO (DEMO MODE) ====================
-// Always returns a demo video – no cost.
 app.post("/api/video/generate-text", async (req, res) => {
   const { prompt } = req.body;
 
@@ -408,7 +453,6 @@ app.post("/api/video/generate-text", async (req, res) => {
 });
 
 // ==================== ZEROSCOPE VIDEO GENERATION (Replicate) ====================
-// Will only work if REPLICATE_API_KEY_ZEROSCOPE is set and has credits.
 app.post("/api/video/generate-zeroscope", async (req, res) => {
   const {
     prompt,
