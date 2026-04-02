@@ -9,7 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import axios from 'axios';
-import OpenAI from 'openai';   // <-- OpenAI SDK for Sora
+import OpenAI from 'openai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -278,7 +278,6 @@ app.post("/api/video/generate", async (req, res) => {
   try {
     console.log(`🎥 Video requested: "${prompt.substring(0, 100)}..."`);
 
-    // 1. इमेज URL बनाएँ (यदि नहीं दी गई)
     let finalImageUrl = imageUrl;
     if (!finalImageUrl) {
       console.log("🖼️ No imageUrl provided, generating via DALL-E...");
@@ -301,10 +300,7 @@ app.post("/api/video/generate", async (req, res) => {
       console.log(`✅ DALL-E image generated: ${finalImageUrl}`);
     }
 
-    // 2. RunwayML client
     const client = new RunwayML({ apiKey });
-
-    // 3. टास्क बनाएँ
     console.log("📝 Creating image-to-video task...");
     const task = await client.imageToVideo.create({
       model: 'gen4_turbo',
@@ -314,10 +310,9 @@ app.post("/api/video/generate", async (req, res) => {
       duration: Math.min(Math.max(parseInt(duration), 2), 10),
     });
 
-    // 4. पोलिंग – हर 2 सेकंड में टास्क स्टेटस चेक करें
     let status = 'PENDING';
     let attempts = 0;
-    const maxAttempts = 90; // 3 मिनट
+    const maxAttempts = 90;
     let taskStatus = null;
 
     while (attempts < maxAttempts) {
@@ -338,30 +333,18 @@ app.post("/api/video/generate", async (req, res) => {
       throw new Error('Timeout: Video generation did not complete in time');
     }
 
-    // ⭐ वीडियो URL निकालें – विभिन्न संभावित संरचनाओं को हैंडल करें
     let videoUrl = null;
-    
-    // लॉग करें पूरा आउटपुट ऑब्जेक्ट (डीबगिंग के लिए)
     console.log("📦 Task status output structure:", JSON.stringify(taskStatus, null, 2));
     
-    // केस 1: output.output[0]
     if (taskStatus.output && taskStatus.output.output && Array.isArray(taskStatus.output.output)) {
       videoUrl = taskStatus.output.output[0];
-    }
-    // केस 2: output[0] (सीधे array)
-    else if (taskStatus.output && Array.isArray(taskStatus.output)) {
+    } else if (taskStatus.output && Array.isArray(taskStatus.output)) {
       videoUrl = taskStatus.output[0];
-    }
-    // केस 3: output.videoUrl
-    else if (taskStatus.output && taskStatus.output.videoUrl) {
+    } else if (taskStatus.output && taskStatus.output.videoUrl) {
       videoUrl = taskStatus.output.videoUrl;
-    }
-    // केस 4: output.url
-    else if (taskStatus.output && taskStatus.output.url) {
+    } else if (taskStatus.output && taskStatus.output.url) {
       videoUrl = taskStatus.output.url;
-    }
-    // केस 5: कहीं और?
-    else if (taskStatus.videoUrl) {
+    } else if (taskStatus.videoUrl) {
       videoUrl = taskStatus.videoUrl;
     }
     
@@ -383,8 +366,7 @@ app.post("/api/video/generate", async (req, res) => {
   }
 });
 
-// ==================== TEXT-TO-VIDEO (OpenAI Sora) ====================
-// Uses OpenAI Sora-2 (or Sora-2-pro) to generate videos from text prompts.
+// ==================== TEXT-TO-VIDEO (OpenAI Sora with Manual Polling) ====================
 app.post("/api/video/generate-text", async (req, res) => {
   const { prompt, duration = 8, size = "1280x720", model = "sora-2-pro" } = req.body;
 
@@ -399,32 +381,74 @@ app.post("/api/video/generate-text", async (req, res) => {
   }
 
   try {
-    // Initialize OpenAI client
     const openai = new OpenAI({ apiKey });
-
     console.log(`🎬 Generating Sora video for: "${prompt.substring(0, 100)}..."`);
 
-    // Create and poll until completion (max 5 minutes)
-    const video = await openai.videos.createAndPoll({
-      model: model,               // 'sora-2-pro' or 'sora-2'
+    // Step 1: Create the video job
+    const videoJob = await openai.videos.create({
+      model: model,
       prompt: prompt,
-      seconds: duration,          // duration in seconds (2-10 for Sora-2-pro)
-      size: size,                 // e.g., "1280x720"
+      seconds: parseInt(duration),
+      size: size,
     });
 
-    if (video.status !== 'completed') {
-      throw new Error(`Video generation failed. Status: ${video.status}`);
+    console.log(`📝 Video job created with ID: ${videoJob.id}, initial status: ${videoJob.status}`);
+
+    // Step 2: Manual polling until completion
+    let videoStatus = videoJob;
+    const maxAttempts = 90; // 90 * 10s = 15 minutes max
+    let attempts = 0;
+    const pollIntervalMs = 10000; // 10 seconds between polls
+
+    while (videoStatus.status !== 'completed' && videoStatus.status !== 'failed' && attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+      videoStatus = await openai.videos.retrieve(videoJob.id);
+      console.log(`🔄 Video status: ${videoStatus.status}, progress: ${videoStatus.progress || 0}%`);
+      attempts++;
     }
 
-    // The completed video object contains a `url` field (direct download link)
-    const videoUrl = video.url;
-    if (!videoUrl) {
-      console.error("❌ No URL found in video object:", video);
-      throw new Error("No video URL in response");
+    if (videoStatus.status === 'failed') {
+      const errorMsg = videoStatus.error?.message || 'Unknown error';
+      throw new Error(`Video generation failed: ${errorMsg}`);
     }
 
-    console.log(`✅ Sora video ready: ${videoUrl}`);
-    res.json({ videoUrl, status: "success", provider: "sora" });
+    if (videoStatus.status !== 'completed') {
+      throw new Error(`Video generation timeout after ${maxAttempts * pollIntervalMs / 1000} seconds`);
+    }
+
+    // Step 3: Download the video content
+    console.log(`✅ Video completed! Downloading content...`);
+    const videoContent = await openai.videos.downloadContent(videoJob.id);
+    
+    // Get the video data as buffer
+    const videoBuffer = Buffer.from(await videoContent.arrayBuffer());
+    
+    // Upload to a temporary storage or return as data URL?
+    // For now, we'll save to a temporary file and return a public URL
+    // Option 1: Return a temporary URL (you may want to upload to cloud storage)
+    // Option 2: Return base64 data URL (not recommended for large files)
+    
+    // We'll use a simple approach: save to /tmp and return a download URL
+    const fileName = `sora_${videoJob.id}.mp4`;
+    const filePath = path.join('/tmp', fileName);
+    fs.writeFileSync(filePath, videoBuffer);
+    
+    console.log(`✅ Video saved to: ${filePath}`);
+    
+    // Return a URL that can be downloaded
+    // Note: This temporary URL may not be accessible externally. Consider using cloud storage.
+    const videoUrl = `/tmp/videos/${fileName}`;
+    
+    // For production, you should upload to a CDN or cloud storage like AWS S3
+    // For now, we'll return a data URL as fallback
+    const dataUrl = `data:video/mp4;base64,${videoBuffer.toString('base64')}`;
+    
+    res.json({ 
+      videoUrl: dataUrl, 
+      status: "success", 
+      provider: "sora",
+      videoId: videoJob.id
+    });
 
   } catch (error) {
     console.error("❌ Sora Video Generation Error:", error);
@@ -436,7 +460,7 @@ app.post("/api/video/generate-text", async (req, res) => {
   }
 });
 
-// ==================== ZEROSCOPE VIDEO GENERATION (kept for fallback, but not used by default) ====================
+// ==================== ZEROSCOPE VIDEO GENERATION ====================
 app.post("/api/video/generate-zeroscope", async (req, res) => {
   const {
     prompt,
@@ -463,7 +487,6 @@ app.post("/api/video/generate-zeroscope", async (req, res) => {
   try {
     const Replicate = (await import('replicate')).default;
     const replicateZeroScope = new Replicate({ auth: apiKey });
-
     const modelVersion = "anotherjesse/zeroscope-v2-xl:9f747673945c62801b13b84701c783929c0ee784e4748ec062204894dda1a351";
 
     const input = {
