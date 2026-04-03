@@ -237,12 +237,36 @@ app.post("/chat-assistant", async (req, res) => {
       content: message,
     });
 
-    // 3. Run the assistant
-    const run = await openai.beta.threads.runs.create(thread.id, {
-      assistant_id: assistantId,
+    // 3. Prepare dynamic instructions with current date/time
+    const now = new Date();
+    const currentDateTime = now.toLocaleString('hi-IN', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: true,
+      timeZone: 'Asia/Kolkata'
     });
 
-    // 4. Poll for completion (max 60 seconds)
+    const dynamicInstructions = `तुम 'SahcharAI' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
+
+महत्वपूर्ण निर्देश:
+- वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
+- जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो।
+- अभिवादन का सम्मान करो: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम' आदि।
+- हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
+- उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
+- उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।`;
+
+    // 4. Run the assistant with dynamic instructions
+    const run = await openai.beta.threads.runs.create(thread.id, {
+      assistant_id: assistantId,
+      instructions: dynamicInstructions,   // यह line जोड़ें
+    });
+
+    // 5. Poll for completion (max 60 seconds)
     let runStatus = run;
     let attempts = 0;
     const maxAttempts = 60;
@@ -262,7 +286,7 @@ app.post("/chat-assistant", async (req, res) => {
       throw new Error("Assistant run timeout after 60 seconds");
     }
 
-    // 5. Get assistant's reply
+    // 6. Get assistant's reply
     const messages = await openai.beta.threads.messages.list(thread.id);
     const assistantMessage = messages.data.find(m => m.role === "assistant");
     const reply = assistantMessage?.content[0]?.text?.value || "No response from assistant.";
@@ -275,7 +299,6 @@ app.post("/chat-assistant", async (req, res) => {
     res.status(500).json({ reply: "क्षमा करें, असिस्टेंट त्रुटि 🙏" });
   }
 });
-
 // ==================== IMAGE GENERATION (DALL·E 3) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt, language = "hi" } = req.body;
