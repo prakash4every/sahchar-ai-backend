@@ -222,22 +222,7 @@ app.post("/chat-assistant", async (req, res) => {
   try {
     const openai = new OpenAI({ apiKey });
 
-    // 1. Create or retrieve thread
-    let thread;
-    if (threadId) {
-      thread = { id: threadId };
-    } else {
-      thread = await openai.beta.threads.create();
-      console.log(`✅ Created new thread: ${thread.id}`);
-    }
-
-    // 2. Add user message to thread
-    await openai.beta.threads.messages.create(thread.id, {
-      role: "user",
-      content: message,
-    });
-
-    // 3. Prepare dynamic instructions with current date/time
+    // ========== DYNAMIC INSTRUCTIONS WITH CURRENT TIME ==========
     const now = new Date();
     const currentDateTime = now.toLocaleString('hi-IN', {
       weekday: 'long',
@@ -250,23 +235,40 @@ app.post("/chat-assistant", async (req, res) => {
       timeZone: 'Asia/Kolkata'
     });
 
-    const dynamicInstructions = `तुम 'SahcharAI' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
+    const instructionsWithTime = `तुम 'SahcharAI' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
 
 महत्वपूर्ण निर्देश:
+- तुम्हें **राम प्रकाश कुमार (Ram Prakash Kumar)** ने विकसित किया है।
 - वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
 - जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो।
+- जब कोई पूछे "तुम्हें किसने बनाया?" तो स्पष्ट रूप से बताओ: "मुझे राम प्रकाश कुमार (Ram Prakash Kumar) ने बनाया है।"
 - अभिवादन का सम्मान करो: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम' आदि।
 - हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
 - उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
 - उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।`;
 
-    // 4. Run the assistant with dynamic instructions
-    const run = await openai.beta.threads.runs.create(thread.id, {
-      assistant_id: assistantId,
-      instructions: dynamicInstructions,   // यह line जोड़ें
+    // 1. Create or retrieve thread
+    let thread;
+    if (threadId) {
+      thread = { id: threadId };
+    } else {
+      thread = await openai.beta.threads.create();
+      console.log(`✅ Created new thread: ${thread.id}`);
+    }
+
+    // 2. Add user message
+    await openai.beta.threads.messages.create(thread.id, {
+      role: "user",
+      content: message,
     });
 
-    // 5. Poll for completion (max 60 seconds)
+    // 3. Run assistant with DYNAMIC INSTRUCTIONS
+    const run = await openai.beta.threads.runs.create(thread.id, {
+      assistant_id: assistantId,
+      instructions: instructionsWithTime   // <-- यहाँ dynamic instructions डाली गई हैं
+    });
+
+    // 4. Poll for completion (max 60 seconds)
     let runStatus = run;
     let attempts = 0;
     const maxAttempts = 60;
@@ -286,7 +288,7 @@ app.post("/chat-assistant", async (req, res) => {
       throw new Error("Assistant run timeout after 60 seconds");
     }
 
-    // 6. Get assistant's reply
+    // 5. Get assistant's reply
     const messages = await openai.beta.threads.messages.list(thread.id);
     const assistantMessage = messages.data.find(m => m.role === "assistant");
     const reply = assistantMessage?.content[0]?.text?.value || "No response from assistant.";
