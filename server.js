@@ -567,7 +567,77 @@ app.post("/api/video/generate-zeroscope", async (req, res) => {
     });
   }
 });
+// ==================== SORA VIDEO GENERATION (OpenAI) ====================
+app.post("/api/video/generate-sora", async (req, res) => {
+  const { prompt, model = "sora-2-pro", seconds = 8, size = "1280x720" } = req.body;
 
+  if (!prompt) {
+    return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
+  }
+
+  const apiKey = process.env.OPENAI_VIDEO_API_KEY;
+  if (!apiKey) {
+    console.error("❌ OPENAI_VIDEO_API_KEY not set");
+    return res.status(500).json({ 
+      error: "Sora API key not configured",
+      videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
+      demo: true
+    });
+  }
+
+  try {
+    const openai = new OpenAI({ apiKey });
+
+    console.log(`🎬 Creating Sora video for: "${prompt.substring(0, 100)}..."`);
+
+    // 1. Create the video job
+    const video = await openai.videos.create({
+      model: model,
+      prompt: prompt,
+      seconds: parseInt(seconds),
+      size: size,
+    });
+
+    console.log(`📝 Video job created: ${video.id}, status: ${video.status}`);
+
+    // 2. Poll until completion (max 2 minutes)
+    let videoStatus = video;
+    let attempts = 0;
+    const maxAttempts = 60; // 60 * 2s = 120 seconds
+    while (videoStatus.status !== "completed" && videoStatus.status !== "failed" && attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      videoStatus = await openai.videos.retrieve(video.id);
+      console.log(`🔄 Video status: ${videoStatus.status}, progress: ${videoStatus.progress || 0}%`);
+      attempts++;
+    }
+
+    if (videoStatus.status === "failed") {
+      throw new Error(videoStatus.error?.message || "Sora generation failed");
+    }
+
+    if (videoStatus.status !== "completed") {
+      throw new Error("Sora generation timeout");
+    }
+
+    // 3. Get the video content URL
+    const videoUrl = videoStatus.url; // or use downloadContent
+    if (!videoUrl) {
+      throw new Error("No video URL in response");
+    }
+
+    console.log(`✅ Sora video ready: ${videoUrl}`);
+    res.json({ videoUrl, status: "success", provider: "sora", videoId: video.id });
+
+  } catch (error) {
+    console.error("❌ Sora API error:", error);
+    // Fallback to demo video
+    res.status(500).json({
+      error: error.message,
+      videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
+      demo: true
+    });
+  }
+});
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
