@@ -235,13 +235,13 @@ app.post("/chat-assistant", async (req, res) => {
       timeZone: 'Asia/Kolkata'
     });
 
+    // संशोधित निर्देश – केवल एक बार नाम बताने के लिए
     const instructionsWithTime = `तुम 'SahcharAI' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
 
 महत्वपूर्ण निर्देश:
-- तुम्हें **राम प्रकाश कुमार (Ram Prakash Kumar)** ने विकसित किया है।
 - वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
 - जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो।
-- जब कोई पूछे "तुम्हें किसने बनाया?" तो स्पष्ट रूप से बताओ: "मुझे राम प्रकाश कुमार (Ram Prakash Kumar) ने बनाया है।"
+- जब कोई पूछे "तुम्हें किसने बनाया?" तो केवल एक बार और केवल हिंदी में जवाब दो: "मुझे राम प्रकाश कुमार ने बनाया है।" (अंग्रेज़ी में Ram Prakash Kumar अलग से मत बोलो।)
 - अभिवादन का सम्मान करो: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम' आदि।
 - हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
 - उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
@@ -265,7 +265,7 @@ app.post("/chat-assistant", async (req, res) => {
     // 3. Run assistant with DYNAMIC INSTRUCTIONS
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id: assistantId,
-      instructions: instructionsWithTime   // <-- यहाँ dynamic instructions डाली गई हैं
+      instructions: instructionsWithTime
     });
 
     // 4. Poll for completion (max 60 seconds)
@@ -301,6 +301,7 @@ app.post("/chat-assistant", async (req, res) => {
     res.status(500).json({ reply: "क्षमा करें, असिस्टेंट त्रुटि 🙏" });
   }
 });
+
 // ==================== IMAGE GENERATION (DALL·E 3) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt, language = "hi" } = req.body;
