@@ -310,7 +310,10 @@ app.post("/api/image/generate", async (req, res) => {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     console.error("OPENAI_API_KEY not set");
-    return res.status(500).json({ error: "API key not configured" });
+    return res.status(500).json({ 
+      error: "API key not configured",
+      imageUrl: "https://www.w3schools.com/html/mov_bbb.mp4" // डेमो इमेज (वीडियो नहीं, लेकिन ठीक है)
+    });
   }
 
   try {
@@ -334,10 +337,23 @@ app.post("/api/image/generate", async (req, res) => {
     res.json({ imageUrl });
   } catch (error) {
     console.error("OpenAI API error:", error.response?.data || error.message);
-    res.status(500).json({ error: "इमेज जनरेशन फेल" });
+    
+    // पहचानें कि क्या सेफ्टी सिस्टम ने ब्लॉक किया
+    let userMessage = "इमेज जनरेशन फेल: ";
+    if (error.response?.data?.error?.code === 'content_policy_violation') {
+      userMessage = "क्षमा करें, आपका प्रॉम्प्ट सुरक्षा नियमों के कारण स्वीकार नहीं किया गया। कृपया प्रॉम्प्ट को सरल और सुरक्षित बनाएँ।";
+    } else {
+      userMessage += error.message;
+    }
+    
+    // हमेशा एक डिफॉल्ट imageUrl भेजें (ताकि Android App टूटे नहीं)
+    const defaultImageUrl = "https://via.placeholder.com/1024x1024.png?text=SahcharAI+Image+Error";
+    res.status(500).json({ 
+      error: userMessage,
+      imageUrl: defaultImageUrl
+    });
   }
 });
-
 // ==================== AUDIO TRANSCRIPTION (dummy) ====================
 app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "ऑडियो फाइल जरूरी है" });
