@@ -235,7 +235,6 @@ app.post("/chat-assistant", async (req, res) => {
       timeZone: 'Asia/Kolkata'
     });
 
-    // संशोधित निर्देश – केवल एक बार नाम बताने के लिए
     const instructionsWithTime = `तुम 'SahcharAI' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
 
 महत्वपूर्ण निर्देश:
@@ -247,7 +246,6 @@ app.post("/chat-assistant", async (req, res) => {
 - उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
 - उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।`;
 
-    // 1. Create or retrieve thread
     let thread;
     if (threadId) {
       thread = { id: threadId };
@@ -256,19 +254,16 @@ app.post("/chat-assistant", async (req, res) => {
       console.log(`✅ Created new thread: ${thread.id}`);
     }
 
-    // 2. Add user message
     await openai.beta.threads.messages.create(thread.id, {
       role: "user",
       content: message,
     });
 
-    // 3. Run assistant with DYNAMIC INSTRUCTIONS
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id: assistantId,
       instructions: instructionsWithTime
     });
 
-    // 4. Poll for completion (max 60 seconds)
     let runStatus = run;
     let attempts = 0;
     const maxAttempts = 60;
@@ -288,7 +283,6 @@ app.post("/chat-assistant", async (req, res) => {
       throw new Error("Assistant run timeout after 60 seconds");
     }
 
-    // 5. Get assistant's reply
     const messages = await openai.beta.threads.messages.list(thread.id);
     const assistantMessage = messages.data.find(m => m.role === "assistant");
     const reply = assistantMessage?.content[0]?.text?.value || "No response from assistant.";
@@ -302,6 +296,59 @@ app.post("/chat-assistant", async (req, res) => {
   }
 });
 
+// ==================== SAMBANOVA CHAT (NEW) ====================
+app.post("/chat-sambanova", async (req, res) => {
+  const { message, sessionId } = req.body;
+  const sid = sessionId || "default";
+
+  if (!message) {
+    return res.status(400).json({ error: "Message required 🙏" });
+  }
+
+  const apiKey = process.env.SAMBANOVA_API_KEY;
+  const baseURL = process.env.SAMBANOVA_BASE_URL || "https://api.sambanova.ai/v1";
+
+  if (!apiKey) {
+    console.warn("⚠️ SAMBANOVA_API_KEY not set.");
+    return res.status(501).json({ reply: "SambaNova not configured on server." });
+  }
+
+  try {
+    // Use OpenAI-compatible client for SambaNova
+    const sambanova = new OpenAI({
+      apiKey: apiKey,
+      baseURL: baseURL,
+    });
+
+    // Simple conversation memory (in-memory for now)
+    if (!conversations[sid]) {
+      conversations[sid] = [
+        { role: "system", content: "You are a helpful assistant." }
+      ];
+    }
+    conversations[sid].push({ role: "user", content: message });
+
+    const response = await sambanova.chat.completions.create({
+      model: "Meta-Llama-3.3-70B-Instruct", // or any other available model
+      messages: conversations[sid],
+      temperature: 0.7,
+    });
+
+    const botReply = response.choices[0]?.message?.content || "No response from SambaNova.";
+    conversations[sid].push({ role: "assistant", content: botReply });
+
+    // Keep conversation reasonable length
+    if (conversations[sid].length > 20) {
+      conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-10)];
+    }
+
+    res.json({ reply: botReply });
+  } catch (error) {
+    console.error("❌ SambaNova API error:", error);
+    res.status(500).json({ reply: "क्षमा करें, SambaNova सेवा उपलब्ध नहीं है। 🙏" });
+  }
+});
+
 // ==================== IMAGE GENERATION (DALL·E 3) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt, language = "hi" } = req.body;
@@ -312,7 +359,7 @@ app.post("/api/image/generate", async (req, res) => {
     console.error("OPENAI_API_KEY not set");
     return res.status(500).json({ 
       error: "API key not configured",
-      imageUrl: "https://www.w3schools.com/html/mov_bbb.mp4" // डेमो इमेज (वीडियो नहीं, लेकिन ठीक है)
+      imageUrl: "https://via.placeholder.com/1024x1024.png?text=SahcharAI+Image+Error"
     });
   }
 
@@ -338,7 +385,6 @@ app.post("/api/image/generate", async (req, res) => {
   } catch (error) {
     console.error("OpenAI API error:", error.response?.data || error.message);
     
-    // पहचानें कि क्या सेफ्टी सिस्टम ने ब्लॉक किया
     let userMessage = "इमेज जनरेशन फेल: ";
     if (error.response?.data?.error?.code === 'content_policy_violation') {
       userMessage = "क्षमा करें, आपका प्रॉम्प्ट सुरक्षा नियमों के कारण स्वीकार नहीं किया गया। कृपया प्रॉम्प्ट को सरल और सुरक्षित बनाएँ।";
@@ -346,7 +392,6 @@ app.post("/api/image/generate", async (req, res) => {
       userMessage += error.message;
     }
     
-    // हमेशा एक डिफॉल्ट imageUrl भेजें (ताकि Android App टूटे नहीं)
     const defaultImageUrl = "https://via.placeholder.com/1024x1024.png?text=SahcharAI+Image+Error";
     res.status(500).json({ 
       error: userMessage,
@@ -354,6 +399,7 @@ app.post("/api/image/generate", async (req, res) => {
     });
   }
 });
+
 // ==================== AUDIO TRANSCRIPTION (dummy) ====================
 app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "ऑडियो फाइल जरूरी है" });
@@ -567,6 +613,7 @@ app.post("/api/video/generate-zeroscope", async (req, res) => {
     });
   }
 });
+
 // ==================== SORA VIDEO GENERATION (OpenAI) ====================
 app.post("/api/video/generate-sora", async (req, res) => {
   const { prompt, model = "sora-2-pro", seconds = 8, size = "1280x720" } = req.body;
@@ -590,7 +637,6 @@ app.post("/api/video/generate-sora", async (req, res) => {
 
     console.log(`🎬 Creating Sora video for: "${prompt.substring(0, 100)}..."`);
 
-    // 1. Create the video job
     const video = await openai.videos.create({
       model: model,
       prompt: prompt,
@@ -600,10 +646,9 @@ app.post("/api/video/generate-sora", async (req, res) => {
 
     console.log(`📝 Video job created: ${video.id}, status: ${video.status}`);
 
-    // 2. Poll until completion (max 2 minutes)
     let videoStatus = video;
     let attempts = 0;
-    const maxAttempts = 60; // 60 * 2s = 120 seconds
+    const maxAttempts = 60;
     while (videoStatus.status !== "completed" && videoStatus.status !== "failed" && attempts < maxAttempts) {
       await new Promise(resolve => setTimeout(resolve, 2000));
       videoStatus = await openai.videos.retrieve(video.id);
@@ -619,8 +664,7 @@ app.post("/api/video/generate-sora", async (req, res) => {
       throw new Error("Sora generation timeout");
     }
 
-    // 3. Get the video content URL
-    const videoUrl = videoStatus.url; // or use downloadContent
+    const videoUrl = videoStatus.url;
     if (!videoUrl) {
       throw new Error("No video URL in response");
     }
@@ -630,7 +674,6 @@ app.post("/api/video/generate-sora", async (req, res) => {
 
   } catch (error) {
     console.error("❌ Sora API error:", error);
-    // Fallback to demo video
     res.status(500).json({
       error: error.message,
       videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
@@ -638,6 +681,7 @@ app.post("/api/video/generate-sora", async (req, res) => {
     });
   }
 });
+
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
