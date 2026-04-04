@@ -346,7 +346,7 @@ app.post("/chat-sambanova", async (req, res) => {
   }
 });
 
-// ==================== NVIDIA NIM CHAT (NEW) ====================
+// ==================== NVIDIA NIM CHAT ====================
 app.post("/chat-nvidia", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
@@ -367,7 +367,6 @@ app.post("/chat-nvidia", async (req, res) => {
       baseURL: 'https://integrate.api.nvidia.com/v1',
     });
 
-    // Simple conversation memory (in-memory for now)
     if (!conversations[sid]) {
       conversations[sid] = [
         { role: "system", content: "You are a helpful assistant." }
@@ -375,7 +374,6 @@ app.post("/chat-nvidia", async (req, res) => {
     }
     conversations[sid].push({ role: "user", content: message });
 
-    // Use the model and parameters from the user's snippet
     const stream = await nvidiaClient.chat.completions.create({
       model: "z-ai/glm5",
       messages: conversations[sid],
@@ -384,44 +382,28 @@ app.post("/chat-nvidia", async (req, res) => {
       max_tokens: 16384,
       stream: true,
       chat_template_kwargs: {
-        enable_thinking: true,
+        enable_thinking: false,   // ✅ थिंकिंग बंद
         clear_thinking: false
       }
     });
 
     let fullReply = "";
-    let reasoning = "";
-
     for await (const chunk of stream) {
-      const reasoningPart = chunk.choices[0]?.delta?.reasoning_content;
-      if (reasoningPart) {
-        reasoning += reasoningPart;
-      }
       const contentPart = chunk.choices[0]?.delta?.content || "";
       fullReply += contentPart;
     }
 
-    // Optionally, you can prepend reasoning to the reply if you want
-    let finalReply = fullReply;
-    if (reasoning) {
-      // You may include reasoning in a separate field, but for simplicity we append
-      finalReply = (reasoning + "\n\n" + fullReply).trim();
-    }
-
-    conversations[sid].push({ role: "assistant", content: finalReply });
-
-    // Keep conversation reasonable length
+    conversations[sid].push({ role: "assistant", content: fullReply });
     if (conversations[sid].length > 20) {
       conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-10)];
     }
 
-    res.json({ reply: finalReply });
+    res.json({ reply: fullReply });
   } catch (error) {
     console.error("❌ NVIDIA NIM API error:", error);
     res.status(500).json({ reply: "क्षमा करें, NVIDIA NIM सेवा उपलब्ध नहीं है। 🙏" });
   }
 });
-
 // ==================== IMAGE GENERATION (DALL·E 3) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt, language = "hi" } = req.body;
