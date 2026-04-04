@@ -346,6 +346,82 @@ app.post("/chat-sambanova", async (req, res) => {
   }
 });
 
+// ==================== NVIDIA NIM CHAT (NEW) ====================
+app.post("/chat-nvidia", async (req, res) => {
+  const { message, sessionId } = req.body;
+  const sid = sessionId || "default";
+
+  if (!message) {
+    return res.status(400).json({ error: "Message required 🙏" });
+  }
+
+  const apiKey = process.env.NGC_API_KEY;
+  if (!apiKey) {
+    console.warn("⚠️ NGC_API_KEY not set.");
+    return res.status(501).json({ reply: "NVIDIA NIM not configured on server." });
+  }
+
+  try {
+    const nvidiaClient = new OpenAI({
+      apiKey: apiKey,
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+    });
+
+    // Simple conversation memory (in-memory for now)
+    if (!conversations[sid]) {
+      conversations[sid] = [
+        { role: "system", content: "You are a helpful assistant." }
+      ];
+    }
+    conversations[sid].push({ role: "user", content: message });
+
+    // Use the model and parameters from the user's snippet
+    const stream = await nvidiaClient.chat.completions.create({
+      model: "z-ai/glm5",
+      messages: conversations[sid],
+      temperature: 1,
+      top_p: 1,
+      max_tokens: 16384,
+      stream: true,
+      chat_template_kwargs: {
+        enable_thinking: true,
+        clear_thinking: false
+      }
+    });
+
+    let fullReply = "";
+    let reasoning = "";
+
+    for await (const chunk of stream) {
+      const reasoningPart = chunk.choices[0]?.delta?.reasoning_content;
+      if (reasoningPart) {
+        reasoning += reasoningPart;
+      }
+      const contentPart = chunk.choices[0]?.delta?.content || "";
+      fullReply += contentPart;
+    }
+
+    // Optionally, you can prepend reasoning to the reply if you want
+    let finalReply = fullReply;
+    if (reasoning) {
+      // You may include reasoning in a separate field, but for simplicity we append
+      finalReply = (reasoning + "\n\n" + fullReply).trim();
+    }
+
+    conversations[sid].push({ role: "assistant", content: finalReply });
+
+    // Keep conversation reasonable length
+    if (conversations[sid].length > 20) {
+      conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-10)];
+    }
+
+    res.json({ reply: finalReply });
+  } catch (error) {
+    console.error("❌ NVIDIA NIM API error:", error);
+    res.status(500).json({ reply: "क्षमा करें, NVIDIA NIM सेवा उपलब्ध नहीं है। 🙏" });
+  }
+});
+
 // ==================== IMAGE GENERATION (DALL·E 3) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt, language = "hi" } = req.body;
@@ -417,7 +493,7 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== IMAGE-TO-VIDEO (RunwayML) ====================
+// ==================== VIDEO GENERATION (Image-to-Video via Runway) ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, imageUrl, duration = 5 } = req.body;
 
@@ -525,7 +601,7 @@ app.post("/api/video/generate", async (req, res) => {
   }
 });
 
-// ==================== TEXT-TO-VIDEO (FALLBACK CHAIN WITH CLEAR LOGGING) ====================
+// ==================== TEXT-TO-VIDEO (FALLBACK CHAIN) ====================
 app.post("/api/video/generate-text", async (req, res) => {
   const { prompt, duration = 5 } = req.body;
 
