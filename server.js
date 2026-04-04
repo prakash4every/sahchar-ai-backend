@@ -296,7 +296,7 @@ app.post("/chat-assistant", async (req, res) => {
   }
 });
 
-// ==================== SAMBANOVA CHAT (NEW) ====================
+// ==================== SAMBANOVA CHAT ====================
 app.post("/chat-sambanova", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
@@ -417,7 +417,7 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== VIDEO GENERATION (Image-to-Video via Runway) ====================
+// ==================== IMAGE-TO-VIDEO (RunwayML) ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, imageUrl, duration = 5 } = req.body;
 
@@ -525,20 +525,162 @@ app.post("/api/video/generate", async (req, res) => {
   }
 });
 
-// ==================== TEXT-TO-VIDEO (DEMO MODE) ====================
+// ==================== TEXT-TO-VIDEO (FALLBACK CHAIN) ====================
+// Tries: RunwayML (text-to-video) → Replicate (Zeroscope) → OpenAI Sora → Demo video
 app.post("/api/video/generate-text", async (req, res) => {
-  const { prompt } = req.body;
+  const { prompt, duration = 5 } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
   }
 
   const demoVideoUrl = "https://www.w3schools.com/html/mov_bbb.mp4";
+
+  // --------------------------------------------------------------
+  // 1. Try RunwayML (gen4.5 text-to-video)
+  // --------------------------------------------------------------
+  const runwayKey = process.env.RUNWAYML_API_SECRET;
+  if (runwayKey) {
+    try {
+      console.log(`🎥 [RunwayML] Trying text-to-video for: "${prompt.substring(0, 100)}..."`);
+      const client = new RunwayML({ apiKey: runwayKey });
+      const task = await client.textToVideo.create({
+        model: 'gen4.5',
+        promptText: prompt,
+        ratio: '1280:720',
+        duration: Math.min(Math.max(parseInt(duration), 2), 10),
+      });
+
+      let status = 'PENDING';
+      let attempts = 0;
+      const maxAttempts = 90;
+      let taskStatus = null;
+
+      while (attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        taskStatus = await client.tasks.retrieve(task.id);
+        status = taskStatus.status;
+        console.log(`🔄 [RunwayML] Status: ${status}`);
+
+        if (status === 'SUCCEEDED') break;
+        if (status === 'FAILED') throw new Error(`Runway failed: ${taskStatus.error?.message || 'Unknown'}`);
+        attempts++;
+      }
+
+      if (status !== 'SUCCEEDED') throw new Error('Runway timeout');
+
+      let videoUrl = null;
+      if (taskStatus.output && taskStatus.output.output && Array.isArray(taskStatus.output.output)) {
+        videoUrl = taskStatus.output.output[0];
+      } else if (taskStatus.output && Array.isArray(taskStatus.output)) {
+        videoUrl = taskStatus.output[0];
+      } else if (taskStatus.output && taskStatus.output.videoUrl) {
+        videoUrl = taskStatus.output.videoUrl;
+      } else if (taskStatus.output && taskStatus.output.url) {
+        videoUrl = taskStatus.output.url;
+      } else if (taskStatus.videoUrl) {
+        videoUrl = taskStatus.videoUrl;
+      }
+
+      if (!videoUrl) throw new Error('No video URL from Runway');
+      console.log(`✅ [RunwayML] Video ready: ${videoUrl}`);
+      return res.json({ videoUrl, status: "success", provider: "runway" });
+
+    } catch (runwayError) {
+      console.warn(`⚠️ RunwayML failed: ${runwayError.message}. Moving to next provider.`);
+    }
+  } else {
+    console.warn("⚠️ RUNWAYML_API_SECRET not set, skipping RunwayML.");
+  }
+
+  // --------------------------------------------------------------
+  // 2. Try Replicate Zeroscope
+  // --------------------------------------------------------------
+  const replicateKey = process.env.REPLICATE_API_KEY_ZEROSCOPE;
+  if (replicateKey) {
+    try {
+      console.log(`🎬 [Replicate] Trying zeroscope for: "${prompt.substring(0, 100)}..."`);
+      const Replicate = (await import('replicate')).default;
+      const replicateZeroScope = new Replicate({ auth: replicateKey });
+      const modelVersion = "anotherjesse/zeroscope-v2-xl:9f747673945c62801b13b84701c783929c0ee784e4748ec062204894dda1a351";
+      const output = await replicateZeroScope.run(modelVersion, {
+        input: {
+          fps: 24,
+          width: 1024,
+          height: 576,
+          prompt,
+          guidance_scale: 17.5,
+          negative_prompt: "very blue, dust, noisy, washed out, ugly, distorted, broken"
+        }
+      });
+
+      let videoUrl = null;
+      if (Array.isArray(output) && output.length > 0) {
+        if (typeof output[0].url === 'function') videoUrl = output[0].url();
+        else if (typeof output[0] === 'string') videoUrl = output[0];
+        else if (output[0].url) videoUrl = output[0].url;
+      } else if (typeof output === 'string') videoUrl = output;
+      else if (output && output.url) videoUrl = output.url;
+
+      if (!videoUrl) throw new Error('No video URL from Replicate');
+      console.log(`✅ [Replicate] Zeroscope video ready: ${videoUrl}`);
+      return res.json({ videoUrl, status: "success", provider: "replicate" });
+
+    } catch (replicateError) {
+      console.warn(`⚠️ Replicate failed: ${replicateError.message}. Moving to next provider.`);
+    }
+  } else {
+    console.warn("⚠️ REPLICATE_API_KEY_ZEROSCOPE not set, skipping Replicate.");
+  }
+
+  // --------------------------------------------------------------
+  // 3. Try OpenAI Sora (if available)
+  // --------------------------------------------------------------
+  const soraKey = process.env.OPENAI_VIDEO_API_KEY;
+  if (soraKey) {
+    try {
+      const openai = new OpenAI({ apiKey: soraKey });
+      if (!openai.videos || typeof openai.videos.create !== 'function') {
+        throw new Error('Sora API not available (no access)');
+      }
+      console.log(`🎬 [Sora] Creating video for: "${prompt.substring(0, 100)}..."`);
+      const video = await openai.videos.create({
+        model: 'sora-2-pro',
+        prompt: prompt,
+        seconds: Math.min(Math.max(parseInt(duration), 2), 10),
+        size: '1280x720'
+      });
+
+      let videoStatus = video;
+      let attempts = 0;
+      const maxAttempts = 60;
+      while (videoStatus.status !== 'completed' && videoStatus.status !== 'failed' && attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        videoStatus = await openai.videos.retrieve(video.id);
+        console.log(`🔄 [Sora] Status: ${videoStatus.status}, progress: ${videoStatus.progress || 0}%`);
+        attempts++;
+      }
+      if (videoStatus.status !== 'completed') throw new Error('Sora timeout or failed');
+      const videoUrl = videoStatus.url;
+      if (!videoUrl) throw new Error('No video URL from Sora');
+      console.log(`✅ [Sora] Video ready: ${videoUrl}`);
+      return res.json({ videoUrl, status: "success", provider: "sora" });
+
+    } catch (soraError) {
+      console.warn(`⚠️ Sora failed: ${soraError.message}. Moving to demo.`);
+    }
+  } else {
+    console.warn("⚠️ OPENAI_VIDEO_API_KEY not set, skipping Sora.");
+  }
+
+  // --------------------------------------------------------------
+  // 4. Final fallback: Demo video
+  // --------------------------------------------------------------
   console.log(`🎬 DEMO MODE: returning placeholder video for: "${prompt.substring(0, 100)}..."`);
   return res.json({ videoUrl: demoVideoUrl, status: "demo", provider: "demo" });
 });
 
-// ==================== ZEROSCOPE VIDEO GENERATION (Replicate) ====================
+// ==================== ZEROSCOPE VIDEO GENERATION (standalone) ====================
 app.post("/api/video/generate-zeroscope", async (req, res) => {
   const {
     prompt,
@@ -612,7 +754,7 @@ app.post("/api/video/generate-zeroscope", async (req, res) => {
   }
 });
 
-// ==================== SORA VIDEO GENERATION (OpenAI) ====================
+// ==================== SORA VIDEO GENERATION (standalone) ====================
 app.post("/api/video/generate-sora", async (req, res) => {
   const { prompt, model = "sora-2-pro", seconds = 8, size = "1280x720" } = req.body;
 
@@ -632,28 +774,18 @@ app.post("/api/video/generate-sora", async (req, res) => {
 
   try {
     const openai = new OpenAI({ apiKey });
-
-    // ✅ SAFETY CHECK: Verify if videos API is available (Sora access)
     if (!openai.videos || typeof openai.videos.create !== 'function') {
-      console.warn("⚠️ Sora API not available (no access). Falling back to demo video.");
-      return res.json({ 
-        videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4", 
-        status: "demo", 
-        provider: "demo",
-        message: "Sora access not available. Demo video shown."
-      });
+      console.warn("⚠️ Sora API not available (no access). Falling back to demo.");
+      return res.json({ videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4", status: "demo", provider: "demo" });
     }
 
     console.log(`🎬 Creating Sora video for: "${prompt.substring(0, 100)}..."`);
-
     const video = await openai.videos.create({
       model: model,
       prompt: prompt,
       seconds: parseInt(seconds),
       size: size,
     });
-
-    console.log(`📝 Video job created: ${video.id}, status: ${video.status}`);
 
     let videoStatus = video;
     let attempts = 0;
@@ -665,18 +797,11 @@ app.post("/api/video/generate-sora", async (req, res) => {
       attempts++;
     }
 
-    if (videoStatus.status === "failed") {
-      throw new Error(videoStatus.error?.message || "Sora generation failed");
-    }
-
-    if (videoStatus.status !== "completed") {
-      throw new Error("Sora generation timeout");
-    }
+    if (videoStatus.status === "failed") throw new Error(videoStatus.error?.message || "Sora generation failed");
+    if (videoStatus.status !== "completed") throw new Error("Sora generation timeout");
 
     const videoUrl = videoStatus.url;
-    if (!videoUrl) {
-      throw new Error("No video URL in response");
-    }
+    if (!videoUrl) throw new Error("No video URL in response");
 
     console.log(`✅ Sora video ready: ${videoUrl}`);
     res.json({ videoUrl, status: "success", provider: "sora", videoId: video.id });
