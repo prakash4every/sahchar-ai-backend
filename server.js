@@ -525,8 +525,7 @@ app.post("/api/video/generate", async (req, res) => {
   }
 });
 
-// ==================== TEXT-TO-VIDEO (FALLBACK CHAIN) ====================
-// Tries: RunwayML (text-to-video) → Replicate (Zeroscope) → OpenAI Sora → Demo video
+// ==================== TEXT-TO-VIDEO (FALLBACK CHAIN WITH CLEAR LOGGING) ====================
 app.post("/api/video/generate-text", async (req, res) => {
   const { prompt, duration = 5 } = req.body;
 
@@ -541,8 +540,8 @@ app.post("/api/video/generate-text", async (req, res) => {
   // --------------------------------------------------------------
   const runwayKey = process.env.RUNWAYML_API_SECRET;
   if (runwayKey) {
+    console.log(`🔁 [1/4] Attempting RunwayML text-to-video for: "${prompt.substring(0, 100)}..."`);
     try {
-      console.log(`🎥 [RunwayML] Trying text-to-video for: "${prompt.substring(0, 100)}..."`);
       const client = new RunwayML({ apiKey: runwayKey });
       const task = await client.textToVideo.create({
         model: 'gen4.5',
@@ -598,8 +597,8 @@ app.post("/api/video/generate-text", async (req, res) => {
   // --------------------------------------------------------------
   const replicateKey = process.env.REPLICATE_API_KEY_ZEROSCOPE;
   if (replicateKey) {
+    console.log(`🔁 [2/4] Attempting Replicate Zeroscope for: "${prompt.substring(0, 100)}..."`);
     try {
-      console.log(`🎬 [Replicate] Trying zeroscope for: "${prompt.substring(0, 100)}..."`);
       const Replicate = (await import('replicate')).default;
       const replicateZeroScope = new Replicate({ auth: replicateKey });
       const modelVersion = "anotherjesse/zeroscope-v2-xl:9f747673945c62801b13b84701c783929c0ee784e4748ec062204894dda1a351";
@@ -638,12 +637,12 @@ app.post("/api/video/generate-text", async (req, res) => {
   // --------------------------------------------------------------
   const soraKey = process.env.OPENAI_VIDEO_API_KEY;
   if (soraKey) {
+    console.log(`🔁 [3/4] Attempting OpenAI Sora for: "${prompt.substring(0, 100)}..."`);
     try {
       const openai = new OpenAI({ apiKey: soraKey });
       if (!openai.videos || typeof openai.videos.create !== 'function') {
         throw new Error('Sora API not available (no access)');
       }
-      console.log(`🎬 [Sora] Creating video for: "${prompt.substring(0, 100)}..."`);
       const video = await openai.videos.create({
         model: 'sora-2-pro',
         prompt: prompt,
@@ -676,7 +675,7 @@ app.post("/api/video/generate-text", async (req, res) => {
   // --------------------------------------------------------------
   // 4. Final fallback: Demo video
   // --------------------------------------------------------------
-  console.log(`🎬 DEMO MODE: returning placeholder video for: "${prompt.substring(0, 100)}..."`);
+  console.log(`🎬 [4/4] DEMO MODE: returning placeholder video for: "${prompt.substring(0, 100)}..."`);
   return res.json({ videoUrl: demoVideoUrl, status: "demo", provider: "demo" });
 });
 
