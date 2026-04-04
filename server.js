@@ -314,13 +314,11 @@ app.post("/chat-sambanova", async (req, res) => {
   }
 
   try {
-    // Use OpenAI-compatible client for SambaNova
     const sambanova = new OpenAI({
       apiKey: apiKey,
       baseURL: baseURL,
     });
 
-    // Simple conversation memory (in-memory for now)
     if (!conversations[sid]) {
       conversations[sid] = [
         { role: "system", content: "You are a helpful assistant." }
@@ -329,7 +327,7 @@ app.post("/chat-sambanova", async (req, res) => {
     conversations[sid].push({ role: "user", content: message });
 
     const response = await sambanova.chat.completions.create({
-      model: "Meta-Llama-3.3-70B-Instruct", // or any other available model
+      model: "Meta-Llama-3.3-70B-Instruct",
       messages: conversations[sid],
       temperature: 0.7,
     });
@@ -337,7 +335,6 @@ app.post("/chat-sambanova", async (req, res) => {
     const botReply = response.choices[0]?.message?.content || "No response from SambaNova.";
     conversations[sid].push({ role: "assistant", content: botReply });
 
-    // Keep conversation reasonable length
     if (conversations[sid].length > 20) {
       conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-10)];
     }
@@ -381,6 +378,7 @@ app.post("/api/image/generate", async (req, res) => {
     );
 
     const imageUrl = response.data.data[0].url;
+    console.log(`✅ Image generated for: "${prompt.substring(0, 50)}..."`);
     res.json({ imageUrl });
   } catch (error) {
     console.error("OpenAI API error:", error.response?.data || error.message);
@@ -634,6 +632,17 @@ app.post("/api/video/generate-sora", async (req, res) => {
 
   try {
     const openai = new OpenAI({ apiKey });
+
+    // ✅ SAFETY CHECK: Verify if videos API is available (Sora access)
+    if (!openai.videos || typeof openai.videos.create !== 'function') {
+      console.warn("⚠️ Sora API not available (no access). Falling back to demo video.");
+      return res.json({ 
+        videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4", 
+        status: "demo", 
+        provider: "demo",
+        message: "Sora access not available. Demo video shown."
+      });
+    }
 
     console.log(`🎬 Creating Sora video for: "${prompt.substring(0, 100)}..."`);
 
