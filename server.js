@@ -474,6 +474,66 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
     }
   }
 });
+// ==================== IMAGE UPLOAD & ANALYSIS ====================
+app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
+  // upload.single("image") का मतलब है कि हम एक फाइल उम्मीद कर रहे हैं जिसका नाम "image" है
+  if (!req.file) {
+    return res.status(400).json({ error: "कोई इमेज अपलोड नहीं की गई है। 🙏" });
+  }
+
+  // यूजर का टेक्स्ट मैसेज भी साथ भेजा जा सकता है
+  const { message } = req.body;
+  if (!message) {
+    return res.status(400).json({ error: "कृपया इमेज के बारे में कुछ पूछें। 🙏" });
+  }
+
+  try {
+    // 1. अपलोड की गई फाइल को पढ़ें और base64 में बदलें (OpenAI Vision API के लिए)
+    const imageBuffer = fs.readFileSync(req.file.path);
+    const base64Image = imageBuffer.toString('base64');
+
+    // अस्थायी फाइल को डिलीट करें
+    fs.unlinkSync(req.file.path);
+
+    // 2. अब आप इस base64Image को किसी भी Vision API को भेज सकते हैं
+    // उदाहरण के लिए, हम यहाँ OpenAI Vision API का उपयोग करेंगे
+    const apiKey = process.env.OPENAI_API_KEY; // DALL-E वाली ही key
+    if (!apiKey) {
+      return res.status(500).json({ error: "OpenAI API key कॉन्फ़िगर नहीं है।" });
+    }
+
+    const openai = new OpenAI({ apiKey });
+
+    // OpenAI Vision API को कॉल करें
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini", // या gpt-4-vision-preview, या कोई भी विजन मॉडल
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: message },
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:image/jpeg;base64,${base64Image}`,
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const analysis = response.choices[0].message.content;
+
+    // 3. सफल रिस्पॉन्स भेजें
+    res.json({ analysis: analysis });
+
+  } catch (error) {
+    console.error("❌ Image Analysis Error:", error);
+    // त्रुटि होने पर भी एक डिफॉल्ट मैसेज भेजें
+    res.status(500).json({ error: "इमेज का विश्लेषण करने में त्रुटि हुई। कृपया पुनः प्रयास करें। 🙏" });
+  }
+});
 
 // ==================== VIDEO GENERATION (Image-to-Video via Runway) ====================
 app.post("/api/video/generate", async (req, res) => {
