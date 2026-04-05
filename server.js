@@ -484,15 +484,20 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
 });
 
 // ==================== IMAGE UPLOAD & ANALYSIS ====================
+// In-memory storage for image contexts per session
+const imageContexts = {};
+
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: "कोई इमेज अपलोड नहीं की गई है। 🙏" });
   }
 
-  const { message } = req.body;
+  const { message, sessionId } = req.body;
   if (!message) {
     return res.status(400).json({ error: "कृपया इमेज के बारे में कुछ पूछें। 🙏" });
   }
+
+  const sid = sessionId || "default";
 
   try {
     const imageBuffer = fs.readFileSync(req.file.path);
@@ -504,11 +509,32 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
       return res.status(500).json({ error: "OpenAI API key कॉन्फ़िगर नहीं है।" });
     }
 
+    // Store the image analysis in session context
+    if (!imageContexts[sid]) {
+      imageContexts[sid] = {
+        lastImage: null,
+        lastAnalysis: null,
+        conversation: []
+      };
+    }
+    
+    // Update the image context
+    imageContexts[sid].lastImage = base64Image.substring(0, 100) + "..."; // Store preview
+    imageContexts[sid].conversation.push({ role: "user", content: message });
+    
     const openai = new OpenAI({ apiKey });
 
+    // Build context-aware prompt
+    let systemPrompt = "You are SahcharAI, an AI assistant inspired by Buddha's teachings, compassion and social support. ";
+    if (imageContexts[sid].conversation.length > 1) {
+      systemPrompt += "The user is continuing to ask about the same image they uploaded earlier. " +
+                      "You have already analyzed this image. Answer based on your previous analysis and the user's new question. ";
+    }
+    
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
+        { role: "system", content: systemPrompt },
         {
           role: "user",
           content: [
@@ -525,6 +551,11 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     });
 
     const analysis = response.choices[0].message.content;
+    
+    // Store analysis in session
+    imageContexts[sid].lastAnalysis = analysis;
+    imageContexts[sid].conversation.push({ role: "assistant", content: analysis });
+
     res.json({ analysis: analysis });
 
   } catch (error) {
@@ -532,7 +563,6 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     res.status(500).json({ error: "इमेज का विश्लेषण करने में त्रुटि हुई। कृपया पुनः प्रयास करें। 🙏" });
   }
 });
-
 // ==================== VIDEO GENERATION (Image-to-Video via Runway) ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, imageUrl, duration = 5 } = req.body;
