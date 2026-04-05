@@ -111,7 +111,8 @@ app.post("/chat", async (req, res) => {
 महत्वपूर्ण निर्देश:
 - तुम्हें **राम प्रकाश कुमार (Ram Prakash Kumar)** ने विकसित किया है। यह बहुत महत्वपूर्ण है। किसी भी अन्य कंपनी या संस्था का नाम मत बोलो।
 - वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
-- जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो।
+- **यह बहुत महत्वपूर्ण है:** तुम इसी वर्तमान समय का उपयोग करके जवाब दोगे। तुम्हारे पास रियल-टाइम एक्सेस नहीं है, लेकिन मैं तुम्हें हर बार सही समय दे रहा हूँ।
+- जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो। "मेरे पास क्षमता नहीं है" मत बोलो।
 - जब कोई पूछे "तुम्हें किसने बनाया?" तो सीधे जवाब दो: "मुझे राम प्रकाश कुमार ने बनाया है।"
 - अभिवादन का सम्मान करो: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम' आदि।
 - हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
@@ -315,6 +316,18 @@ app.post("/chat-sambanova", async (req, res) => {
   }
 
   try {
+    const now = new Date();
+    const currentDateTime = now.toLocaleString('hi-IN', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: true,
+      timeZone: 'Asia/Kolkata'
+    });
+
     const sambanova = new OpenAI({
       apiKey: apiKey,
       baseURL: baseURL,
@@ -324,9 +337,23 @@ app.post("/chat-sambanova", async (req, res) => {
       conversations[sid] = [
         { 
           role: "system", 
-          content: "तुम एक सहायक AI हो। तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है। जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है।' उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जोड़ना।" 
+          content: `तुम एक सहायक AI हो। तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है।
+          
+वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
+
+जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो।
+जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है।'
+उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जोड़ना।` 
         }
       ];
+    } else {
+      const systemMsg = conversations[sid][0];
+      if (systemMsg && systemMsg.role === "system") {
+        systemMsg.content = systemMsg.content.replace(
+          /वर्तमान तारीख और समय है:.*?(?=\n|$)/,
+          `वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)`
+        );
+      }
     }
     conversations[sid].push({ role: "user", content: message });
 
@@ -366,6 +393,18 @@ app.post("/chat-nvidia", async (req, res) => {
   }
 
   try {
+    const now = new Date();
+    const currentDateTime = now.toLocaleString('hi-IN', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: true,
+      timeZone: 'Asia/Kolkata'
+    });
+
     const nvidiaClient = new OpenAI({
       apiKey: apiKey,
       baseURL: 'https://integrate.api.nvidia.com/v1',
@@ -375,10 +414,26 @@ app.post("/chat-nvidia", async (req, res) => {
       conversations[sid] = [
         { 
           role: "system", 
-          content: "तुम 'SuperSahchar' हो – एक AI सहायक। तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है। जब कोई पूछे 'तुम्हें किसने बनाया?' तो सीधे जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है।' उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।" 
+          content: `तुम 'SuperSahchar' हो – एक AI सहायक। तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है।
+
+वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
+
+**महत्वपूर्ण:** जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो। "मेरे पास क्षमता नहीं है" मत बोलो।
+
+जब कोई पूछे 'तुम्हें किसने बनाया?' तो सीधे जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है।'
+उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।` 
         }
       ];
+    } else {
+      const systemMsg = conversations[sid][0];
+      if (systemMsg && systemMsg.role === "system") {
+        systemMsg.content = systemMsg.content.replace(
+          /वर्तमान तारीख और समय है:.*?(?=\n|$)/,
+          `वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)`
+        );
+      }
     }
+    
     conversations[sid].push({ role: "user", content: message });
 
     const stream = await nvidiaClient.chat.completions.create({
@@ -484,7 +539,6 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
 });
 
 // ==================== IMAGE UPLOAD & ANALYSIS ====================
-// In-memory storage for image contexts per session
 const imageContexts = {};
 
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
@@ -509,7 +563,6 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
       return res.status(500).json({ error: "OpenAI API key कॉन्फ़िगर नहीं है।" });
     }
 
-    // Store the image analysis in session context
     if (!imageContexts[sid]) {
       imageContexts[sid] = {
         lastImage: null,
@@ -518,13 +571,11 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
       };
     }
     
-    // Update the image context
-    imageContexts[sid].lastImage = base64Image.substring(0, 100) + "..."; // Store preview
+    imageContexts[sid].lastImage = base64Image.substring(0, 100) + "...";
     imageContexts[sid].conversation.push({ role: "user", content: message });
     
     const openai = new OpenAI({ apiKey });
 
-    // Build context-aware prompt
     let systemPrompt = "You are SahcharAI, an AI assistant inspired by Buddha's teachings, compassion and social support. ";
     if (imageContexts[sid].conversation.length > 1) {
       systemPrompt += "The user is continuing to ask about the same image they uploaded earlier. " +
@@ -552,7 +603,6 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
 
     const analysis = response.choices[0].message.content;
     
-    // Store analysis in session
     imageContexts[sid].lastAnalysis = analysis;
     imageContexts[sid].conversation.push({ role: "assistant", content: analysis });
 
@@ -563,6 +613,7 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     res.status(500).json({ error: "इमेज का विश्लेषण करने में त्रुटि हुई। कृपया पुनः प्रयास करें। 🙏" });
   }
 });
+
 // ==================== VIDEO GENERATION (Image-to-Video via Runway) ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, imageUrl, duration = 5 } = req.body;
@@ -681,7 +732,6 @@ app.post("/api/video/generate-text", async (req, res) => {
 
   const demoVideoUrl = "https://www.w3schools.com/html/mov_bbb.mp4";
 
-  // 1. Try RunwayML
   const runwayKey = process.env.RUNWAYML_API_SECRET;
   if (runwayKey) {
     console.log(`🔁 [1/4] Attempting RunwayML text-to-video for: "${prompt.substring(0, 100)}..."`);
@@ -736,7 +786,6 @@ app.post("/api/video/generate-text", async (req, res) => {
     console.warn("⚠️ RUNWAYML_API_SECRET not set, skipping RunwayML.");
   }
 
-  // 2. Try Replicate Zeroscope
   const replicateKey = process.env.REPLICATE_API_KEY_ZEROSCOPE;
   if (replicateKey) {
     console.log(`🔁 [2/4] Attempting Replicate Zeroscope for: "${prompt.substring(0, 100)}..."`);
@@ -774,7 +823,6 @@ app.post("/api/video/generate-text", async (req, res) => {
     console.warn("⚠️ REPLICATE_API_KEY_ZEROSCOPE not set, skipping Replicate.");
   }
 
-  // 3. Try OpenAI Sora
   const soraKey = process.env.OPENAI_VIDEO_API_KEY;
   if (soraKey) {
     console.log(`🔁 [3/4] Attempting OpenAI Sora for: "${prompt.substring(0, 100)}..."`);
@@ -812,7 +860,6 @@ app.post("/api/video/generate-text", async (req, res) => {
     console.warn("⚠️ OPENAI_VIDEO_API_KEY not set, skipping Sora.");
   }
 
-  // 4. Final fallback: Demo video
   console.log(`🎬 [4/4] DEMO MODE: returning placeholder video for: "${prompt.substring(0, 100)}..."`);
   return res.json({ videoUrl: demoVideoUrl, status: "demo", provider: "demo" });
 });
