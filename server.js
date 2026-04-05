@@ -67,7 +67,7 @@ process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught Exception:', error);
 });
 
-// In-memory conversation storage (for DeepSeek only)
+// In-memory conversation storage
 const conversations = {};
 
 // GET routes
@@ -109,9 +109,10 @@ app.post("/chat", async (req, res) => {
 तुम 'सहचर' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
 
 महत्वपूर्ण निर्देश:
-- तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है. 
+- तुम्हें **राम प्रकाश कुमार (Ram Prakash Kumar)** ने विकसित किया है। यह बहुत महत्वपूर्ण है। किसी भी अन्य कंपनी या संस्था का नाम मत बोलो।
 - वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
 - जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो।
+- जब कोई पूछे "तुम्हें किसने बनाया?" तो सीधे जवाब दो: "मुझे राम प्रकाश कुमार ने बनाया है।"
 - अभिवादन का सम्मान करो: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम' आदि।
 - हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
 - उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
@@ -222,7 +223,6 @@ app.post("/chat-assistant", async (req, res) => {
   try {
     const openai = new OpenAI({ apiKey });
 
-    // ========== DYNAMIC INSTRUCTIONS WITH CURRENT TIME ==========
     const now = new Date();
     const currentDateTime = now.toLocaleString('hi-IN', {
       weekday: 'long',
@@ -239,8 +239,9 @@ app.post("/chat-assistant", async (req, res) => {
 
 महत्वपूर्ण निर्देश:
 - वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
+- तुम्हें **राम प्रकाश कुमार (Ram Prakash Kumar)** ने विकसित किया है।
 - जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो।
-- जब कोई पूछे "तुम्हें किसने बनाया?" तो केवल एक बार और केवल हिंदी में जवाब दो: "मुझे राम प्रकाश कुमार ने बनाया है।" (अंग्रेज़ी में Ram Prakash Kumar अलग से मत बोलो।)
+- जब कोई पूछे "तुम्हें किसने बनाया?" तो केवल एक बार और केवल हिंदी में जवाब दो: "मुझे राम प्रकाश कुमार ने बनाया है।"
 - अभिवादन का सम्मान करो: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम' आदि।
 - हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
 - उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
@@ -321,7 +322,10 @@ app.post("/chat-sambanova", async (req, res) => {
 
     if (!conversations[sid]) {
       conversations[sid] = [
-        { role: "system", content: "You are a helpful assistant." }
+        { 
+          role: "system", 
+          content: "तुम एक सहायक AI हो। तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है। जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है।' उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जोड़ना।" 
+        }
       ];
     }
     conversations[sid].push({ role: "user", content: message });
@@ -369,7 +373,10 @@ app.post("/chat-nvidia", async (req, res) => {
 
     if (!conversations[sid]) {
       conversations[sid] = [
-        { role: "system", content: "You are a helpful assistant." }
+        { 
+          role: "system", 
+          content: "तुम 'SuperSahchar' हो – एक AI सहायक। तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है। जब कोई पूछे 'तुम्हें किसने बनाया?' तो सीधे जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है।' उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।" 
+        }
       ];
     }
     conversations[sid].push({ role: "user", content: message });
@@ -382,7 +389,7 @@ app.post("/chat-nvidia", async (req, res) => {
       max_tokens: 16384,
       stream: true,
       chat_template_kwargs: {
-        enable_thinking: false,   // ✅ थिंकिंग बंद
+        enable_thinking: false,
         clear_thinking: false
       }
     });
@@ -404,6 +411,7 @@ app.post("/chat-nvidia", async (req, res) => {
     res.status(500).json({ reply: "क्षमा करें, NVIDIA NIM सेवा उपलब्ध नहीं है। 🙏" });
   }
 });
+
 // ==================== IMAGE GENERATION (DALL·E 3) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt, language = "hi" } = req.body;
@@ -474,39 +482,32 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
     }
   }
 });
+
 // ==================== IMAGE UPLOAD & ANALYSIS ====================
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
-  // upload.single("image") का मतलब है कि हम एक फाइल उम्मीद कर रहे हैं जिसका नाम "image" है
   if (!req.file) {
     return res.status(400).json({ error: "कोई इमेज अपलोड नहीं की गई है। 🙏" });
   }
 
-  // यूजर का टेक्स्ट मैसेज भी साथ भेजा जा सकता है
   const { message } = req.body;
   if (!message) {
     return res.status(400).json({ error: "कृपया इमेज के बारे में कुछ पूछें। 🙏" });
   }
 
   try {
-    // 1. अपलोड की गई फाइल को पढ़ें और base64 में बदलें (OpenAI Vision API के लिए)
     const imageBuffer = fs.readFileSync(req.file.path);
     const base64Image = imageBuffer.toString('base64');
-
-    // अस्थायी फाइल को डिलीट करें
     fs.unlinkSync(req.file.path);
 
-    // 2. अब आप इस base64Image को किसी भी Vision API को भेज सकते हैं
-    // उदाहरण के लिए, हम यहाँ OpenAI Vision API का उपयोग करेंगे
-    const apiKey = process.env.OPENAI_API_KEY; // DALL-E वाली ही key
+    const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
       return res.status(500).json({ error: "OpenAI API key कॉन्फ़िगर नहीं है।" });
     }
 
     const openai = new OpenAI({ apiKey });
 
-    // OpenAI Vision API को कॉल करें
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini", // या gpt-4-vision-preview, या कोई भी विजन मॉडल
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "user",
@@ -524,13 +525,10 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     });
 
     const analysis = response.choices[0].message.content;
-
-    // 3. सफल रिस्पॉन्स भेजें
     res.json({ analysis: analysis });
 
   } catch (error) {
     console.error("❌ Image Analysis Error:", error);
-    // त्रुटि होने पर भी एक डिफॉल्ट मैसेज भेजें
     res.status(500).json({ error: "इमेज का विश्लेषण करने में त्रुटि हुई। कृपया पुनः प्रयास करें। 🙏" });
   }
 });
@@ -653,9 +651,7 @@ app.post("/api/video/generate-text", async (req, res) => {
 
   const demoVideoUrl = "https://www.w3schools.com/html/mov_bbb.mp4";
 
-  // --------------------------------------------------------------
-  // 1. Try RunwayML (gen4.5 text-to-video)
-  // --------------------------------------------------------------
+  // 1. Try RunwayML
   const runwayKey = process.env.RUNWAYML_API_SECRET;
   if (runwayKey) {
     console.log(`🔁 [1/4] Attempting RunwayML text-to-video for: "${prompt.substring(0, 100)}..."`);
@@ -710,9 +706,7 @@ app.post("/api/video/generate-text", async (req, res) => {
     console.warn("⚠️ RUNWAYML_API_SECRET not set, skipping RunwayML.");
   }
 
-  // --------------------------------------------------------------
   // 2. Try Replicate Zeroscope
-  // --------------------------------------------------------------
   const replicateKey = process.env.REPLICATE_API_KEY_ZEROSCOPE;
   if (replicateKey) {
     console.log(`🔁 [2/4] Attempting Replicate Zeroscope for: "${prompt.substring(0, 100)}..."`);
@@ -750,9 +744,7 @@ app.post("/api/video/generate-text", async (req, res) => {
     console.warn("⚠️ REPLICATE_API_KEY_ZEROSCOPE not set, skipping Replicate.");
   }
 
-  // --------------------------------------------------------------
-  // 3. Try OpenAI Sora (if available)
-  // --------------------------------------------------------------
+  // 3. Try OpenAI Sora
   const soraKey = process.env.OPENAI_VIDEO_API_KEY;
   if (soraKey) {
     console.log(`🔁 [3/4] Attempting OpenAI Sora for: "${prompt.substring(0, 100)}..."`);
@@ -790,9 +782,7 @@ app.post("/api/video/generate-text", async (req, res) => {
     console.warn("⚠️ OPENAI_VIDEO_API_KEY not set, skipping Sora.");
   }
 
-  // --------------------------------------------------------------
   // 4. Final fallback: Demo video
-  // --------------------------------------------------------------
   console.log(`🎬 [4/4] DEMO MODE: returning placeholder video for: "${prompt.substring(0, 100)}..."`);
   return res.json({ videoUrl: demoVideoUrl, status: "demo", provider: "demo" });
 });
