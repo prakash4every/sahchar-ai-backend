@@ -70,6 +70,19 @@ process.on('uncaughtException', (error) => {
 // In-memory conversation storage
 const conversations = {};
 
+// Image context storage per session
+const imageContexts = {};
+
+// Helper function to get image context for a session
+function getImageContextText(sid) {
+  if (imageContexts[sid] && imageContexts[sid].lastAnalysis) {
+    return `\n\n📷 **पिछली बातचीत का संदर्भ:** उपयोगकर्ता ने एक इमेज अपलोड की थी और मैंने उसका विश्लेषण किया था।
+विश्लेषण: "${imageContexts[sid].lastAnalysis.substring(0, 500)}"
+अब उपयोगकर्ता ने पूछा है। कृपया इसी संदर्भ में जवाब दें।\n\n`;
+  }
+  return "";
+}
+
 // GET routes
 app.get("/", (req, res) => {
   res.send("🌿 सहचर AI बैकएंड चालू है ✅ (मेमोरी अपडेट + MongoDB)");
@@ -79,7 +92,7 @@ app.get("/chat", (req, res) => {
   res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅");
 });
 
-// ==================== DEEPSEEK CHAT (DEFAULT) ====================
+// ==================== DEEPSEEK CHAT (DEFAULT) with Image Context ====================
 app.post("/chat", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
@@ -101,6 +114,8 @@ app.post("/chat", async (req, res) => {
       timeZone: 'Asia/Kolkata'
     });
 
+    const imageContext = getImageContextText(sid);
+
     if (!conversations[sid]) {
       conversations[sid] = [
         {
@@ -118,16 +133,27 @@ app.post("/chat", async (req, res) => {
 - हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
 - उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
 - उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।
+${imageContext}
           `
         }
       ];
     } else {
       const systemMsg = conversations[sid][0];
       if (systemMsg && systemMsg.role === "system") {
-        systemMsg.content = systemMsg.content.replace(
+        // Update time and add image context
+        let newContent = systemMsg.content.replace(
           /वर्तमान तारीख और समय है:.*?(?=\n|$)/,
           `वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)`
         );
+        // Add or update image context
+        if (imageContext) {
+          if (newContent.includes("📷 **पिछली बातचीत का संदर्भ:**")) {
+            newContent = newContent.replace(/📷 \*\*पिछली बातचीत का संदर्भ:\*\*[\s\S]*?(?=\n\n)/, imageContext.trim());
+          } else {
+            newContent = newContent + imageContext;
+          }
+        }
+        systemMsg.content = newContent;
       }
     }
 
@@ -328,6 +354,8 @@ app.post("/chat-sambanova", async (req, res) => {
       timeZone: 'Asia/Kolkata'
     });
 
+    const imageContext = getImageContextText(sid);
+
     const sambanova = new OpenAI({
       apiKey: apiKey,
       baseURL: baseURL,
@@ -343,16 +371,25 @@ app.post("/chat-sambanova", async (req, res) => {
 
 जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो।
 जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है।'
-उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जोड़ना।` 
+उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जोड़ना।
+${imageContext}` 
         }
       ];
     } else {
       const systemMsg = conversations[sid][0];
       if (systemMsg && systemMsg.role === "system") {
-        systemMsg.content = systemMsg.content.replace(
+        let newContent = systemMsg.content.replace(
           /वर्तमान तारीख और समय है:.*?(?=\n|$)/,
           `वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)`
         );
+        if (imageContext) {
+          if (newContent.includes("📷 **पिछली बातचीत का संदर्भ:**")) {
+            newContent = newContent.replace(/📷 \*\*पिछली बातचीत का संदर्भ:\*\*[\s\S]*?(?=\n\n)/, imageContext.trim());
+          } else {
+            newContent = newContent + imageContext;
+          }
+        }
+        systemMsg.content = newContent;
       }
     }
     conversations[sid].push({ role: "user", content: message });
@@ -377,7 +414,7 @@ app.post("/chat-sambanova", async (req, res) => {
   }
 });
 
-// ==================== NVIDIA NIM CHAT ====================
+// ==================== NVIDIA NIM CHAT with Image Context ====================
 app.post("/chat-nvidia", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
@@ -405,6 +442,8 @@ app.post("/chat-nvidia", async (req, res) => {
       timeZone: 'Asia/Kolkata'
     });
 
+    const imageContext = getImageContextText(sid);
+
     const nvidiaClient = new OpenAI({
       apiKey: apiKey,
       baseURL: 'https://integrate.api.nvidia.com/v1',
@@ -421,16 +460,25 @@ app.post("/chat-nvidia", async (req, res) => {
 **महत्वपूर्ण:** जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो। "मेरे पास क्षमता नहीं है" मत बोलो।
 
 जब कोई पूछे 'तुम्हें किसने बनाया?' तो सीधे जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है।'
-उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।` 
+उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।
+${imageContext}` 
         }
       ];
     } else {
       const systemMsg = conversations[sid][0];
       if (systemMsg && systemMsg.role === "system") {
-        systemMsg.content = systemMsg.content.replace(
+        let newContent = systemMsg.content.replace(
           /वर्तमान तारीख और समय है:.*?(?=\n|$)/,
           `वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)`
         );
+        if (imageContext) {
+          if (newContent.includes("📷 **पिछली बातचीत का संदर्भ:**")) {
+            newContent = newContent.replace(/📷 \*\*पिछली बातचीत का संदर्भ:\*\*[\s\S]*?(?=\n\n)/, imageContext.trim());
+          } else {
+            newContent = newContent + imageContext;
+          }
+        }
+        systemMsg.content = newContent;
       }
     }
     
@@ -539,8 +587,6 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
 });
 
 // ==================== IMAGE UPLOAD & ANALYSIS ====================
-const imageContexts = {};
-
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: "कोई इमेज अपलोड नहीं की गई है। 🙏" });
@@ -606,6 +652,7 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     imageContexts[sid].lastAnalysis = analysis;
     imageContexts[sid].conversation.push({ role: "assistant", content: analysis });
 
+    console.log(`📸 Image analyzed for session ${sid}: ${analysis.substring(0, 100)}...`);
     res.json({ analysis: analysis });
 
   } catch (error) {
