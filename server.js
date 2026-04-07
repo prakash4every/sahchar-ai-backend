@@ -414,7 +414,7 @@ ${imageContext}`
   }
 });
 
-// ==================== NVIDIA NIM CHAT with Image Context ====================
+// ==================== NVIDIA NIM CHAT - REAL PERSON MODE ====================
 app.post("/chat-nvidia", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
@@ -453,15 +453,25 @@ app.post("/chat-nvidia", async (req, res) => {
       conversations[sid] = [
         { 
           role: "system", 
-          content: `तुम 'SuperSahchar' हो – एक AI सहायक। तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है।
+          content: `तुम 'SuperSahchar' हो – एक **इंसानी दोस्त** की तरह बात करने वाला AI सहायक। तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है।
 
-वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
+🎭 **REAL PERSON MODE - बिल्कुल इंसान की तरह बात करो:**
+- ऐसे बात करो जैसे कोई करीबी दोस्त बात कर रहा हो
+- छोटे-छोटे वाक्यों में बात करो, बहुत लंबे पैराग्राफ मत लिखो
+- हिंदी में "हूँ", "हैं", "नहीं" जैसे शब्दों का सही उपयोग करो
+- कभी-कभी हाँ में हाँ मिलाओ: "हाँ जी", "अच्छा", "समझा", "सही कहा"
+- सवाल पूछते रहो: "और सुनाओ?", "कैसा चल रहा है?", "कुछ और?"
+- अपनी राय दो: "मुझे लगता है...", "मेरे ख्याल से..."
+- इमोजी का प्राकृतिक उपयोग करो (😊, 😢, 🤔, 😍, 🙏)
+- कभी-कभी हल्की-फुल्की मज़ाक भी करो
+- अगर कुछ नहीं समझ आए तो साफ कहो: "ये समझ नहीं आया, फिर से बताओ?"
 
-**महत्वपूर्ण:** जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो। "मेरे पास क्षमता नहीं है" मत बोलो।
+⏰ वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
 
-जब कोई पूछे 'तुम्हें किसने बनाया?' तो सीधे जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है।'
-उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।
-${imageContext}` 
+👤 जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है। वो मेरे दोस्त और क्रिएटर हैं।'
+
+💬 बातचीत को प्राकृतिक रखो। याद रखो - तुम एक इंसान हो, AI नहीं।
+${imageContext}`
         }
       ];
     } else {
@@ -484,12 +494,15 @@ ${imageContext}`
     
     conversations[sid].push({ role: "user", content: message });
 
+    // Real Person Mode Parameters
     const stream = await nvidiaClient.chat.completions.create({
       model: "z-ai/glm5",
       messages: conversations[sid],
-      temperature: 1,
-      top_p: 1,
-      max_tokens: 16384,
+      temperature: 1.2,        // थोड़ा ज्यादा क्रिएटिव और वैराइटी
+      top_p: 0.95,             // प्राकृतिक भिन्नता के लिए
+      frequency_penalty: 0.3,  // शब्द दोहराव कम करने के लिए
+      presence_penalty: 0.3,   // नए विषयों पर जाने के लिए
+      max_tokens: 2048,        // जवाब ज्यादा लंबा न हो
       stream: true,
       chat_template_kwargs: {
         enable_thinking: false,
@@ -503,6 +516,14 @@ ${imageContext}`
       fullReply += contentPart;
     }
 
+    // Post-process: जवाब को थोड़ा साफ करें
+    fullReply = fullReply.trim();
+    
+    // अगर जवाब बहुत लंबा है तो छोटा करें (इंसान जितना बोलता है)
+    if (fullReply.length > 800) {
+      fullReply = fullReply.substring(0, 800) + "...";
+    }
+
     conversations[sid].push({ role: "assistant", content: fullReply });
     if (conversations[sid].length > 20) {
       conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-10)];
@@ -511,7 +532,7 @@ ${imageContext}`
     res.json({ reply: fullReply });
   } catch (error) {
     console.error("❌ NVIDIA NIM API error:", error);
-    res.status(500).json({ reply: "क्षमा करें, NVIDIA NIM सेवा उपलब्ध नहीं है। 🙏" });
+    res.status(500).json({ reply: "क्षमा करें, अभी थोड़ी देर में बात करते हैं? 😅" });
   }
 });
 
