@@ -11,9 +11,77 @@ import { fileURLToPath } from 'url';
 import axios from 'axios';
 import OpenAI from 'openai';
 
+// ========== FALLBACK & RETRY HELPERS ==========
+const API_TIMEOUT_MS = 30000;     // 30 seconds
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 1000;
+
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function withRetry(fn, context) {
+    let lastError;
+    for (let i = 0; i <= MAX_RETRIES; i++) {
+        try {
+            return await fn();
+        } catch (error) {
+            lastError = error;
+            console.error(`❌ ${context} attempt ${i+1} failed:`, error.message);
+            if (i < MAX_RETRIES) await delay(RETRY_DELAY_MS * (i + 1));
+        }
+    }
+    throw lastError;
+}
+
+// NVIDIA API Keys fallback (आपके env में NGC_API_KEY_1, _2, _3 डालें)
+const nvidiaApiKeys = [
+    process.env.NGC_API_KEY_1,
+    process.env.NGC_API_KEY_2,
+    process.env.NGC_API_KEY_3,
+    process.env.NGC_API_KEY    // fallback to single key if defined
+].filter(key => key && key.trim() !== "");
+
+if (nvidiaApiKeys.length === 0) {
+    console.warn("⚠️ No NGC_API_KEY_* defined. NVIDIA NIM will not work.");
+}
+
+async function callNvidiaWithFallback(messages, sessionId) {
+    if (nvidiaApiKeys.length === 0) throw new Error("No NVIDIA keys");
+    for (let keyIdx = 0; keyIdx < nvidiaApiKeys.length; keyIdx++) {
+        const apiKey = nvidiaApiKeys[keyIdx];
+        console.log(`🔑 Trying NVIDIA key index ${keyIdx} (${keyIdx === 0 ? 'primary' : `fallback-${keyIdx}`})`);
+        try {
+            const nvidiaClient = new OpenAI({
+                apiKey: apiKey,
+                baseURL: 'https://integrate.api.nvidia.com/v1',
+                timeout: API_TIMEOUT_MS
+            });
+            const stream = await nvidiaClient.chat.completions.create({
+                model: "z-ai/glm5",
+                messages: messages,
+                temperature: 1.2, top_p: 0.95,
+                frequency_penalty: 0.3, presence_penalty: 0.3,
+                max_tokens: 2048, stream: true,
+                chat_template_kwargs: { enable_thinking: false, clear_thinking: false }
+            });
+            let fullReply = "";
+            for await (const chunk of stream) {
+                fullReply += chunk.choices[0]?.delta?.content || "";
+            }
+            fullReply = fullReply.trim();
+            if (fullReply.length > 800) fullReply = fullReply.substring(0, 800) + "...";
+            console.log(`✅ NVIDIA key ${keyIdx} success. Reply length: ${fullReply.length}`);
+            return fullReply;
+        } catch (err) {
+            console.error(`❌ NVIDIA key ${keyIdx} failed:`, err.message);
+            if (keyIdx === nvidiaApiKeys.length - 1) throw err;
+            // otherwise continue to next key
+        }
+    }
+    throw new Error("All NVIDIA keys failed");
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
 dotenv.config();
 
 // MONGODB_URI check
@@ -414,19 +482,13 @@ ${imageContext}`
   }
 });
 
-// ==================== NVIDIA NIM CHAT - REAL PERSON MODE ====================
+// ==================== NVIDIA NIM CHAT - REAL PERSON MODE (WITH FALLBACK KEYS) ====================
 app.post("/chat-nvidia", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
 
   if (!message) {
     return res.status(400).json({ error: "Message required 🙏" });
-  }
-
-  const apiKey = process.env.NGC_API_KEY;
-  if (!apiKey) {
-    console.warn("⚠️ NGC_API_KEY not set.");
-    return res.status(501).json({ reply: "NVIDIA NIM not configured on server." });
   }
 
   try {
@@ -443,11 +505,6 @@ app.post("/chat-nvidia", async (req, res) => {
     });
 
     const imageContext = getImageContextText(sid);
-
-    const nvidiaClient = new OpenAI({
-      apiKey: apiKey,
-      baseURL: 'https://integrate.api.nvidia.com/v1',
-    });
 
     if (!conversations[sid]) {
       conversations[sid] = [
@@ -494,34 +551,26 @@ ${imageContext}`
     
     conversations[sid].push({ role: "user", content: message });
 
-    // Real Person Mode Parameters
-    const stream = await nvidiaClient.chat.completions.create({
-      model: "z-ai/glm5",
-      messages: conversations[sid],
-      temperature: 1.2,        // थोड़ा ज्यादा क्रिएटिव और वैराइटी
-      top_p: 0.95,             // प्राकृतिक भिन्नता के लिए
-      frequency_penalty: 0.3,  // शब्द दोहराव कम करने के लिए
-      presence_penalty: 0.3,   // नए विषयों पर जाने के लिए
-      max_tokens: 2048,        // जवाब ज्यादा लंबा न हो
-      stream: true,
-      chat_template_kwargs: {
-        enable_thinking: false,
-        clear_thinking: false
-      }
-    });
-
-    let fullReply = "";
-    for await (const chunk of stream) {
-      const contentPart = chunk.choices[0]?.delta?.content || "";
-      fullReply += contentPart;
-    }
-
-    // Post-process: जवाब को थोड़ा साफ करें
-    fullReply = fullReply.trim();
-    
-    // अगर जवाब बहुत लंबा है तो छोटा करें (इंसान जितना बोलता है)
-    if (fullReply.length > 800) {
-      fullReply = fullReply.substring(0, 800) + "...";
+    let fullReply;
+    try {
+      fullReply = await callNvidiaWithFallback(conversations[sid], sid);
+    } catch (nvidiaError) {
+      console.error("❌ All NVIDIA keys failed, falling back to DeepSeek...");
+      // Fallback to DeepSeek API
+      const deepseekResponse = await fetch("https://api.deepseek.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: "deepseek-chat",
+          messages: conversations[sid],
+          timeout: API_TIMEOUT_MS
+        })
+      });
+      const deepseekData = await deepseekResponse.json();
+      fullReply = deepseekData.choices?.[0]?.message?.content || "क्षमा करें, सेवा उपलब्ध नहीं है। 🙏";
     }
 
     conversations[sid].push({ role: "assistant", content: fullReply });
@@ -531,7 +580,7 @@ ${imageContext}`
 
     res.json({ reply: fullReply });
   } catch (error) {
-    console.error("❌ NVIDIA NIM API error:", error);
+    console.error("❌ /chat-nvidia error:", error);
     res.status(500).json({ reply: "क्षमा करें, अभी थोड़ी देर में बात करते हैं? 😅" });
   }
 });
