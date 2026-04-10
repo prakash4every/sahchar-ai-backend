@@ -42,10 +42,12 @@ async function* elevenlabsStream(text) {
             'xi-api-key': ELEVENLABS_API_KEY,
         },
         data: {
-            text: text,
-            model_id: 'eleven_monolingual_v1',
-            voice_settings: { stability: 0.5, similarity_boost: 0.5 },
-        },
+    text: text,
+    model_id: 'eleven_monolingual_v1',
+    voice_settings: { stability: 0.5, similarity_boost: 0.5 },
+    output_format: 'pcm',        // PCM output
+    sample_rate: 16000           // 16kHz
+},
         responseType: 'stream',
     });
     const stream = response.data;
