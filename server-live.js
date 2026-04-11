@@ -11,7 +11,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get('/', (req, res) => res.send('Live AI server (Groq Whisper)'));
+app.get('/', (req, res) => res.send('Live AI server (Groq)'));
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 10000;
@@ -89,10 +89,10 @@ wss.on('connection', (ws) => {
     let accumulatedTranscript = '';
     let isBotSpeaking = false;
 
-    const SILENCE_MS = 500;           // shorter silence detection
-    const MAX_BUFFER_MS = 8000;       // process after 8 seconds regardless
     const SAMPLE_RATE = 16000;
     const BYTES_PER_SECOND = SAMPLE_RATE * 2; // 16-bit = 2 bytes
+    const MAX_CHUNK_MS = 2000;                // 2 seconds max per transcription
+    const MAX_CHUNK_BYTES = (MAX_CHUNK_MS / 1000) * BYTES_PER_SECOND;
 
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
@@ -101,14 +101,13 @@ wss.on('connection', (ws) => {
                 console.log('Silence detected, processing audio...');
                 processAudio();
             }
-        }, SILENCE_MS);
+        }, 800); // 800ms silence
     }
 
     function checkMaxDuration() {
         const totalBytes = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
-        const durationMs = (totalBytes / BYTES_PER_SECOND) * 1000;
-        if (durationMs >= MAX_BUFFER_MS && !isProcessing && audioBuffer.length > 0) {
-            console.log(`Max buffer duration reached (${durationMs}ms), processing...`);
+        if (totalBytes >= MAX_CHUNK_BYTES && !isProcessing && audioBuffer.length > 0) {
+            console.log(`Max buffer reached (${(totalBytes / BYTES_PER_SECOND).toFixed(1)}s), processing...`);
             processAudio();
         }
     }
@@ -118,11 +117,39 @@ wss.on('connection', (ws) => {
         isProcessing = true;
         if (silenceTimer) clearTimeout(silenceTimer);
 
-        const totalLength = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
-        const fullAudio = Buffer.concat(audioBuffer, totalLength);
-        audioBuffer = [];
+        // Take only up to MAX_CHUNK_BYTES from the buffer (oldest part)
+        let totalBytes = 0;
+        let chunksToSend = [];
+        for (const chunk of audioBuffer) {
+            if (totalBytes + chunk.length <= MAX_CHUNK_BYTES) {
+                chunksToSend.push(chunk);
+                totalBytes += chunk.length;
+            } else {
+                // Split the last chunk to fit exactly
+                const remaining = MAX_CHUNK_BYTES - totalBytes;
+                chunksToSend.push(chunk.slice(0, remaining));
+                totalBytes += remaining;
+                break;
+            }
+        }
 
-        // Convert PCM to WAV
+        // Remove processed bytes from the beginning of the buffer
+        let processedBytes = 0;
+        const newBuffer = [];
+        for (const chunk of audioBuffer) {
+            if (processedBytes + chunk.length <= totalBytes) {
+                processedBytes += chunk.length;
+                continue;
+            } else {
+                const remaining = chunk.length - (totalBytes - processedBytes);
+                newBuffer.push(chunk.slice(-remaining));
+                processedBytes = totalBytes;
+            }
+        }
+        audioBuffer = newBuffer;
+
+        // Concatenate the selected chunks
+        const fullAudio = Buffer.concat(chunksToSend, totalBytes);
         const wavBuffer = pcmToWav(fullAudio, SAMPLE_RATE, 1, 16);
         const audioBase64 = wavBuffer.toString('base64');
 
@@ -145,17 +172,27 @@ wss.on('connection', (ws) => {
             }
         } catch (err) {
             console.error('❌ Groq error:', err);
-            // If error is due to size, try to split buffer (optional)
-            if (err.message?.includes('message too large') && fullAudio.length > 200000) {
-                console.log('Audio too large, splitting...');
-                // Split into two halves and process recursively
-                const half = Math.floor(fullAudio.length / 2);
-                audioBuffer = [fullAudio.slice(0, half), fullAudio.slice(half)];
-                processAudio(); // process first half
+            // If still too large, split further (shouldn't happen with 2s chunks)
+            if (err.message?.includes('too large') && totalBytes > 10000) {
+                console.log('Still too large, splitting into 1s chunks');
+                // Process half of the selected data
+                const half = Math.floor(totalBytes / 2);
+                const firstHalf = fullAudio.slice(0, half);
+                const secondHalf = fullAudio.slice(half);
+                audioBuffer = [secondHalf, ...audioBuffer];
+                const wavFirst = pcmToWav(firstHalf, SAMPLE_RATE, 1, 16);
+                const retryResponse = await groqClient.audio.transcriptions.create({
+                    file: wavFirst,
+                    model: 'whisper-large-v3',
+                    language: 'hi',
+                    response_format: 'text',
+                });
+                const partial = retryResponse.trim();
+                if (partial) accumulatedTranscript += partial + ' ';
             }
         } finally {
             isProcessing = false;
-            // Process any remaining audio that arrived during processing
+            // Process remaining audio if any
             if (audioBuffer.length > 0) processAudio();
         }
     }
