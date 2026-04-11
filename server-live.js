@@ -60,9 +60,9 @@ wss.on('connection', async (ws) => {
     let isUserSpeaking = false;
     let accumulatedText = '';
     let isBotSpeaking = false;
-    let useEchoFallback = false;
+    let deepgramReady = false;
+    let audioBuffer = []; // buffer audio chunks until Deepgram opens
 
-    // Attempt to start Deepgram live transcription
     try {
         deepgramLive = deepgram.listen.live({
             model: 'nova-2',
@@ -74,20 +74,20 @@ wss.on('connection', async (ws) => {
 
         deepgramLive.on('open', () => {
             console.log('🎙️ Deepgram connection open');
+            deepgramReady = true;
+            // flush buffered audio chunks
+            for (const chunk of audioBuffer) {
+                deepgramLive.send(chunk);
+            }
+            audioBuffer = [];
         });
 
         deepgramLive.on('error', (err) => {
             console.error('❌ Deepgram error:', err);
-            // If Deepgram fails, switch to echo mode for this client
-            if (!useEchoFallback) {
-                useEchoFallback = true;
-                console.warn('⚠️ Falling back to echo mode (no AI)');
-                ws.send(Buffer.from('🔇 Deepgram failed, echo mode only.'));
-            }
+            deepgramReady = false;
         });
 
         deepgramLive.on('transcriptReceived', (data) => {
-            if (useEchoFallback) return;
             const transcript = data.channel.alternatives[0].transcript;
             if (!transcript) return;
 
@@ -111,10 +111,20 @@ wss.on('connection', async (ws) => {
             }
         });
     } catch (err) {
-        console.error('❌ Failed to create Deepgram live client:', err);
-        useEchoFallback = true;
-        ws.send(Buffer.from('🔇 Deepgram init failed, echo mode only.'));
+        console.error('❌ Failed to create Deepgram client:', err);
+        deepgramReady = false;
     }
+
+    // Fallback: if Deepgram not ready after 5 seconds, switch to echo mode
+    setTimeout(() => {
+        if (!deepgramReady) {
+            console.warn('⚠️ Deepgram not ready, switching to ECHO mode');
+            ws.send(Buffer.from('🔇 Echo mode (Deepgram failed)'));
+            // Override message handler to just echo back
+            ws.removeAllListeners('message');
+            ws.on('message', (data) => ws.send(data));
+        }
+    }, 5000);
 
     async function sendToLLM(text) {
         console.log(`🤖 LLM request: ${text}`);
@@ -161,17 +171,14 @@ wss.on('connection', async (ws) => {
         }
     }
 
-    // Handle incoming audio chunks
     ws.on('message', (data) => {
-        if (useEchoFallback) {
-            // Echo mode: send back exactly what we received
-            ws.send(data);
-            return;
-        }
-        if (deepgramLive && deepgramLive.readyState === 1) {
+        if (deepgramReady && deepgramLive && deepgramLive.readyState === 1) {
             deepgramLive.send(data);
+        } else if (!deepgramReady) {
+            // buffer while waiting for Deepgram to open
+            audioBuffer.push(data);
         } else {
-            console.warn('Deepgram not ready, dropping audio chunk');
+            console.warn('Deepgram not ready, dropping chunk');
         }
     });
 
