@@ -12,36 +12,34 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Simple root endpoint to verify server is running
-app.get('/', (req, res) => res.send('Live audio server is running'));
+app.get('/', (req, res) => res.send('Live audio server (debug mode)'));
 app.get('/health', (req, res) => res.send('OK'));
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 const server = app.listen(PORT, () => {
-    console.log(`✅ HTTP server listening on ${PORT}`);
+    console.log(`✅ HTTP server on ${PORT}`);
 });
 
-// WebSocket server attached to the same HTTP server
 const wss = new WebSocketServer({ server });
-console.log(`🎤 WebSocket server running on port ${PORT}`);
+console.log(`🎤 WebSocket server on ${PORT}`);
 
-// NVIDIA NIM (uses NGC_API_KEY)
+// ========== NVIDIA NIM ==========
 const nvidiaClient = new OpenAI({
     apiKey: process.env.NGC_API_KEY,
     baseURL: 'https://integrate.api.nvidia.com/v1',
 });
 
-// ElevenLabs TTS
+// ========== ElevenLabs TTS ==========
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const ELEVENLABS_VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
+const VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
 
-async function* elevenlabsStream(text) {
-    if (!ELEVENLABS_API_KEY) throw new Error('Missing ELEVENLABS_API_KEY');
+async function ttsStream(text) {
+    if (!ELEVENLABS_API_KEY) throw new Error('ELEVENLABS_API_KEY missing');
     const response = await axios({
         method: 'POST',
-        url: `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`,
+        url: `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream`,
         headers: {
-            'Accept': 'audio/mpeg',
+            'Accept': 'audio/pcm',
             'Content-Type': 'application/json',
             'xi-api-key': ELEVENLABS_API_KEY,
         },
@@ -56,16 +54,17 @@ async function* elevenlabsStream(text) {
     return response.data;
 }
 
-// Deepgram live transcription
+// ========== Deepgram Live ==========
 const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
 
 wss.on('connection', (ws) => {
     console.log('🔌 Client connected');
     let deepgramLive = null;
+    let isUserSpeaking = false;
     let accumulatedText = '';
-    let ttsActive = false;
-    let userSpeaking = false;
+    let isBotSpeaking = false;
 
+    // Start Deepgram
     deepgramLive = deepgram.listen.live({
         model: 'nova-2',
         language: 'hi',
@@ -75,90 +74,91 @@ wss.on('connection', (ws) => {
     });
 
     deepgramLive.on('open', () => console.log('🎙️ Deepgram open'));
+    deepgramLive.on('error', (err) => {
+        console.error('❌ Deepgram error:', err);
+        // Don't close WebSocket, just log
+    });
+
     deepgramLive.on('transcriptReceived', (data) => {
         const transcript = data.channel.alternatives[0].transcript;
         if (!transcript) return;
+
         if (data.is_final) {
             accumulatedText += transcript + ' ';
-            userSpeaking = false;
-            if (accumulatedText.trim() && !ttsActive) {
+            console.log(`📝 Final transcript: ${accumulatedText}`);
+            if (accumulatedText.trim() && !isBotSpeaking) {
+                isBotSpeaking = true;
                 sendToLLM(accumulatedText.trim());
                 accumulatedText = '';
             }
         } else {
-            if (!userSpeaking) {
-                userSpeaking = true;
-                sendBackchannel('हाँ');
+            if (!isUserSpeaking) {
+                isUserSpeaking = true;
+                console.log('👤 User started speaking, sending backchannel');
+                ttsStream('हाँ').then(stream => {
+                    for await (const chunk of stream) ws.send(chunk);
+                }).catch(err => console.error('Backchannel TTS error:', err));
             }
         }
     });
-    deepgramLive.on('error', (err) => console.error('Deepgram error:', err));
-
-    async function sendBackchannel(word) {
-        try {
-            const stream = await elevenlabsStream(word);
-            for await (const chunk of stream) {
-                ws.send(chunk);
-            }
-        } catch (err) {
-            console.error('Backchannel error:', err);
-        }
-    }
 
     async function sendToLLM(text) {
-        if (ttsActive) return;
-        ttsActive = true;
+        console.log(`🤖 Sending to LLM: ${text}`);
         try {
             const messages = [
-                { role: 'system', content: 'You are a friendly human. While the user speaks, interject with "haan", "achha", "hmm". When user pauses, give short responses in Hindi.' },
+                { role: 'system', content: 'You are a friendly human. Interject with "haan", "achha", "hmm" while user speaks. When user pauses, give short responses in Hindi.' },
                 { role: 'user', content: text }
             ];
             const stream = await nvidiaClient.chat.completions.create({
                 model: 'z-ai/glm5',
                 messages: messages,
                 stream: true,
-                temperature: 1.0,
-                max_tokens: 500,
+                temperature: 0.9,
+                max_tokens: 300,
             });
             let buffer = '';
             for await (const chunk of stream) {
                 const token = chunk.choices[0]?.delta?.content || '';
                 buffer += token;
-                if (token.match(/[।!?]/) || buffer.length > 50) {
+                if (token.match(/[।!?]/) || buffer.length > 40 || token.match(/(हाँ|अच्छा|हम्म)/)) {
                     await speak(buffer);
                     buffer = '';
-                } else if (token.match(/(हाँ|अच्छा|हम्म|ठीक है)/)) {
-                    await speak(token);
                 }
             }
             if (buffer) await speak(buffer);
         } catch (err) {
-            console.error('LLM error:', err);
+            console.error('❌ LLM error:', err);
+            // Fallback: send an echo message
+            await speak('मुझे समझ नहीं आया, कृपया फिर से बोलें।');
         } finally {
-            ttsActive = false;
+            isBotSpeaking = false;
         }
     }
 
     async function speak(sentence) {
         if (!sentence.trim()) return;
+        console.log(`🔊 TTS: ${sentence}`);
         try {
-            const stream = await elevenlabsStream(sentence);
+            const stream = await ttsStream(sentence);
             for await (const chunk of stream) {
                 ws.send(chunk);
             }
         } catch (err) {
-            console.error('TTS error:', err);
+            console.error('❌ TTS error:', err);
         }
     }
 
+    // Handle incoming audio chunks
     ws.on('message', (data) => {
         if (deepgramLive && deepgramLive.readyState === 1) {
             deepgramLive.send(data);
+        } else {
+            console.warn('Deepgram not ready, ignoring audio chunk');
         }
     });
 
-    ws.on('close', () => {
-        console.log('Client disconnected');
+    ws.on('close', (code, reason) => {
+        console.log(`🔌 Client disconnected: code=${code}, reason=${reason?.toString() || 'none'}`);
         if (deepgramLive) deepgramLive.finish();
     });
 });
