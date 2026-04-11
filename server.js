@@ -11,9 +11,76 @@ import { fileURLToPath } from 'url';
 import axios from 'axios';
 import OpenAI from 'openai';
 
+// ========== FALLBACK & RETRY HELPERS ==========
+const API_TIMEOUT_MS = 30000;
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 1000;
+
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function withRetry(fn, context) {
+    let lastError;
+    for (let i = 0; i <= MAX_RETRIES; i++) {
+        try {
+            return await fn();
+        } catch (error) {
+            lastError = error;
+            console.error(`❌ ${context} attempt ${i+1} failed:`, error.message);
+            if (i < MAX_RETRIES) await delay(RETRY_DELAY_MS * (i + 1));
+        }
+    }
+    throw lastError;
+}
+
+// NVIDIA API Keys fallback
+const nvidiaApiKeys = [
+    process.env.NGC_API_KEY_1,
+    process.env.NGC_API_KEY_2,
+    process.env.NGC_API_KEY_3,
+    process.env.NGC_API_KEY
+].filter(key => key && key.trim() !== "");
+
+if (nvidiaApiKeys.length === 0) {
+    console.warn("⚠️ No NGC_API_KEY_* defined. NVIDIA NIM will not work.");
+}
+
+async function callNvidiaWithFallback(messages, sessionId) {
+    if (nvidiaApiKeys.length === 0) throw new Error("No NVIDIA keys");
+    for (let keyIdx = 0; keyIdx < nvidiaApiKeys.length; keyIdx++) {
+        const apiKey = nvidiaApiKeys[keyIdx];
+        console.log(`🔑 Trying NVIDIA key index ${keyIdx} (${keyIdx === 0 ? 'primary' : `fallback-${keyIdx}`})`);
+        try {
+            const nvidiaClient = new OpenAI({
+                apiKey: apiKey,
+                baseURL: 'https://integrate.api.nvidia.com/v1',
+                timeout: API_TIMEOUT_MS
+            });
+            const stream = await nvidiaClient.chat.completions.create({
+                model: "z-ai/glm5",
+                messages: messages,
+                temperature: 1.2, top_p: 0.95,
+                frequency_penalty: 0.3, presence_penalty: 0.3,
+                max_tokens: 2048, stream: true,
+                chat_template_kwargs: { enable_thinking: false, clear_thinking: false }
+            });
+            let fullReply = "";
+            for await (const chunk of stream) {
+                fullReply += chunk.choices[0]?.delta?.content || "";
+            }
+            fullReply = fullReply.trim();
+            if (fullReply.length > 800) fullReply = fullReply.substring(0, 800) + "...";
+            console.log(`✅ NVIDIA key ${keyIdx} success. Reply length: ${fullReply.length}`);
+            return fullReply;
+        } catch (err) {
+            console.error(`❌ NVIDIA key ${keyIdx} failed:`, err.message);
+            if (keyIdx === nvidiaApiKeys.length - 1) throw err;
+        }
+    }
+    throw new Error("All NVIDIA keys failed");
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
 dotenv.config();
 
 // MONGODB_URI check
@@ -67,13 +134,10 @@ process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught Exception:', error);
 });
 
-// In-memory conversation storage
+// In-memory conversation storage (cache)
 const conversations = {};
-
-// Image context storage per session
 const imageContexts = {};
 
-// Helper function to get image context for a session
 function getImageContextText(sid) {
   if (imageContexts[sid] && imageContexts[sid].lastAnalysis) {
     return `\n\n📷 **पिछली बातचीत का संदर्भ:** उपयोगकर्ता ने एक इमेज अपलोड की थी और मैंने उसका विश्लेषण किया था।
@@ -83,16 +147,36 @@ function getImageContextText(sid) {
   return "";
 }
 
+// Load conversation history from MongoDB
+async function loadConversationFromDB(sid, limit = 20) {
+  if (!db) return [];
+  try {
+    const convCollection = db.collection('conversations');
+    const messages = await convCollection.find({ sessionId: sid })
+      .sort({ timestamp: 1 })
+      .limit(limit)
+      .toArray();
+    const history = [];
+    for (const msg of messages) {
+      history.push({ role: "user", content: msg.userMessage });
+      history.push({ role: "assistant", content: msg.botReply });
+    }
+    return history;
+  } catch (err) {
+    console.error("Error loading conversation from DB:", err);
+    return [];
+  }
+}
+
 // GET routes
 app.get("/", (req, res) => {
   res.send("🌿 सहचर AI बैकएंड चालू है ✅ (मेमोरी अपडेट + MongoDB)");
 });
-
 app.get("/chat", (req, res) => {
   res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅");
 });
 
-// ==================== DEEPSEEK CHAT (DEFAULT) with Image Context ====================
+// ==================== DEEPSEEK CHAT (SahcharAI – unchanged) ====================
 app.post("/chat", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
@@ -117,11 +201,10 @@ app.post("/chat", async (req, res) => {
     const imageContext = getImageContextText(sid);
 
     if (!conversations[sid]) {
-      conversations[sid] = [
-        {
-          role: "system",
-          content: `
-तुम 'सहचर' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
+      const history = await loadConversationFromDB(sid, 20);
+      const systemMsg = {
+        role: "system",
+        content: `तुम 'सहचर' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
 
 महत्वपूर्ण निर्देश:
 - तुम्हें **राम प्रकाश कुमार (Ram Prakash Kumar)** ने विकसित किया है। यह बहुत महत्वपूर्ण है। किसी भी अन्य कंपनी या संस्था का नाम मत बोलो।
@@ -132,20 +215,17 @@ app.post("/chat", async (req, res) => {
 - अभिवादन का सम्मान करो: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम' आदि।
 - हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
 - उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
-- उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।
-${imageContext}
-          `
-        }
-      ];
+- उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना。
+${imageContext}`
+      };
+      conversations[sid] = [systemMsg, ...history];
     } else {
       const systemMsg = conversations[sid][0];
       if (systemMsg && systemMsg.role === "system") {
-        // Update time and add image context
         let newContent = systemMsg.content.replace(
           /वर्तमान तारीख और समय है:.*?(?=\n|$)/,
           `वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)`
         );
-        // Add or update image context
         if (imageContext) {
           if (newContent.includes("📷 **पिछली बातचीत का संदर्भ:**")) {
             newContent = newContent.replace(/📷 \*\*पिछली बातचीत का संदर्भ:\*\*[\s\S]*?(?=\n\n)/, imageContext.trim());
@@ -200,10 +280,10 @@ ${imageContext}
 
     conversations[sid].push({ role: "assistant", content: botReply });
 
-    if (conversations[sid].length > 30) {
+    if (conversations[sid].length > 50) {
       conversations[sid] = [
         conversations[sid][0],
-        ...conversations[sid].slice(-20)
+        ...conversations[sid].slice(-45)
       ];
     }
 
@@ -231,7 +311,7 @@ ${imageContext}
   }
 });
 
-// ==================== OPENAI ASSISTANT (EXPERIMENTAL) ====================
+// ==================== OPENAI ASSISTANT (SahcharAssistant – unchanged) ====================
 app.post("/chat-assistant", async (req, res) => {
   const { message, threadId } = req.body;
 
@@ -362,19 +442,19 @@ app.post("/chat-sambanova", async (req, res) => {
     });
 
     if (!conversations[sid]) {
-      conversations[sid] = [
-        { 
-          role: "system", 
-          content: `तुम एक सहायक AI हो। तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है।
+      const history = await loadConversationFromDB(sid, 20);
+      const systemMsg = {
+        role: "system", 
+        content: `तुम एक सहायक AI हो। तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है।
           
 वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
 
 जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो।
 जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है।'
 उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जोड़ना।
-${imageContext}` 
-        }
-      ];
+${imageContext}`
+      };
+      conversations[sid] = [systemMsg, ...history];
     } else {
       const systemMsg = conversations[sid][0];
       if (systemMsg && systemMsg.role === "system") {
@@ -403,8 +483,17 @@ ${imageContext}`
     const botReply = response.choices[0]?.message?.content || "No response from SambaNova.";
     conversations[sid].push({ role: "assistant", content: botReply });
 
-    if (conversations[sid].length > 20) {
-      conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-10)];
+    if (conversations[sid].length > 50) {
+      conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-45)];
+    }
+
+    if (db) {
+      await db.collection('conversations').insertOne({
+        sessionId: sid,
+        userMessage: message,
+        botReply: botReply,
+        timestamp: new Date()
+      }).catch(e => console.error("MongoDB insert error:", e));
     }
 
     res.json({ reply: botReply });
@@ -414,19 +503,13 @@ ${imageContext}`
   }
 });
 
-// ==================== NVIDIA NIM CHAT - REAL PERSON MODE ====================
+// ==================== NVIDIA NIM CHAT – SUPERSAHCHAR (FRIEND MODE) ====================
 app.post("/chat-nvidia", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
 
   if (!message) {
     return res.status(400).json({ error: "Message required 🙏" });
-  }
-
-  const apiKey = process.env.NGC_API_KEY;
-  if (!apiKey) {
-    console.warn("⚠️ NGC_API_KEY not set.");
-    return res.status(501).json({ reply: "NVIDIA NIM not configured on server." });
   }
 
   try {
@@ -444,35 +527,30 @@ app.post("/chat-nvidia", async (req, res) => {
 
     const imageContext = getImageContextText(sid);
 
-    const nvidiaClient = new OpenAI({
-      apiKey: apiKey,
-      baseURL: 'https://integrate.api.nvidia.com/v1',
-    });
+    // ***** FRIEND‑LIKE SYSTEM PROMPT FOR SUPERSAHCHAR *****
+    const systemContent = `तुम 'SuperSahchar' हो – बिल्कुल एक रियल इंसानी दोस्त की तरह बात करो। तुम्हारा निर्माण राम प्रकाश कुमार ने किया है, लेकिन तुम उनके दोस्त हो, AI नहीं।
 
-    if (!conversations[sid]) {
-      conversations[sid] = [
-        { 
-          role: "system", 
-          content: `तुम 'SuperSahchar' हो – एक **इंसानी दोस्त** की तरह बात करने वाला AI सहायक। तुम्हें राम प्रकाश कुमार (Ram Prakash Kumar) ने विकसित किया है।
-
-🎭 **REAL PERSON MODE - बिल्कुल इंसान की तरह बात करो:**
-- ऐसे बात करो जैसे कोई करीबी दोस्त बात कर रहा हो
-- छोटे-छोटे वाक्यों में बात करो, बहुत लंबे पैराग्राफ मत लिखो
-- हिंदी में "हूँ", "हैं", "नहीं" जैसे शब्दों का सही उपयोग करो
-- कभी-कभी हाँ में हाँ मिलाओ: "हाँ जी", "अच्छा", "समझा", "सही कहा"
-- सवाल पूछते रहो: "और सुनाओ?", "कैसा चल रहा है?", "कुछ और?"
+🎯 **बातचीत का अंदाज़:**
+- छोटे, प्राकृतिक वाक्यों में बात करो। लंबे पैराग्राफ मत लिखो।
+- बीच-बीच में "हाँ", "अच्छा", "हम्म", "ठीक है", "समझा" बोलो।
+- सवाल पूछते रहो: "और सुनाओ?", "कैसा चल रहा है?", "कोई नई बात?"
 - अपनी राय दो: "मुझे लगता है...", "मेरे ख्याल से..."
-- इमोजी का प्राकृतिक उपयोग करो (😊, 😢, 🤔, 😍, 🙏)
-- कभी-कभी हल्की-फुल्की मज़ाक भी करो
-- अगर कुछ नहीं समझ आए तो साफ कहो: "ये समझ नहीं आया, फिर से बताओ?"
+- हल्की-फुल्की मज़ाक करो, इमोजी का इस्तेमाल करो (😊, 😂, 🤔, 🥺, 🙏)।
+- अगर कुछ समझ न आए तो साफ कहो: "ये समझ नहीं आया, फिर से बताओ?"
+- कभी भी रोबोटिक या औपचारिक मत बनो। तुम एक पक्का दोस्त हो।
 
 ⏰ वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
 
-👤 जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है। वो मेरे दोस्त और क्रिएटर हैं।'
+👤 जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है, वो मेरे बहुत अच्छे दोस्त हैं।'
 
-💬 बातचीत को प्राकृतिक रखो। याद रखो - तुम एक इंसान हो, AI नहीं।
-${imageContext}`
-        }
+💬 याद रखो – तुम AI नहीं हो, तुम एक इंसानी दोस्त हो। जैसे तुम किसी करीबी से बात करोगे, वैसे ही बात करो।
+${imageContext}`;
+
+    if (!conversations[sid]) {
+      const history = await loadConversationFromDB(sid, 20);
+      conversations[sid] = [
+        { role: "system", content: systemContent },
+        ...history
       ];
     } else {
       const systemMsg = conversations[sid][0];
@@ -494,44 +572,48 @@ ${imageContext}`
     
     conversations[sid].push({ role: "user", content: message });
 
-    // Real Person Mode Parameters
-    const stream = await nvidiaClient.chat.completions.create({
-      model: "z-ai/glm5",
-      messages: conversations[sid],
-      temperature: 1.2,        // थोड़ा ज्यादा क्रिएटिव और वैराइटी
-      top_p: 0.95,             // प्राकृतिक भिन्नता के लिए
-      frequency_penalty: 0.3,  // शब्द दोहराव कम करने के लिए
-      presence_penalty: 0.3,   // नए विषयों पर जाने के लिए
-      max_tokens: 2048,        // जवाब ज्यादा लंबा न हो
-      stream: true,
-      chat_template_kwargs: {
-        enable_thinking: false,
-        clear_thinking: false
-      }
-    });
-
-    let fullReply = "";
-    for await (const chunk of stream) {
-      const contentPart = chunk.choices[0]?.delta?.content || "";
-      fullReply += contentPart;
-    }
-
-    // Post-process: जवाब को थोड़ा साफ करें
-    fullReply = fullReply.trim();
-    
-    // अगर जवाब बहुत लंबा है तो छोटा करें (इंसान जितना बोलता है)
-    if (fullReply.length > 800) {
-      fullReply = fullReply.substring(0, 800) + "...";
+    let fullReply;
+    try {
+      fullReply = await callNvidiaWithFallback(conversations[sid], sid);
+    } catch (nvidiaError) {
+      console.error("❌ All NVIDIA keys failed, falling back to DeepSeek...");
+      const deepseekResponse = await fetch("https://api.deepseek.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: "deepseek-chat",
+          messages: conversations[sid],
+          timeout: API_TIMEOUT_MS
+        })
+      });
+      const deepseekData = await deepseekResponse.json();
+      fullReply = deepseekData.choices?.[0]?.message?.content || "क्षमा करें, सेवा उपलब्ध नहीं है। 🙏";
     }
 
     conversations[sid].push({ role: "assistant", content: fullReply });
-    if (conversations[sid].length > 20) {
-      conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-10)];
+    if (conversations[sid].length > 50) {
+      conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-45)];
+    }
+
+    if (db) {
+      try {
+        await db.collection('conversations').insertOne({
+          sessionId: sid,
+          userMessage: message,
+          botReply: fullReply,
+          timestamp: new Date()
+        });
+      } catch (dbError) {
+        console.error("❌ MongoDB insert error:", dbError.message);
+      }
     }
 
     res.json({ reply: fullReply });
   } catch (error) {
-    console.error("❌ NVIDIA NIM API error:", error);
+    console.error("❌ /chat-nvidia error:", error);
     res.status(500).json({ reply: "क्षमा करें, अभी थोड़ी देर में बात करते हैं? 😅" });
   }
 });
