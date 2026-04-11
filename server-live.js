@@ -4,7 +4,6 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import axios from 'axios';
-import { Readable } from 'stream';
 
 dotenv.config();
 
@@ -51,12 +50,34 @@ async function ttsStream(text) {
     return response.data;
 }
 
-// ---------- Groq Whisper (for transcription) ----------
+// ---------- Groq Whisper ----------
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const groqClient = new OpenAI({
     apiKey: GROQ_API_KEY,
     baseURL: 'https://api.groq.com/openai/v1',
 });
+
+// PCM to WAV converter
+function pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
+    const blockAlign = numChannels * (bitsPerSample / 8);
+    const byteRate = sampleRate * blockAlign;
+    const dataSize = pcmData.length;
+    const header = Buffer.alloc(44);
+    header.write('RIFF', 0);
+    header.writeUInt32LE(36 + dataSize, 4);
+    header.write('WAVE', 8);
+    header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(numChannels, 22);
+    header.writeUInt32LE(sampleRate, 24);
+    header.writeUInt32LE(byteRate, 28);
+    header.writeUInt16LE(blockAlign, 32);
+    header.writeUInt16LE(bitsPerSample, 34);
+    header.write('data', 36);
+    header.writeUInt32LE(dataSize, 40);
+    return Buffer.concat([header, pcmData]);
+}
 
 // ---------- WebSocket connection ----------
 wss.on('connection', (ws) => {
@@ -65,21 +86,44 @@ wss.on('connection', (ws) => {
     let lastChunkTime = Date.now();
     let isProcessing = false;
     let silenceTimer = null;
-    let accumulatedText = '';
+    let accumulatedTranscript = '';
     let isBotSpeaking = false;
 
-    // Function to process accumulated audio (send to Groq Whisper)
+    const SILENCE_MS = 500;           // shorter silence detection
+    const MAX_BUFFER_MS = 8000;       // process after 8 seconds regardless
+    const SAMPLE_RATE = 16000;
+    const BYTES_PER_SECOND = SAMPLE_RATE * 2; // 16-bit = 2 bytes
+
+    function resetSilenceTimer() {
+        if (silenceTimer) clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => {
+            if (audioBuffer.length > 0 && !isProcessing) {
+                console.log('Silence detected, processing audio...');
+                processAudio();
+            }
+        }, SILENCE_MS);
+    }
+
+    function checkMaxDuration() {
+        const totalBytes = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
+        const durationMs = (totalBytes / BYTES_PER_SECOND) * 1000;
+        if (durationMs >= MAX_BUFFER_MS && !isProcessing && audioBuffer.length > 0) {
+            console.log(`Max buffer duration reached (${durationMs}ms), processing...`);
+            processAudio();
+        }
+    }
+
     async function processAudio() {
         if (audioBuffer.length === 0 || isProcessing) return;
         isProcessing = true;
+        if (silenceTimer) clearTimeout(silenceTimer);
 
-        // Concatenate all PCM chunks into one buffer
         const totalLength = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
         const fullAudio = Buffer.concat(audioBuffer, totalLength);
-        audioBuffer = []; // clear buffer
+        audioBuffer = [];
 
-        // Convert PCM to WAV (Groq expects WAV or MP3)
-        const wavBuffer = pcmToWav(fullAudio, 16000, 1, 16);
+        // Convert PCM to WAV
+        const wavBuffer = pcmToWav(fullAudio, SAMPLE_RATE, 1, 16);
         const audioBase64 = wavBuffer.toString('base64');
 
         try {
@@ -92,69 +136,30 @@ wss.on('connection', (ws) => {
             const transcript = response.trim();
             if (transcript) {
                 console.log(`📝 Transcript: ${transcript}`);
-                accumulatedText += transcript + ' ';
+                accumulatedTranscript += transcript + ' ';
                 if (!isBotSpeaking) {
                     isBotSpeaking = true;
-                    await sendToLLM(accumulatedText.trim());
-                    accumulatedText = '';
+                    await sendToLLM(accumulatedTranscript.trim());
+                    accumulatedTranscript = '';
                 }
             }
         } catch (err) {
             console.error('❌ Groq error:', err);
+            // If error is due to size, try to split buffer (optional)
+            if (err.message?.includes('message too large') && fullAudio.length > 200000) {
+                console.log('Audio too large, splitting...');
+                // Split into two halves and process recursively
+                const half = Math.floor(fullAudio.length / 2);
+                audioBuffer = [fullAudio.slice(0, half), fullAudio.slice(half)];
+                processAudio(); // process first half
+            }
         } finally {
             isProcessing = false;
-            // If more audio came in while processing, process again
-            if (audioBuffer.length > 0) {
-                processAudio();
-            }
+            // Process any remaining audio that arrived during processing
+            if (audioBuffer.length > 0) processAudio();
         }
     }
 
-    // Simple PCM to WAV converter (header only)
-    function pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
-        const blockAlign = numChannels * (bitsPerSample / 8);
-        const byteRate = sampleRate * blockAlign;
-        const dataSize = pcmData.length;
-        const header = Buffer.alloc(44);
-        // RIFF chunk
-        header.write('RIFF', 0);
-        header.writeUInt32LE(36 + dataSize, 4);
-        header.write('WAVE', 8);
-        // fmt subchunk
-        header.write('fmt ', 12);
-        header.writeUInt32LE(16, 16); // fmt chunk size
-        header.writeUInt16LE(1, 20);  // PCM format
-        header.writeUInt16LE(numChannels, 22);
-        header.writeUInt32LE(sampleRate, 24);
-        header.writeUInt32LE(byteRate, 28);
-        header.writeUInt16LE(blockAlign, 32);
-        header.writeUInt16LE(bitsPerSample, 34);
-        // data subchunk
-        header.write('data', 36);
-        header.writeUInt32LE(dataSize, 40);
-        return Buffer.concat([header, pcmData]);
-    }
-
-    // Detect silence (simple: reset timer on each chunk, if no chunk for 1 second, process)
-    function resetSilenceTimer() {
-        if (silenceTimer) clearTimeout(silenceTimer);
-        silenceTimer = setTimeout(() => {
-            if (audioBuffer.length > 0 && !isProcessing) {
-                console.log('Silence detected, processing audio...');
-                processAudio();
-            }
-        }, 1000);
-    }
-
-    // Handle incoming audio chunks
-    ws.on('message', (data) => {
-        // Convert Buffer to Uint8Array? data is already Buffer (if using ws)
-        const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
-        audioBuffer.push(chunk);
-        resetSilenceTimer();
-    });
-
-    // LLM + TTS (unchanged from previous working version)
     async function sendToLLM(text) {
         console.log(`🤖 LLM request: ${text}`);
         try {
@@ -184,8 +189,7 @@ wss.on('connection', (ws) => {
             await speak('मुझे समझ नहीं आया, कृपया फिर से बोलें।');
         } finally {
             isBotSpeaking = false;
-            // After bot finishes, reset accumulated text and allow new user speech
-            accumulatedText = '';
+            accumulatedTranscript = '';
         }
     }
 
@@ -201,6 +205,13 @@ wss.on('connection', (ws) => {
             console.error('❌ TTS error:', err);
         }
     }
+
+    ws.on('message', (data) => {
+        const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        audioBuffer.push(chunk);
+        resetSilenceTimer();
+        checkMaxDuration();
+    });
 
     ws.on('close', (code, reason) => {
         console.log(`🔌 Client disconnected: code=${code}, reason=${reason?.toString() || 'none'}`);
