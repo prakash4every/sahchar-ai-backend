@@ -23,13 +23,13 @@ const server = app.listen(PORT, () => {
 const wss = new WebSocketServer({ server });
 console.log(`🎤 WebSocket server on ${PORT}`);
 
-// ========== NVIDIA NIM ==========
+// NVIDIA NIM
 const nvidiaClient = new OpenAI({
     apiKey: process.env.NGC_API_KEY,
     baseURL: 'https://integrate.api.nvidia.com/v1',
 });
 
-// ========== ElevenLabs TTS ==========
+// ElevenLabs TTS
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
 
@@ -54,7 +54,7 @@ async function ttsStream(text) {
     return response.data;
 }
 
-// ========== Deepgram Live ==========
+// Deepgram Live
 const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
 
 wss.on('connection', (ws) => {
@@ -64,7 +64,6 @@ wss.on('connection', (ws) => {
     let accumulatedText = '';
     let isBotSpeaking = false;
 
-    // Start Deepgram
     deepgramLive = deepgram.listen.live({
         model: 'nova-2',
         language: 'hi',
@@ -74,18 +73,14 @@ wss.on('connection', (ws) => {
     });
 
     deepgramLive.on('open', () => console.log('🎙️ Deepgram open'));
-    deepgramLive.on('error', (err) => {
-        console.error('❌ Deepgram error:', err);
-        // Don't close WebSocket, just log
-    });
-
+    deepgramLive.on('error', (err) => console.error('❌ Deepgram error:', err));
     deepgramLive.on('transcriptReceived', (data) => {
         const transcript = data.channel.alternatives[0].transcript;
         if (!transcript) return;
 
         if (data.is_final) {
             accumulatedText += transcript + ' ';
-            console.log(`📝 Final transcript: ${accumulatedText}`);
+            console.log(`📝 Final: ${accumulatedText}`);
             if (accumulatedText.trim() && !isBotSpeaking) {
                 isBotSpeaking = true;
                 sendToLLM(accumulatedText.trim());
@@ -94,16 +89,17 @@ wss.on('connection', (ws) => {
         } else {
             if (!isUserSpeaking) {
                 isUserSpeaking = true;
-                console.log('👤 User started speaking, sending backchannel');
+                console.log('👤 User speaking, sending backchannel');
                 ttsStream('हाँ').then(stream => {
-                    for await (const chunk of stream) ws.send(chunk);
+                    stream.on('data', chunk => ws.send(chunk));
+                    stream.on('error', err => console.error('Backchannel TTS error:', err));
                 }).catch(err => console.error('Backchannel TTS error:', err));
             }
         }
     });
 
     async function sendToLLM(text) {
-        console.log(`🤖 Sending to LLM: ${text}`);
+        console.log(`🤖 LLM request: ${text}`);
         try {
             const messages = [
                 { role: 'system', content: 'You are a friendly human. Interject with "haan", "achha", "hmm" while user speaks. When user pauses, give short responses in Hindi.' },
@@ -128,7 +124,6 @@ wss.on('connection', (ws) => {
             if (buffer) await speak(buffer);
         } catch (err) {
             console.error('❌ LLM error:', err);
-            // Fallback: send an echo message
             await speak('मुझे समझ नहीं आया, कृपया फिर से बोलें।');
         } finally {
             isBotSpeaking = false;
@@ -140,20 +135,19 @@ wss.on('connection', (ws) => {
         console.log(`🔊 TTS: ${sentence}`);
         try {
             const stream = await ttsStream(sentence);
-            for await (const chunk of stream) {
-                ws.send(chunk);
-            }
+            stream.on('data', (chunk) => ws.send(chunk));
+            stream.on('error', (err) => console.error('TTS stream error:', err));
+            await new Promise((resolve) => stream.on('end', resolve));
         } catch (err) {
             console.error('❌ TTS error:', err);
         }
     }
 
-    // Handle incoming audio chunks
     ws.on('message', (data) => {
         if (deepgramLive && deepgramLive.readyState === 1) {
             deepgramLive.send(data);
         } else {
-            console.warn('Deepgram not ready, ignoring audio chunk');
+            console.warn('Deepgram not ready');
         }
     });
 
