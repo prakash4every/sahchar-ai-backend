@@ -19,13 +19,13 @@ const server = app.listen(PORT, () => console.log(`✅ HTTP server on ${PORT}`))
 const wss = new WebSocketServer({ server });
 console.log(`🎤 WebSocket server on ${PORT}`);
 
-// ---------- NVIDIA NIM ----------
+// NVIDIA NIM
 const nvidiaClient = new OpenAI({
     apiKey: process.env.NGC_API_KEY,
     baseURL: 'https://integrate.api.nvidia.com/v1',
 });
 
-// ---------- ElevenLabs TTS ----------
+// ElevenLabs TTS
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
 
@@ -50,14 +50,13 @@ async function ttsStream(text) {
     return response.data;
 }
 
-// ---------- Groq Whisper ----------
+// Groq Whisper
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const groqClient = new OpenAI({
     apiKey: GROQ_API_KEY,
     baseURL: 'https://api.groq.com/openai/v1',
 });
 
-// PCM to WAV (Groq requires WAV)
 function pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
     const blockAlign = numChannels * (bitsPerSample / 8);
     const byteRate = sampleRate * blockAlign;
@@ -88,8 +87,8 @@ wss.on('connection', (ws) => {
     let silenceTimer = null;
 
     const SAMPLE_RATE = 16000;
-    const BYTES_PER_SECOND = SAMPLE_RATE * 2;     // 32000 bytes per second
-    const MAX_CHUNK_BYTES = BYTES_PER_SECOND / 2; // 0.5 seconds = 16000 bytes
+    const BYTES_PER_SECOND = SAMPLE_RATE * 2;
+    const MAX_CHUNK_BYTES = BYTES_PER_SECOND / 2; // 0.5 seconds
 
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
@@ -114,7 +113,6 @@ wss.on('connection', (ws) => {
         isProcessing = true;
         if (silenceTimer) clearTimeout(silenceTimer);
 
-        // Take only up to MAX_CHUNK_BYTES
         let totalBytes = 0;
         let chunksToSend = [];
         for (const chunk of audioBuffer) {
@@ -128,7 +126,6 @@ wss.on('connection', (ws) => {
                 break;
             }
         }
-        // Remove processed bytes
         let processedBytes = 0;
         const newBuffer = [];
         for (const chunk of audioBuffer) {
@@ -145,11 +142,12 @@ wss.on('connection', (ws) => {
 
         const fullAudio = Buffer.concat(chunksToSend, totalBytes);
         const wavBuffer = pcmToWav(fullAudio, SAMPLE_RATE, 1, 16);
-        const audioBase64 = wavBuffer.toString('base64');
 
         try {
+            // Create a File object from the WAV buffer
+            const file = new File([wavBuffer], 'audio.wav', { type: 'audio/wav' });
             const response = await groqClient.audio.transcriptions.create({
-                file: Buffer.from(audioBase64, 'base64'),
+                file: file,
                 model: 'whisper-large-v3',
                 language: 'hi',
                 response_format: 'text',
@@ -219,7 +217,6 @@ wss.on('connection', (ws) => {
             await new Promise((resolve) => stream.on('end', resolve));
         } catch (err) {
             console.error('❌ TTS error:', err.message);
-            // Send a short silence instead of echoing
             const silence = Buffer.alloc(320, 0);
             ws.send(silence);
         }
