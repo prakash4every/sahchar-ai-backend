@@ -3,8 +3,10 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
-import { tts } from 'edge-tts';
+import gTTS from 'gtts';
 import fs from 'fs';
+import { Readable } from 'stream';
+import { spawn } from 'child_process';
 
 dotenv.config();
 
@@ -12,7 +14,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get('/', (req, res) => res.send('Live audio server (edge-tts)'));
+app.get('/', (req, res) => res.send('Live audio server (gTTS)'));
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 10000;
@@ -26,21 +28,43 @@ const nvidiaClient = new OpenAI({
     baseURL: 'https://integrate.api.nvidia.com/v1',
 });
 
-// ---------- Edge TTS (free, no key) ----------
-const VOICE = 'hi-IN-SwaraNeural'; // Hindi female voice (or 'hi-IN-MadhurNeural' for male)
-
+// ---------- gTTS (free, no API key) ----------
 async function ttsStream(text) {
-    // edge-tts returns a ReadableStream
-    const stream = await tts(text, VOICE, {
-        rate: '0%',
-        volume: '0%',
-        pitch: '0%',
-        outputFormat: 'audio-16khz-32kbitrate-mono-pcm' // PCM 16kHz for Android
+    return new Promise((resolve, reject) => {
+        const tts = new gTTS(text, 'hi'); // Hindi language
+        const chunks = [];
+        const stream = tts.stream();
+        stream.on('data', (chunk) => chunks.push(chunk));
+        stream.on('end', () => {
+            const mp3Buffer = Buffer.concat(chunks);
+            // Convert MP3 to PCM using ffmpeg (must be installed on Render)
+            const ffmpeg = spawn('ffmpeg', [
+                '-i', 'pipe:0',
+                '-f', 's16le',
+                '-acodec', 'pcm_s16le',
+                '-ar', '16000',
+                '-ac', '1',
+                'pipe:1'
+            ]);
+            ffmpeg.stdin.write(mp3Buffer);
+            ffmpeg.stdin.end();
+            const pcmChunks = [];
+            ffmpeg.stdout.on('data', (chunk) => pcmChunks.push(chunk));
+            ffmpeg.stderr.on('data', () => {}); // ignore ffmpeg logs
+            ffmpeg.on('close', () => {
+                const pcmBuffer = Buffer.concat(pcmChunks);
+                const readable = new Readable();
+                readable.push(pcmBuffer);
+                readable.push(null);
+                resolve(readable);
+            });
+            ffmpeg.on('error', (err) => reject(err));
+        });
+        stream.on('error', reject);
     });
-    return stream;
 }
 
-// ---------- Groq Whisper (same as before) ----------
+// ---------- Groq Whisper ----------
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const groqClient = new OpenAI({
     apiKey: GROQ_API_KEY,
@@ -206,9 +230,7 @@ wss.on('connection', (ws) => {
         if (!sentence.trim()) return;
         console.log(`🔊 TTS: ${sentence}`);
         try {
-            const stream = await ttsStream(sentence);
-            // stream is a ReadableStream (Web API). Convert to Node.js readable.
-            const nodeStream = require('stream').Readable.fromWeb(stream);
+            const nodeStream = await ttsStream(sentence);
             nodeStream.on('data', (chunk) => ws.send(chunk));
             nodeStream.on('error', (err) => console.error('TTS error:', err.message));
             await new Promise((resolve) => nodeStream.on('end', resolve));
