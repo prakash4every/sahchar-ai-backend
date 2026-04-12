@@ -22,8 +22,7 @@
     "replicate": "^0.33.0",
     "openai": "^4.0.0",
     "ws": "^8.18.0",
-    "@deepgram/sdk": "^3.2.0",
-    "gtts": "^2.0.0"
+    "@deepgram/sdk": "^3.2.0"
   },
   "devDependencies": {
     "nodemon": "^2.0.22"
