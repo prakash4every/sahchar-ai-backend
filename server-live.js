@@ -31,45 +31,51 @@ const nvidiaClient = new OpenAI({
     baseURL: 'https://integrate.api.nvidia.com/v1',
 });
 
-// ElevenLabs TTS
+// Fix 1: ElevenLabs - Use Rachel (free & stable) + better error handling
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const VOICE_ID = 'EXAVITQu4L4Y6vNwHZ6B'; // Bella
+const VOICE_ID = '21m00Tcm4TlvDq8ikWAM'; // Rachel - always free
 
 async function ttsStream(text) {
     if (!ELEVENLABS_API_KEY) throw new Error('Missing ELEVENLABS_API_KEY');
-    const response = await axios({
-        method: 'POST',
-        url: `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream`,
-        headers: {
-            'Accept': 'audio/mpeg',
-            'Content-Type': 'application/json',
-            'xi-api-key': ELEVENLABS_API_KEY,
-        },
-        data: {
-            text: text,
-            model_id: 'eleven_monolingual_v1',
-            voice_settings: { stability: 0.5, similarity_boost: 0.5 },
-            output_format: 'mp3_44100_128',
-        },
-        responseType: 'stream',
-        timeout: 10000,
-    });
-    return response.data;
+    try {
+        const response = await axios({
+            method: 'POST',
+            url: `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream`,
+            headers: {
+                'Accept': 'audio/mpeg',
+                'Content-Type': 'application/json',
+                'xi-api-key': ELEVENLABS_API_KEY,
+            },
+            data: {
+                text: text,
+                model_id: 'eleven_turbo_v2', // Fix 2: Fastest model
+                voice_settings: { stability: 0.5, similarity_boost: 0.5 },
+                output_format: 'mp3_44100_128',
+            },
+            responseType: 'stream',
+            timeout: 10000,
+        });
+        return response.data;
+    } catch (err) {
+        // Fix 3: Log full error for debugging
+        console.error('ElevenLabs API Error:', err.response?.status, err.response?.data || err.message);
+        throw err;
+    }
 }
 
-// Fix 1: MP3 stream -> PCM 16kHz mono s16le Buffer
+// MP3 stream -> PCM 16kHz mono s16le Buffer
 function convertMp3StreamToPcm16k(mp3Stream) {
     return new Promise((resolve, reject) => {
         const chunks = [];
         ffmpeg(mp3Stream)
-        .audioCodec('pcm_s16le')
-        .format('s16le')
-        .audioChannels(1)
-        .audioFrequency(16000)
-        .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
-        .on('end', () => resolve(Buffer.concat(chunks)))
-        .pipe()
-        .on('data', (chunk) => chunks.push(chunk));
+       .audioCodec('pcm_s16le')
+       .format('s16le')
+       .audioChannels(1)
+       .audioFrequency(16000)
+       .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
+       .on('end', () => resolve(Buffer.concat(chunks)))
+       .pipe()
+       .on('data', (chunk) => chunks.push(chunk));
     });
 }
 
@@ -101,7 +107,6 @@ function pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
     return Buffer.concat([header, pcmData]);
 }
 
-// Fix 2: Unique temp file per request
 async function bufferToReadableStream(buffer) {
     const tempPath = path.join('/tmp', `audio_${randomUUID()}.wav`);
     fs.writeFileSync(tempPath, buffer);
@@ -218,7 +223,7 @@ wss.on('connection', (ws) => {
                 { role: 'user', content: text }
             ];
             const stream = await nvidiaClient.chat.completions.create({
-                model: 'meta/llama-3.1-70b-instruct', // Fix 3: Fast model
+                model: 'meta/llama-3.1-70b-instruct',
                 messages: messages,
                 stream: true,
                 temperature: 0.9,
@@ -243,7 +248,6 @@ wss.on('connection', (ws) => {
         }
     }
 
-    // Fix 4: MP3 ko PCM me convert karke 20ms chunks me bhejo
     async function speak(sentence) {
         if (!sentence.trim() || isClosed) return;
         console.log(`🔊 TTS: ${sentence}`);
@@ -256,7 +260,7 @@ wss.on('connection', (ws) => {
                 if (isClosed || ws.readyState!== ws.OPEN) break;
                 const chunk = pcmBuffer.slice(i, i + CHUNK_SIZE);
                 ws.send(chunk);
-                await new Promise(r => setTimeout(r, 18)); // 18ms gap for real-time
+                await new Promise(r => setTimeout(r, 18));
             }
         } catch (err) {
             console.error('❌ TTS error:', err.message);
