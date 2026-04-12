@@ -3,9 +3,8 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
-import axios from 'axios';
+import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
 import fs from 'fs';
-import { Readable } from 'stream';
 
 dotenv.config();
 
@@ -13,7 +12,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get('/', (req, res) => res.send('Live audio server (Groq)'));
+app.get('/', (req, res) => res.send('Live audio server (Groq + ElevenLabs)'));
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 10000;
@@ -27,29 +26,26 @@ const nvidiaClient = new OpenAI({
     baseURL: 'https://integrate.api.nvidia.com/v1',
 });
 
-// ---------- ElevenLabs TTS ----------
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
+// ---------- ElevenLabs TTS (official SDK) ----------
+const elevenlabs = new ElevenLabsClient({
+    apiKey: process.env.ELEVENLABS_API_KEY,
+});
+const VOICE_ID = '21m00Tcm4TlvDq8ikWAM'; // Rachel (English, but works for Hindi)
 
 async function ttsStream(text) {
-    if (!ELEVENLABS_API_KEY) throw new Error('Missing ELEVENLABS_API_KEY');
-    const response = await axios({
-        method: 'POST',
-        url: `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream`,
-        headers: {
-            'Accept': 'audio/pcm',
-            'Content-Type': 'application/json',
-            'xi-api-key': ELEVENLABS_API_KEY,
-        },
-        data: {
+    try {
+        const response = await elevenlabs.textToSpeech.convert(VOICE_ID, {
             text: text,
-            model_id: 'eleven_monolingual_v1',
-            voice_settings: { stability: 0.5, similarity_boost: 0.5 },
+            model_id: 'eleven_turbo_v2_5', // fastest model, supports Hindi
             output_format: 'pcm_16000',
-        },
-        responseType: 'stream',
-    });
-    return response.data;
+            voice_settings: { stability: 0.5, similarity_boost: 0.5 },
+        });
+        // response is a ReadableStream (Node.js)
+        return response;
+    } catch (err) {
+        console.error('❌ ElevenLabs error:', err.message);
+        throw err;
+    }
 }
 
 // ---------- Groq Whisper ----------
@@ -59,7 +55,6 @@ const groqClient = new OpenAI({
     baseURL: 'https://api.groq.com/openai/v1',
 });
 
-// PCM to WAV converter
 function pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
     const blockAlign = numChannels * (bitsPerSample / 8);
     const byteRate = sampleRate * blockAlign;
@@ -81,11 +76,10 @@ function pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
     return Buffer.concat([header, pcmData]);
 }
 
-// Helper to write buffer to temp file and return a readable stream
-async function bufferToReadableStream(buffer) {
-    const tempPath = '/tmp/audio.wav';
+async function bufferToTempFile(buffer) {
+    const tempPath = `/tmp/audio_${Date.now()}.wav`;
     fs.writeFileSync(tempPath, buffer);
-    return fs.createReadStream(tempPath);
+    return tempPath;
 }
 
 wss.on('connection', (ws) => {
@@ -98,7 +92,7 @@ wss.on('connection', (ws) => {
 
     const SAMPLE_RATE = 16000;
     const BYTES_PER_SECOND = SAMPLE_RATE * 2;     // 32000 bytes per second
-    const MAX_CHUNK_BYTES = BYTES_PER_SECOND / 4; // 0.25 seconds = 8000 bytes
+    const MAX_CHUNK_BYTES = BYTES_PER_SECOND / 4; // 0.25 seconds
 
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
@@ -123,7 +117,6 @@ wss.on('connection', (ws) => {
         isProcessing = true;
         if (silenceTimer) clearTimeout(silenceTimer);
 
-        // Take only up to MAX_CHUNK_BYTES
         let totalBytes = 0;
         let chunksToSend = [];
         for (const chunk of audioBuffer) {
@@ -137,7 +130,6 @@ wss.on('connection', (ws) => {
                 break;
             }
         }
-        // Remove processed bytes
         let processedBytes = 0;
         const newBuffer = [];
         for (const chunk of audioBuffer) {
@@ -154,13 +146,11 @@ wss.on('connection', (ws) => {
 
         const fullAudio = Buffer.concat(chunksToSend, totalBytes);
         const wavBuffer = pcmToWav(fullAudio, SAMPLE_RATE, 1, 16);
-
-        // Write to temp file and get a readable stream
-        const audioStream = await bufferToReadableStream(wavBuffer);
+        const tempFile = await bufferToTempFile(wavBuffer);
 
         try {
             const response = await groqClient.audio.transcriptions.create({
-                file: audioStream,
+                file: fs.createReadStream(tempFile),
                 model: 'whisper-large-v3',
                 language: 'hi',
                 response_format: 'text',
@@ -183,6 +173,7 @@ wss.on('connection', (ws) => {
                 await speak('क्षमा करें, फिर से बोलें।');
             }
         } finally {
+            fs.unlinkSync(tempFile);
             isProcessing = false;
             if (audioBuffer.length > 0) processAudio();
         }
@@ -226,7 +217,7 @@ wss.on('connection', (ws) => {
         try {
             const stream = await ttsStream(sentence);
             stream.on('data', (chunk) => ws.send(chunk));
-            stream.on('error', (err) => console.error('TTS error:', err.message));
+            stream.on('error', (err) => console.error('TTS stream error:', err.message));
             await new Promise((resolve) => stream.on('end', resolve));
         } catch (err) {
             console.error('❌ TTS error:', err.message);
