@@ -3,7 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
-import { ElevenLabsClient } from 'elevenlabs';
+import { tts } from 'edge-tts';
 import fs from 'fs';
 
 dotenv.config();
@@ -12,7 +12,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get('/', (req, res) => res.send('Live audio server'));
+app.get('/', (req, res) => res.send('Live audio server (edge-tts)'));
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 10000;
@@ -26,23 +26,21 @@ const nvidiaClient = new OpenAI({
     baseURL: 'https://integrate.api.nvidia.com/v1',
 });
 
-// ---------- ElevenLabs TTS (official SDK) ----------
-const elevenlabs = new ElevenLabsClient({
-    apiKey: process.env.ELEVENLABS_API_KEY,
-});
-const VOICE_ID = 'JBFqnCBsd6RMkjVDRZzb'; // "George" – neutral voice
+// ---------- Edge TTS (free, no key) ----------
+const VOICE = 'hi-IN-SwaraNeural'; // Hindi female voice (or 'hi-IN-MadhurNeural' for male)
 
 async function ttsStream(text) {
-    const audioStream = await elevenlabs.textToSpeech.convert(VOICE_ID, {
-        text: text,
-        model_id: 'eleven_monolingual_v1',
-        voice_settings: { stability: 0.5, similarity_boost: 0.5 },
-        output_format: 'pcm_16000',
+    // edge-tts returns a ReadableStream
+    const stream = await tts(text, VOICE, {
+        rate: '0%',
+        volume: '0%',
+        pitch: '0%',
+        outputFormat: 'audio-16khz-32kbitrate-mono-pcm' // PCM 16kHz for Android
     });
-    return audioStream; // returns a ReadableStream
+    return stream;
 }
 
-// ---------- Groq Whisper ----------
+// ---------- Groq Whisper (same as before) ----------
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const groqClient = new OpenAI({
     apiKey: GROQ_API_KEY,
@@ -209,7 +207,7 @@ wss.on('connection', (ws) => {
         console.log(`🔊 TTS: ${sentence}`);
         try {
             const stream = await ttsStream(sentence);
-            // Convert Web ReadableStream to Node.js readable stream
+            // stream is a ReadableStream (Web API). Convert to Node.js readable.
             const nodeStream = require('stream').Readable.fromWeb(stream);
             nodeStream.on('data', (chunk) => ws.send(chunk));
             nodeStream.on('error', (err) => console.error('TTS error:', err.message));
