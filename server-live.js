@@ -26,13 +26,9 @@ const nvidiaClient = new OpenAI({
     baseURL: 'https://integrate.api.nvidia.com/v1',
 });
 
-// ElevenLabs TTS – use a free voice
+// ElevenLabs TTS – free voice ID (Bella)
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-// Free voices (try these):
-// 'EXAVITQu4L4Y6vNwHZ6B' – Bella
-// 'pNInz6obpgDQGcLma' – (generic)
-// 'Wob9QpzE6k5kq5l9k5k' – (another)
-const VOICE_ID = 'EXAVITQu4L4Y6vNwHZ6B';
+const VOICE_ID = 'EXAVITQu4L4Y6vNwHZ6B'; // Bella – free tier
 
 async function ttsStream(text) {
     if (!ELEVENLABS_API_KEY) throw new Error('Missing ELEVENLABS_API_KEY');
