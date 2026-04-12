@@ -251,9 +251,11 @@ wss.on('connection', (ws) => {
     async function speak(sentence) {
         if (!sentence.trim() || isClosed) return;
         console.log(`🔊 TTS: ${sentence}`);
+        console.log('🔊 MP3 stream received from ElevenLabs'); 
         try {
             const mp3Stream = await ttsStream(sentence);
             const pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
+            console.log(`🔊 PCM converted: ${pcmBuffer.length} bytes`);
 
             const CHUNK_SIZE = 320; // 20ms @ 16kHz 16-bit mono
             for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
@@ -262,6 +264,7 @@ wss.on('connection', (ws) => {
                 ws.send(chunk);
                 await new Promise(r => setTimeout(r, 18));
             }
+            console.log('🔊 PCM sent to client complete');
         } catch (err) {
             console.error('❌ TTS error:', err.message);
         }
