@@ -4,6 +4,8 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import axios from 'axios';
+import fs from 'fs';
+import { Readable } from 'stream';
 
 dotenv.config();
 
@@ -19,13 +21,13 @@ const server = app.listen(PORT, () => console.log(`✅ HTTP server on ${PORT}`))
 const wss = new WebSocketServer({ server });
 console.log(`🎤 WebSocket server on ${PORT}`);
 
-// NVIDIA NIM
+// ---------- NVIDIA NIM ----------
 const nvidiaClient = new OpenAI({
     apiKey: process.env.NGC_API_KEY,
     baseURL: 'https://integrate.api.nvidia.com/v1',
 });
 
-// ElevenLabs TTS
+// ---------- ElevenLabs TTS ----------
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
 
@@ -50,13 +52,14 @@ async function ttsStream(text) {
     return response.data;
 }
 
-// Groq Whisper
+// ---------- Groq Whisper ----------
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const groqClient = new OpenAI({
     apiKey: GROQ_API_KEY,
     baseURL: 'https://api.groq.com/openai/v1',
 });
 
+// PCM to WAV converter
 function pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
     const blockAlign = numChannels * (bitsPerSample / 8);
     const byteRate = sampleRate * blockAlign;
@@ -78,6 +81,13 @@ function pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
     return Buffer.concat([header, pcmData]);
 }
 
+// Helper to write buffer to temp file and return a readable stream
+async function bufferToReadableStream(buffer) {
+    const tempPath = '/tmp/audio.wav';
+    fs.writeFileSync(tempPath, buffer);
+    return fs.createReadStream(tempPath);
+}
+
 wss.on('connection', (ws) => {
     console.log('🔌 Client connected');
     let audioBuffer = [];
@@ -87,8 +97,8 @@ wss.on('connection', (ws) => {
     let silenceTimer = null;
 
     const SAMPLE_RATE = 16000;
-    const BYTES_PER_SECOND = SAMPLE_RATE * 2;
-    const MAX_CHUNK_BYTES = BYTES_PER_SECOND / 2; // 0.5 seconds
+    const BYTES_PER_SECOND = SAMPLE_RATE * 2;     // 32000 bytes per second
+    const MAX_CHUNK_BYTES = BYTES_PER_SECOND / 4; // 0.25 seconds = 8000 bytes
 
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
@@ -103,7 +113,7 @@ wss.on('connection', (ws) => {
     function checkMaxDuration() {
         const totalBytes = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
         if (totalBytes >= MAX_CHUNK_BYTES && !isProcessing && audioBuffer.length > 0) {
-            console.log('Max 0.5s reached, processing...');
+            console.log('Max 0.25s reached, processing...');
             processAudio();
         }
     }
@@ -113,6 +123,7 @@ wss.on('connection', (ws) => {
         isProcessing = true;
         if (silenceTimer) clearTimeout(silenceTimer);
 
+        // Take only up to MAX_CHUNK_BYTES
         let totalBytes = 0;
         let chunksToSend = [];
         for (const chunk of audioBuffer) {
@@ -126,6 +137,7 @@ wss.on('connection', (ws) => {
                 break;
             }
         }
+        // Remove processed bytes
         let processedBytes = 0;
         const newBuffer = [];
         for (const chunk of audioBuffer) {
@@ -143,11 +155,12 @@ wss.on('connection', (ws) => {
         const fullAudio = Buffer.concat(chunksToSend, totalBytes);
         const wavBuffer = pcmToWav(fullAudio, SAMPLE_RATE, 1, 16);
 
+        // Write to temp file and get a readable stream
+        const audioStream = await bufferToReadableStream(wavBuffer);
+
         try {
-            // Create a File object from the WAV buffer
-            const file = new File([wavBuffer], 'audio.wav', { type: 'audio/wav' });
             const response = await groqClient.audio.transcriptions.create({
-                file: file,
+                file: audioStream,
                 model: 'whisper-large-v3',
                 language: 'hi',
                 response_format: 'text',
