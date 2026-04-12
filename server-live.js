@@ -3,10 +3,8 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
-import gTTS from 'gtts';
+import axios from 'axios';
 import fs from 'fs';
-import { Readable } from 'stream';
-import { spawn } from 'child_process';
 
 dotenv.config();
 
@@ -14,7 +12,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get('/', (req, res) => res.send('Live audio server (gTTS)'));
+app.get('/', (req, res) => res.send('Live audio server (ElevenLabs)'));
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 10000;
@@ -22,49 +20,42 @@ const server = app.listen(PORT, () => console.log(`✅ HTTP server on ${PORT}`))
 const wss = new WebSocketServer({ server });
 console.log(`🎤 WebSocket server on ${PORT}`);
 
-// ---------- NVIDIA NIM ----------
+// NVIDIA NIM
 const nvidiaClient = new OpenAI({
     apiKey: process.env.NGC_API_KEY,
     baseURL: 'https://integrate.api.nvidia.com/v1',
 });
 
-// ---------- gTTS (free, no API key) ----------
+// ElevenLabs TTS – use a free voice
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+// Free voices (try these):
+// 'EXAVITQu4L4Y6vNwHZ6B' – Bella
+// 'pNInz6obpgDQGcLma' – (generic)
+// 'Wob9QpzE6k5kq5l9k5k' – (another)
+const VOICE_ID = 'EXAVITQu4L4Y6vNwHZ6B';
+
 async function ttsStream(text) {
-    return new Promise((resolve, reject) => {
-        const tts = new gTTS(text, 'hi'); // Hindi language
-        const chunks = [];
-        const stream = tts.stream();
-        stream.on('data', (chunk) => chunks.push(chunk));
-        stream.on('end', () => {
-            const mp3Buffer = Buffer.concat(chunks);
-            // Convert MP3 to PCM using ffmpeg (must be installed on Render)
-            const ffmpeg = spawn('ffmpeg', [
-                '-i', 'pipe:0',
-                '-f', 's16le',
-                '-acodec', 'pcm_s16le',
-                '-ar', '16000',
-                '-ac', '1',
-                'pipe:1'
-            ]);
-            ffmpeg.stdin.write(mp3Buffer);
-            ffmpeg.stdin.end();
-            const pcmChunks = [];
-            ffmpeg.stdout.on('data', (chunk) => pcmChunks.push(chunk));
-            ffmpeg.stderr.on('data', () => {}); // ignore ffmpeg logs
-            ffmpeg.on('close', () => {
-                const pcmBuffer = Buffer.concat(pcmChunks);
-                const readable = new Readable();
-                readable.push(pcmBuffer);
-                readable.push(null);
-                resolve(readable);
-            });
-            ffmpeg.on('error', (err) => reject(err));
-        });
-        stream.on('error', reject);
+    if (!ELEVENLABS_API_KEY) throw new Error('Missing ELEVENLABS_API_KEY');
+    const response = await axios({
+        method: 'POST',
+        url: `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream`,
+        headers: {
+            'Accept': 'audio/mpeg',
+            'Content-Type': 'application/json',
+            'xi-api-key': ELEVENLABS_API_KEY,
+        },
+        data: {
+            text: text,
+            model_id: 'eleven_monolingual_v1',
+            voice_settings: { stability: 0.5, similarity_boost: 0.5 },
+            output_format: 'mp3_44100_128',
+        },
+        responseType: 'stream',
     });
+    return response.data;
 }
 
-// ---------- Groq Whisper ----------
+// Groq Whisper
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const groqClient = new OpenAI({
     apiKey: GROQ_API_KEY,
@@ -230,14 +221,12 @@ wss.on('connection', (ws) => {
         if (!sentence.trim()) return;
         console.log(`🔊 TTS: ${sentence}`);
         try {
-            const nodeStream = await ttsStream(sentence);
-            nodeStream.on('data', (chunk) => ws.send(chunk));
-            nodeStream.on('error', (err) => console.error('TTS error:', err.message));
-            await new Promise((resolve) => nodeStream.on('end', resolve));
+            const stream = await ttsStream(sentence);
+            stream.on('data', (chunk) => ws.send(chunk));
+            stream.on('error', (err) => console.error('TTS error:', err.message));
+            await new Promise((resolve) => stream.on('end', resolve));
         } catch (err) {
             console.error('❌ TTS error:', err.message);
-            const silence = Buffer.alloc(320, 0);
-            ws.send(silence);
         }
     }
 
