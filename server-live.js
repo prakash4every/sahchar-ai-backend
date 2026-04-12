@@ -11,7 +11,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get('/', (req, res) => res.send('Live audio server (Groq)'));
+app.get('/', (req, res) => res.send('Live audio server'));
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 10000;
@@ -19,13 +19,13 @@ const server = app.listen(PORT, () => console.log(`✅ HTTP server on ${PORT}`))
 const wss = new WebSocketServer({ server });
 console.log(`🎤 WebSocket server on ${PORT}`);
 
-// ---------- NVIDIA NIM ----------
+// NVIDIA NIM
 const nvidiaClient = new OpenAI({
     apiKey: process.env.NGC_API_KEY,
     baseURL: 'https://integrate.api.nvidia.com/v1',
 });
 
-// ---------- ElevenLabs TTS ----------
+// ElevenLabs TTS
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
 
@@ -50,14 +50,13 @@ async function ttsStream(text) {
     return response.data;
 }
 
-// ---------- Groq Whisper (for transcription) ----------
+// Groq Whisper
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const groqClient = new OpenAI({
     apiKey: GROQ_API_KEY,
     baseURL: 'https://api.groq.com/openai/v1',
 });
 
-// PCM to WAV converter (Groq expects WAV)
 function pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
     const blockAlign = numChannels * (bitsPerSample / 8);
     const byteRate = sampleRate * blockAlign;
@@ -88,14 +87,14 @@ wss.on('connection', (ws) => {
     let silenceTimer = null;
 
     const SAMPLE_RATE = 16000;
-    const BYTES_PER_SECOND = SAMPLE_RATE * 2;
-    const MAX_CHUNK_BYTES = BYTES_PER_SECOND * 2; // 2 seconds max
+    const BYTES_PER_SECOND = SAMPLE_RATE * 2; // 32000 bytes for 1 second
+    const MAX_CHUNK_BYTES = BYTES_PER_SECOND; // exactly 1 second
 
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
         silenceTimer = setTimeout(() => {
             if (audioBuffer.length > 0 && !isProcessing) {
-                console.log('Silence detected, processing audio...');
+                console.log('Silence detected, processing...');
                 processAudio();
             }
         }, 800);
@@ -104,7 +103,7 @@ wss.on('connection', (ws) => {
     function checkMaxDuration() {
         const totalBytes = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
         if (totalBytes >= MAX_CHUNK_BYTES && !isProcessing && audioBuffer.length > 0) {
-            console.log(`Max buffer reached (2s), processing...`);
+            console.log('Max 1s reached, processing...');
             processAudio();
         }
     }
@@ -114,7 +113,7 @@ wss.on('connection', (ws) => {
         isProcessing = true;
         if (silenceTimer) clearTimeout(silenceTimer);
 
-        // Take only up to MAX_CHUNK_BYTES
+        // Take first MAX_CHUNK_BYTES
         let totalBytes = 0;
         let chunksToSend = [];
         for (const chunk of audioBuffer) {
@@ -128,7 +127,7 @@ wss.on('connection', (ws) => {
                 break;
             }
         }
-        // Remove processed bytes from buffer
+        // Remove processed bytes
         let processedBytes = 0;
         const newBuffer = [];
         for (const chunk of audioBuffer) {
@@ -163,14 +162,14 @@ wss.on('connection', (ws) => {
                     await sendToLLM(accumulatedText.trim());
                     accumulatedText = '';
                 }
-            } else {
-                // No speech detected, send a short backchannel "हाँ" to keep conversation alive
+            } else if (!isBotSpeaking) {
                 await speak('हाँ');
             }
         } catch (err) {
-            console.error('❌ Groq error:', err);
-            // Send a short error message as TTS (no echo)
-            await speak('क्षमा करें, सुनने में समस्या हुई। कृपया फिर से बोलें।');
+            console.error('❌ Groq error:', err.message);
+            if (!isBotSpeaking) {
+                await speak('क्षमा करें, फिर से बोलें।');
+            }
         } finally {
             isProcessing = false;
             if (audioBuffer.length > 0) processAudio();
@@ -178,10 +177,10 @@ wss.on('connection', (ws) => {
     }
 
     async function sendToLLM(text) {
-        console.log(`🤖 LLM request: ${text}`);
+        console.log(`🤖 LLM: ${text}`);
         try {
             const messages = [
-                { role: 'system', content: 'You are a friendly human. Interject with "haan", "achha", "hmm" while user speaks. When user pauses, give short responses in Hindi.' },
+                { role: 'system', content: 'You are a friendly human. Interject with "haan", "achha", "hmm". Give short Hindi responses.' },
                 { role: 'user', content: text }
             ];
             const stream = await nvidiaClient.chat.completions.create({
@@ -202,8 +201,8 @@ wss.on('connection', (ws) => {
             }
             if (buffer) await speak(buffer);
         } catch (err) {
-            console.error('❌ LLM error:', err);
-            await speak('मुझे समझ नहीं आया, कृपया फिर से बोलें।');
+            console.error('❌ LLM error:', err.message);
+            await speak('मुझे समझ नहीं आया।');
         } finally {
             isBotSpeaking = false;
         }
@@ -215,11 +214,10 @@ wss.on('connection', (ws) => {
         try {
             const stream = await ttsStream(sentence);
             stream.on('data', (chunk) => ws.send(chunk));
-            stream.on('error', (err) => console.error('TTS stream error:', err));
+            stream.on('error', (err) => console.error('TTS error:', err.message));
             await new Promise((resolve) => stream.on('end', resolve));
         } catch (err) {
-            console.error('❌ TTS error:', err);
-            // Send silence on TTS error
+            console.error('❌ TTS error:', err.message);
             const silence = Buffer.alloc(320, 0);
             ws.send(silence);
         }
