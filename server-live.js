@@ -3,9 +3,8 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
-import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
+import { ElevenLabsClient } from 'elevenlabs';
 import fs from 'fs';
-import { Readable } from 'stream';
 
 dotenv.config();
 
@@ -31,16 +30,14 @@ const nvidiaClient = new OpenAI({
 const elevenlabs = new ElevenLabsClient({
     apiKey: process.env.ELEVENLABS_API_KEY,
 });
-const VOICE_ID = 'JBFqnCBsd6RMkjVDRZzb'; // "George" – good neutral English/Hindi voice
-// You can change to any voice from the library
+const VOICE_ID = 'JBFqnCBsd6RMkjVDRZzb'; // "George" – neutral voice
 
 async function ttsStream(text) {
-    // Generate audio as a readable stream
     const audioStream = await elevenlabs.textToSpeech.convert(VOICE_ID, {
         text: text,
         model_id: 'eleven_monolingual_v1',
         voice_settings: { stability: 0.5, similarity_boost: 0.5 },
-        output_format: 'pcm_16000', // PCM 16kHz for Android
+        output_format: 'pcm_16000',
     });
     return audioStream; // returns a ReadableStream
 }
@@ -114,7 +111,6 @@ wss.on('connection', (ws) => {
         isProcessing = true;
         if (silenceTimer) clearTimeout(silenceTimer);
 
-        // Take only up to MAX_CHUNK_BYTES
         let totalBytes = 0;
         let chunksToSend = [];
         for (const chunk of audioBuffer) {
@@ -128,7 +124,6 @@ wss.on('connection', (ws) => {
                 break;
             }
         }
-        // Remove processed bytes
         let processedBytes = 0;
         const newBuffer = [];
         for (const chunk of audioBuffer) {
@@ -214,8 +209,8 @@ wss.on('connection', (ws) => {
         console.log(`🔊 TTS: ${sentence}`);
         try {
             const stream = await ttsStream(sentence);
-            // stream is a ReadableStream (Web API). Convert to Node.js readable stream.
-            const nodeStream = Readable.fromWeb(stream);
+            // Convert Web ReadableStream to Node.js readable stream
+            const nodeStream = require('stream').Readable.fromWeb(stream);
             nodeStream.on('data', (chunk) => ws.send(chunk));
             nodeStream.on('error', (err) => console.error('TTS error:', err.message));
             await new Promise((resolve) => nodeStream.on('end', resolve));
