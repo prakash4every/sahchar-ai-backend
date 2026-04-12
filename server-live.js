@@ -3,7 +3,6 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
-import { createClient } from '@deepgram/sdk';
 import axios from 'axios';
 
 dotenv.config();
@@ -12,7 +11,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get('/', (req, res) => res.send('Live audio server (Deepgram)'));
+app.get('/', (req, res) => res.send('Live audio server (Groq)'));
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 10000;
@@ -28,7 +27,7 @@ const nvidiaClient = new OpenAI({
 
 // ---------- ElevenLabs TTS ----------
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const VOICE_ID = '21m00Tcm4TlvDq8ikWAM'; // English voice, works for Hindi too
+const VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
 
 async function ttsStream(text) {
     if (!ELEVENLABS_API_KEY) throw new Error('Missing ELEVENLABS_API_KEY');
@@ -51,69 +50,131 @@ async function ttsStream(text) {
     return response.data;
 }
 
-// ---------- Deepgram Live Transcription ----------
-const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
+// ---------- Groq Whisper (for transcription) ----------
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const groqClient = new OpenAI({
+    apiKey: GROQ_API_KEY,
+    baseURL: 'https://api.groq.com/openai/v1',
+});
+
+// PCM to WAV converter (Groq expects WAV)
+function pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
+    const blockAlign = numChannels * (bitsPerSample / 8);
+    const byteRate = sampleRate * blockAlign;
+    const dataSize = pcmData.length;
+    const header = Buffer.alloc(44);
+    header.write('RIFF', 0);
+    header.writeUInt32LE(36 + dataSize, 4);
+    header.write('WAVE', 8);
+    header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(numChannels, 22);
+    header.writeUInt32LE(sampleRate, 24);
+    header.writeUInt32LE(byteRate, 28);
+    header.writeUInt16LE(blockAlign, 32);
+    header.writeUInt16LE(bitsPerSample, 34);
+    header.write('data', 36);
+    header.writeUInt32LE(dataSize, 40);
+    return Buffer.concat([header, pcmData]);
+}
 
 wss.on('connection', (ws) => {
     console.log('🔌 Client connected');
-    let deepgramLive = null;
-    let isUserSpeaking = false;
-    let accumulatedText = '';
-    let isBotSpeaking = false;
     let audioBuffer = [];
-    let deepgramReady = false;
+    let isProcessing = false;
+    let isBotSpeaking = false;
+    let accumulatedText = '';
+    let silenceTimer = null;
 
-    // Start Deepgram live
-    try {
-        deepgramLive = deepgram.listen.live({
-            model: 'nova-2',
-            language: 'hi',
-            smart_format: true,
-            interim_results: true,
-            endpointing: 500,
-        });
+    const SAMPLE_RATE = 16000;
+    const BYTES_PER_SECOND = SAMPLE_RATE * 2;
+    const MAX_CHUNK_BYTES = BYTES_PER_SECOND * 2; // 2 seconds max
 
-        deepgramLive.on('open', () => {
-            console.log('🎙️ Deepgram open');
-            deepgramReady = true;
-            // Send any buffered audio
-            for (const chunk of audioBuffer) deepgramLive.send(chunk);
-            audioBuffer = [];
-        });
+    function resetSilenceTimer() {
+        if (silenceTimer) clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => {
+            if (audioBuffer.length > 0 && !isProcessing) {
+                console.log('Silence detected, processing audio...');
+                processAudio();
+            }
+        }, 800);
+    }
 
-        deepgramLive.on('error', (err) => {
-            console.error('❌ Deepgram error:', err);
-            deepgramReady = false;
-            ws.send(Buffer.from('🔇 Transcription service error'));
-        });
+    function checkMaxDuration() {
+        const totalBytes = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
+        if (totalBytes >= MAX_CHUNK_BYTES && !isProcessing && audioBuffer.length > 0) {
+            console.log(`Max buffer reached (2s), processing...`);
+            processAudio();
+        }
+    }
 
-        deepgramLive.on('transcriptReceived', (data) => {
-            const transcript = data.channel.alternatives[0].transcript;
-            if (!transcript) return;
+    async function processAudio() {
+        if (audioBuffer.length === 0 || isProcessing) return;
+        isProcessing = true;
+        if (silenceTimer) clearTimeout(silenceTimer);
 
-            if (data.is_final) {
+        // Take only up to MAX_CHUNK_BYTES
+        let totalBytes = 0;
+        let chunksToSend = [];
+        for (const chunk of audioBuffer) {
+            if (totalBytes + chunk.length <= MAX_CHUNK_BYTES) {
+                chunksToSend.push(chunk);
+                totalBytes += chunk.length;
+            } else {
+                const remaining = MAX_CHUNK_BYTES - totalBytes;
+                chunksToSend.push(chunk.slice(0, remaining));
+                totalBytes += remaining;
+                break;
+            }
+        }
+        // Remove processed bytes from buffer
+        let processedBytes = 0;
+        const newBuffer = [];
+        for (const chunk of audioBuffer) {
+            if (processedBytes + chunk.length <= totalBytes) {
+                processedBytes += chunk.length;
+                continue;
+            } else {
+                const remaining = chunk.length - (totalBytes - processedBytes);
+                newBuffer.push(chunk.slice(-remaining));
+                processedBytes = totalBytes;
+            }
+        }
+        audioBuffer = newBuffer;
+
+        const fullAudio = Buffer.concat(chunksToSend, totalBytes);
+        const wavBuffer = pcmToWav(fullAudio, SAMPLE_RATE, 1, 16);
+        const audioBase64 = wavBuffer.toString('base64');
+
+        try {
+            const response = await groqClient.audio.transcriptions.create({
+                file: Buffer.from(audioBase64, 'base64'),
+                model: 'whisper-large-v3',
+                language: 'hi',
+                response_format: 'text',
+            });
+            const transcript = response.trim();
+            if (transcript) {
+                console.log(`📝 Transcript: ${transcript}`);
                 accumulatedText += transcript + ' ';
-                console.log(`📝 Final: ${accumulatedText}`);
-                if (accumulatedText.trim() && !isBotSpeaking) {
+                if (!isBotSpeaking) {
                     isBotSpeaking = true;
-                    sendToLLM(accumulatedText.trim());
+                    await sendToLLM(accumulatedText.trim());
                     accumulatedText = '';
                 }
             } else {
-                if (!isUserSpeaking) {
-                    isUserSpeaking = true;
-                    // Send backchannel "हाँ" immediately
-                    ttsStream('हाँ').then(stream => {
-                        stream.on('data', chunk => ws.send(chunk));
-                        stream.on('error', console.error);
-                    }).catch(err => console.error('Backchannel TTS error:', err));
-                }
+                // No speech detected, send a short backchannel "हाँ" to keep conversation alive
+                await speak('हाँ');
             }
-        });
-    } catch (err) {
-        console.error('Failed to start Deepgram:', err);
-        ws.close(1011, 'Deepgram initialization failed');
-        return;
+        } catch (err) {
+            console.error('❌ Groq error:', err);
+            // Send a short error message as TTS (no echo)
+            await speak('क्षमा करें, सुनने में समस्या हुई। कृपया फिर से बोलें।');
+        } finally {
+            isProcessing = false;
+            if (audioBuffer.length > 0) processAudio();
+        }
     }
 
     async function sendToLLM(text) {
@@ -158,24 +219,22 @@ wss.on('connection', (ws) => {
             await new Promise((resolve) => stream.on('end', resolve));
         } catch (err) {
             console.error('❌ TTS error:', err);
-            // Send a short error message as PCM (simple beep or silence)
-            const silence = Buffer.alloc(320, 0); // 20ms silence
+            // Send silence on TTS error
+            const silence = Buffer.alloc(320, 0);
             ws.send(silence);
         }
     }
 
     ws.on('message', (data) => {
         const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
-        if (deepgramReady && deepgramLive && deepgramLive.readyState === 1) {
-            deepgramLive.send(chunk);
-        } else {
-            // Buffer audio until Deepgram is ready
-            if (!deepgramReady) audioBuffer.push(chunk);
-        }
+        audioBuffer.push(chunk);
+        resetSilenceTimer();
+        checkMaxDuration();
     });
 
     ws.on('close', (code, reason) => {
         console.log(`🔌 Client disconnected: code=${code}, reason=${reason?.toString() || 'none'}`);
-        if (deepgramLive) deepgramLive.finish();
+        if (silenceTimer) clearTimeout(silenceTimer);
+        audioBuffer = [];
     });
 });
