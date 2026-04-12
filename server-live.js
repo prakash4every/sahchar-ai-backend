@@ -5,14 +5,19 @@ import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import axios from 'axios';
 import fs from 'fs';
+import path from 'path';
+import { randomUUID } from 'crypto';
+import ffmpeg from 'fluent-ffmpeg';
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 
 dotenv.config();
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get('/', (req, res) => res.send('Live audio server (ElevenLabs)'));
+app.get('/', (req, res) => res.send('Live audio server - PCM 16kHz'));
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 10000;
@@ -20,15 +25,15 @@ const server = app.listen(PORT, () => console.log(`✅ HTTP server on ${PORT}`))
 const wss = new WebSocketServer({ server });
 console.log(`🎤 WebSocket server on ${PORT}`);
 
-// NVIDIA NIM
+// NVIDIA NIM - Fast model
 const nvidiaClient = new OpenAI({
     apiKey: process.env.NGC_API_KEY,
     baseURL: 'https://integrate.api.nvidia.com/v1',
 });
 
-// ElevenLabs TTS – free voice ID (Bella)
+// ElevenLabs TTS
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const VOICE_ID = 'EXAVITQu4L4Y6vNwHZ6B'; // Bella – free tier
+const VOICE_ID = 'EXAVITQu4L4Y6vNwHZ6B'; // Bella
 
 async function ttsStream(text) {
     if (!ELEVENLABS_API_KEY) throw new Error('Missing ELEVENLABS_API_KEY');
@@ -47,8 +52,25 @@ async function ttsStream(text) {
             output_format: 'mp3_44100_128',
         },
         responseType: 'stream',
+        timeout: 10000,
     });
     return response.data;
+}
+
+// Fix 1: MP3 stream -> PCM 16kHz mono s16le Buffer
+function convertMp3StreamToPcm16k(mp3Stream) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        ffmpeg(mp3Stream)
+        .audioCodec('pcm_s16le')
+        .format('s16le')
+        .audioChannels(1)
+        .audioFrequency(16000)
+        .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
+        .on('end', () => resolve(Buffer.concat(chunks)))
+        .pipe()
+        .on('data', (chunk) => chunks.push(chunk));
+    });
 }
 
 // Groq Whisper
@@ -79,10 +101,15 @@ function pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
     return Buffer.concat([header, pcmData]);
 }
 
+// Fix 2: Unique temp file per request
 async function bufferToReadableStream(buffer) {
-    const tempPath = '/tmp/audio.wav';
+    const tempPath = path.join('/tmp', `audio_${randomUUID()}.wav`);
     fs.writeFileSync(tempPath, buffer);
-    return fs.createReadStream(tempPath);
+    const stream = fs.createReadStream(tempPath);
+    stream.on('close', () => {
+        try { fs.unlinkSync(tempPath); } catch {}
+    });
+    return stream;
 }
 
 wss.on('connection', (ws) => {
@@ -92,6 +119,7 @@ wss.on('connection', (ws) => {
     let isBotSpeaking = false;
     let accumulatedText = '';
     let silenceTimer = null;
+    let isClosed = false;
 
     const SAMPLE_RATE = 16000;
     const BYTES_PER_SECOND = SAMPLE_RATE * 2;
@@ -100,7 +128,7 @@ wss.on('connection', (ws) => {
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
         silenceTimer = setTimeout(() => {
-            if (audioBuffer.length > 0 && !isProcessing) {
+            if (audioBuffer.length > 0 &&!isProcessing &&!isClosed) {
                 console.log('Silence detected, processing...');
                 processAudio();
             }
@@ -109,14 +137,14 @@ wss.on('connection', (ws) => {
 
     function checkMaxDuration() {
         const totalBytes = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
-        if (totalBytes >= MAX_CHUNK_BYTES && !isProcessing && audioBuffer.length > 0) {
+        if (totalBytes >= MAX_CHUNK_BYTES &&!isProcessing && audioBuffer.length > 0 &&!isClosed) {
             console.log('Max 0.25s reached, processing...');
             processAudio();
         }
     }
 
     async function processAudio() {
-        if (audioBuffer.length === 0 || isProcessing) return;
+        if (audioBuffer.length === 0 || isProcessing || isClosed) return;
         isProcessing = true;
         if (silenceTimer) clearTimeout(silenceTimer);
 
@@ -128,11 +156,11 @@ wss.on('connection', (ws) => {
                 totalBytes += chunk.length;
             } else {
                 const remaining = MAX_CHUNK_BYTES - totalBytes;
-                chunksToSend.push(chunk.slice(0, remaining));
-                totalBytes += remaining;
+                if (remaining > 0) chunksToSend.push(chunk.slice(0, remaining));
                 break;
             }
         }
+
         let processedBytes = 0;
         const newBuffer = [];
         for (const chunk of audioBuffer) {
@@ -141,17 +169,17 @@ wss.on('connection', (ws) => {
                 continue;
             } else {
                 const remaining = chunk.length - (totalBytes - processedBytes);
-                newBuffer.push(chunk.slice(-remaining));
-                processedBytes = totalBytes;
+                if (remaining > 0) newBuffer.push(chunk.slice(-remaining));
+                break;
             }
         }
         audioBuffer = newBuffer;
 
         const fullAudio = Buffer.concat(chunksToSend, totalBytes);
         const wavBuffer = pcmToWav(fullAudio, SAMPLE_RATE, 1, 16);
-        const audioStream = await bufferToReadableStream(wavBuffer);
 
         try {
+            const audioStream = await bufferToReadableStream(wavBuffer);
             const response = await groqClient.audio.transcriptions.create({
                 file: audioStream,
                 model: 'whisper-large-v3',
@@ -162,41 +190,43 @@ wss.on('connection', (ws) => {
             if (transcript) {
                 console.log(`📝 Transcript: ${transcript}`);
                 accumulatedText += transcript + ' ';
-                if (!isBotSpeaking) {
+                if (!isBotSpeaking &&!isClosed) {
                     isBotSpeaking = true;
                     await sendToLLM(accumulatedText.trim());
                     accumulatedText = '';
                 }
-            } else if (!isBotSpeaking) {
+            } else if (!isBotSpeaking &&!isClosed) {
                 await speak('हाँ');
             }
         } catch (err) {
             console.error('❌ Groq error:', err.message);
-            if (!isBotSpeaking) {
+            if (!isBotSpeaking &&!isClosed) {
                 await speak('क्षमा करें, फिर से बोलें।');
             }
         } finally {
             isProcessing = false;
-            if (audioBuffer.length > 0) processAudio();
+            if (audioBuffer.length > 0 &&!isClosed) processAudio();
         }
     }
 
     async function sendToLLM(text) {
+        if (isClosed) return;
         console.log(`🤖 LLM: ${text}`);
         try {
             const messages = [
-                { role: 'system', content: 'You are a friendly human. Interject with "haan", "achha", "hmm". Give short Hindi responses.' },
+                { role: 'system', content: 'You are a friendly human. Interject with "haan", "achha", "hmm". Give short Hindi responses. Max 2 sentences.' },
                 { role: 'user', content: text }
             ];
             const stream = await nvidiaClient.chat.completions.create({
-                model: 'z-ai/glm5',
+                model: 'meta/llama-3.1-70b-instruct', // Fix 3: Fast model
                 messages: messages,
                 stream: true,
                 temperature: 0.9,
-                max_tokens: 300,
+                max_tokens: 100,
             });
             let buffer = '';
             for await (const chunk of stream) {
+                if (isClosed) break;
                 const token = chunk.choices[0]?.delta?.content || '';
                 buffer += token;
                 if (token.match(/[।!?]/) || buffer.length > 40 || token.match(/(हाँ|अच्छा|हम्म)/)) {
@@ -204,30 +234,38 @@ wss.on('connection', (ws) => {
                     buffer = '';
                 }
             }
-            if (buffer) await speak(buffer);
+            if (buffer &&!isClosed) await speak(buffer);
         } catch (err) {
             console.error('❌ LLM error:', err.message);
-            await speak('मुझे समझ नहीं आया।');
+            if (!isClosed) await speak('मुझे समझ नहीं आया।');
         } finally {
             isBotSpeaking = false;
         }
     }
 
+    // Fix 4: MP3 ko PCM me convert karke 20ms chunks me bhejo
     async function speak(sentence) {
-        if (!sentence.trim()) return;
+        if (!sentence.trim() || isClosed) return;
         console.log(`🔊 TTS: ${sentence}`);
         try {
-            const stream = await ttsStream(sentence);
-            stream.on('data', (chunk) => ws.send(chunk));
-            stream.on('error', (err) => console.error('TTS error:', err.message));
-            await new Promise((resolve) => stream.on('end', resolve));
+            const mp3Stream = await ttsStream(sentence);
+            const pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
+
+            const CHUNK_SIZE = 320; // 20ms @ 16kHz 16-bit mono
+            for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
+                if (isClosed || ws.readyState!== ws.OPEN) break;
+                const chunk = pcmBuffer.slice(i, i + CHUNK_SIZE);
+                ws.send(chunk);
+                await new Promise(r => setTimeout(r, 18)); // 18ms gap for real-time
+            }
         } catch (err) {
             console.error('❌ TTS error:', err.message);
         }
     }
 
     ws.on('message', (data) => {
-        const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        if (isClosed) return;
+        const chunk = Buffer.isBuffer(data)? data : Buffer.from(data);
         audioBuffer.push(chunk);
         resetSilenceTimer();
         checkMaxDuration();
@@ -235,7 +273,13 @@ wss.on('connection', (ws) => {
 
     ws.on('close', (code, reason) => {
         console.log(`🔌 Client disconnected: code=${code}, reason=${reason?.toString() || 'none'}`);
+        isClosed = true;
         if (silenceTimer) clearTimeout(silenceTimer);
         audioBuffer = [];
+    });
+
+    ws.on('error', (err) => {
+        console.error('WebSocket error:', err);
+        isClosed = true;
     });
 });
