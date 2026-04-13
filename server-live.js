@@ -251,27 +251,38 @@ wss.on('connection', (ws) => {
     }
 
     async function speak(sentence) {
-        if (!sentence.trim() || isClosed) return;
-        console.log(`🔊 TTS: ${sentence}`);
-        console.log('🔊 MP3 stream received from ElevenLabs'); 
-        try {
-            const mp3Stream = await ttsStream(sentence);
-            const pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
-            console.log(`🔊 PCM converted: ${pcmBuffer.length} bytes`);
+    if (!sentence.trim() || isClosed) return;
+    console.log(`🔊 TTS: ${sentence}`);
+    console.log('🔊 MP3 stream received from ElevenLabs'); 
+    try {
+        const mp3Stream = await ttsStream(sentence);
+        const pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
+        console.log(`🔊 PCM converted: ${pcmBuffer.length} bytes`);
 
-            const CHUNK_SIZE = 320; // 20ms @ 16kHz 16-bit mono
-            for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
-                if (isClosed || ws.readyState!== ws.OPEN) break;
-                const chunk = pcmBuffer.slice(i, i + CHUNK_SIZE);
-                ws.send(chunk);
-                await new Promise(r => setTimeout(r, 18));
-            }
-            console.log('🔊 PCM sent to client complete');
-        } catch (err) {
-            console.error('❌ TTS error:', err.message);
+        // Fix 1: 640 bytes = 20ms @ 16kHz 16-bit mono
+        const CHUNK_SIZE = 640; 
+        const CHUNK_DURATION_MS = 20; // 640 bytes / (16000*2) * 1000 = 20ms
+        
+        let sentBytes = 0;
+        const startTime = Date.now();
+        
+        for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
+            if (isClosed || ws.readyState!== ws.OPEN) break;
+            const chunk = pcmBuffer.slice(i, i + CHUNK_SIZE);
+            ws.send(chunk);
+            sentBytes += chunk.length;
+            
+            // Fix 2: Real-time sync - jitna audio bheja utna hi wait karo
+            const expectedTime = (sentBytes / (16000 * 2)) * 1000; // ms
+            const elapsedTime = Date.now() - startTime;
+            const waitTime = Math.max(0, expectedTime - elapsedTime);
+            if (waitTime > 0) await new Promise(r => setTimeout(r, waitTime));
         }
+        console.log('🔊 PCM sent to client complete');
+    } catch (err) {
+        console.error('❌ TTS error:', err.message);
     }
-
+}
     ws.on('message', (data) => {
         if (isClosed) return;
         const chunk = Buffer.isBuffer(data)? data : Buffer.from(data);
