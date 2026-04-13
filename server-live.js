@@ -9,6 +9,7 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import { MongoClient } from 'mongodb'; // <-- Naya
 
 dotenv.config();
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
@@ -25,63 +26,127 @@ const server = app.listen(PORT, () => console.log(`✅ HTTP server on ${PORT}`))
 const wss = new WebSocketServer({ server });
 console.log(`🎤 WebSocket server on ${PORT}`);
 
-// NVIDIA NIM - Fast model
-const nvidiaClient = new OpenAI({
-    apiKey: process.env.NGC_API_KEY,
-    baseURL: 'https://integrate.api.nvidia.com/v1',
-});
+// ==================== MongoDB Setup ====================
+let mongoClient;
+let db = null;
+if (process.env.MONGODB_URI) {
+    mongoClient = new MongoClient(process.env.MONGODB_URI);
+    mongoClient.connect().then(() => {
+        console.log("✅ Live Server: Connected to MongoDB");
+        db = mongoClient.db();
+    }).catch(err => {
+        console.error("❌ Live Server: MongoDB connection error:", err.message);
+        db = null;
+    });
+}
 
-// Fix 1: ElevenLabs - Use Rachel (free & stable) + better error handling
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const VOICE_ID = '21m00Tcm4TlvDq8ikWAM'; // Rachel - always free
-
-async function ttsStream(text) {
-    if (!ELEVENLABS_API_KEY) throw new Error('Missing ELEVENLABS_API_KEY');
+// MongoDB se history load karne ka function
+async function loadConversationFromDB(deviceId, limit = 10) {
+    if (!db ||!deviceId) return [];
     try {
-        const response = await axios({
-            method: 'POST',
-            url: `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream`,
-            headers: {
-                'Accept': 'audio/mpeg',
-                'Content-Type': 'application/json',
-                'xi-api-key': ELEVENLABS_API_KEY,
-            },
-            data: {
-                text: text,
-                model_id: 'eleven_turbo_v2', // Fix 2: Fastest model
-                voice_settings: { stability: 0.5, similarity_boost: 0.5 },
-                output_format: 'mp3_44100_128',
-            },
-            responseType: 'stream',
-            timeout: 10000,
-        });
-        return response.data;
+        const convCollection = db.collection('conversations');
+        const messages = await convCollection.find({ sessionId: deviceId })
+        .sort({ timestamp: 1 })
+        .limit(limit)
+        .toArray();
+
+        const history = [];
+        for (const msg of messages) {
+            history.push({ role: "user", content: msg.userMessage });
+            history.push({ role: "assistant", content: msg.botReply });
+        }
+        console.log(`📚 Loaded ${history.length} messages from MongoDB for ${deviceId}`);
+        return history;
     } catch (err) {
-        // Fix 3: Log full error for debugging
-        console.error('ElevenLabs API Error:', err.response?.status, err.response?.data || err.message);
-        throw err;
+        console.error("Error loading conversation from DB:", err);
+        return [];
     }
 }
 
-// MP3 stream -> PCM 16kHz mono s16le Buffer
+// ==================== NVIDIA NIM ====================
+const nvidiaApiKeys = [
+    process.env.NGC_API_KEY_1,
+    process.env.NGC_API_KEY_2,
+    process.env.NGC_API_KEY_3,
+    process.env.NGC_API_KEY
+].filter(key => key && key.trim()!== "");
+
+async function callNvidiaWithFallback(messages) {
+    if (nvidiaApiKeys.length === 0) throw new Error("No NVIDIA keys");
+    for (let keyIdx = 0; keyIdx < nvidiaApiKeys.length; keyIdx++) {
+        const apiKey = nvidiaApiKeys[keyIdx];
+        try {
+            const nvidiaClient = new OpenAI({
+                apiKey: apiKey,
+                baseURL: 'https://integrate.api.nvidia.com/v1',
+                timeout: 30000
+            });
+            const stream = await nvidiaClient.chat.completions.create({
+                model: "meta/llama-3.1-70b-instruct",
+                messages: messages,
+                stream: true,
+                temperature: 0.7,
+                max_tokens: 100,
+            });
+            let fullReply = "";
+            for await (const chunk of stream) {
+                fullReply += chunk.choices[0]?.delta?.content || "";
+            }
+            fullReply = fullReply.trim();
+            if (fullReply.length > 800) fullReply = fullReply.substring(0, 800) + "...";
+            return fullReply;
+        } catch (err) {
+            console.error(`❌ NVIDIA key ${keyIdx} failed:`, err.message);
+            if (keyIdx === nvidiaApiKeys.length - 1) throw err;
+        }
+    }
+    throw new Error("All NVIDIA keys failed");
+}
+
+// ==================== ElevenLabs TTS ====================
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
+
+async function ttsStream(text) {
+    if (!ELEVENLABS_API_KEY) throw new Error('Missing ELEVENLABS_API_KEY');
+    const response = await axios({
+        method: 'POST',
+        url: `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream`,
+        headers: {
+            'Accept': 'audio/mpeg',
+            'Content-Type': 'application/json',
+            'xi-api-key': ELEVENLABS_API_KEY,
+        },
+        data: {
+            text: text,
+            model_id: 'eleven_turbo_v2',
+            voice_settings: { stability: 0.5, similarity_boost: 0.5 },
+            output_format: 'mp3_44100_128',
+        },
+        responseType: 'stream',
+        timeout: 10000,
+    });
+    return response.data;
+}
+
 function convertMp3StreamToPcm16k(mp3Stream) {
     return new Promise((resolve, reject) => {
         const chunks = [];
         ffmpeg(mp3Stream)
-       .audioCodec('pcm_s16le')
-       .format('s16le')
-       .audioChannels(1)
-       .audioFrequency(16000)
-       .outputOptions('-ar 16000') // <-- Force 16kHz
-       .outputOptions('-ac 1')     // <-- Force mono
-       .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
-       .on('end', () => resolve(Buffer.concat(chunks)))
-       .pipe()
-       .on('data', (chunk) => chunks.push(chunk));
+      .audioCodec('pcm_s16le')
+      .format('s16le')
+      .audioChannels(1)
+      .audioFrequency(16000)
+      .outputOptions('-ar 16000')
+      .outputOptions('-ac 1')
+      .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
+      .on('end', () => resolve(Buffer.concat(chunks)))
+      .pipe()
+      .on('data', (chunk) => chunks.push(chunk));
     });
 }
 
-// Groq Whisper
+// ==================== Groq Whisper ====================
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const groqClient = new OpenAI({
     apiKey: GROQ_API_KEY,
@@ -119,18 +184,35 @@ async function bufferToReadableStream(buffer) {
     return stream;
 }
 
-wss.on('connection', (ws) => {
-    console.log('🔌 Client connected');
+// ==================== WebSocket Handler ====================
+const sessionHistories = new Map(); // sessionId -> messages array
+
+wss.on('connection', async (ws, req) => {
+    // Fix: URL se deviceId nikalo
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const deviceId = url.searchParams.get('deviceId') || 'default';
+    const sessionId = randomUUID();
+
+    console.log(`🔌 Client connected: session=${sessionId}, deviceId=${deviceId}`);
+
+    // Fix: MongoDB se history load karo
+    const pastMessages = await loadConversationFromDB(deviceId, 10);
+    const history = [
+        { role: 'system', content: 'You are SahcharAI, a helpful Hindi voice assistant. Give short replies. Max 2 sentences. Remember context. Behave like a friend.' },
+       ...pastMessages
+    ];
+    sessionHistories.set(sessionId, history);
+    console.log(`📚 Loaded history: ${history.length} messages`);
+
     let audioBuffer = [];
     let isProcessing = false;
     let isBotSpeaking = false;
-    let accumulatedText = '';
     let silenceTimer = null;
     let isClosed = false;
 
     const SAMPLE_RATE = 16000;
     const BYTES_PER_SECOND = SAMPLE_RATE * 2;
-    const MAX_CHUNK_BYTES = BYTES_PER_SECOND / 4; // 0.25 seconds
+    const MAX_CHUNK_BYTES = BYTES_PER_SECOND / 4;
 
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
@@ -196,11 +278,9 @@ wss.on('connection', (ws) => {
             const transcript = response.trim();
             if (transcript) {
                 console.log(`📝 Transcript: ${transcript}`);
-                accumulatedText += transcript + ' ';
                 if (!isBotSpeaking &&!isClosed) {
                     isBotSpeaking = true;
-                    await sendToLLM(accumulatedText.trim());
-                    accumulatedText = '';
+                    await sendToLLM(transcript);
                 }
             } else if (!isBotSpeaking &&!isClosed) {
                 await speak('हाँ');
@@ -219,29 +299,35 @@ wss.on('connection', (ws) => {
     async function sendToLLM(text) {
         if (isClosed) return;
         console.log(`🤖 LLM: ${text}`);
+
+        const history = sessionHistories.get(sessionId);
+        history.push({ role: 'user', content: text });
+
+        // Last 6 messages rakho
+        if (history.length > 7) history.splice(1, history.length - 7);
+
         try {
-            const messages = [
-                { role: 'system', content: 'You are a friendly human. Interject with "haan", "achha", "hmm". Give short Hindi responses. Max 2 sentences.' },
-                { role: 'user', content: text }
-            ];
-            const stream = await nvidiaClient.chat.completions.create({
-                model: 'meta/llama-3.1-70b-instruct',
-                messages: messages,
-                stream: true,
-                temperature: 0.9,
-                max_tokens: 100,
-            });
-            let buffer = '';
-            for await (const chunk of stream) {
-                if (isClosed) break;
-                const token = chunk.choices[0]?.delta?.content || '';
-                buffer += token;
-                if (token.match(/[।!?]/) || buffer.length > 40 || token.match(/(हाँ|अच्छा|हम्म)/)) {
-                    await speak(buffer);
-                    buffer = '';
-                }
+            const fullReply = await callNvidiaWithFallback(history);
+
+            // History me save karo
+            if (fullReply) history.push({ role: 'assistant', content: fullReply });
+
+            // MongoDB me bhi save karo
+            if (db) {
+                db.collection('conversations').insertOne({
+                    sessionId: deviceId, // deviceId use karo
+                    userMessage: text,
+                    botReply: fullReply,
+                    timestamp: new Date()
+                }).catch(e => console.error("MongoDB insert error:", e));
             }
-            if (buffer &&!isClosed) await speak(buffer);
+
+            // Stream karke bolo
+            const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
+            for (const sentence of sentences) {
+                if (isClosed) break;
+                await speak(sentence.trim());
+            }
         } catch (err) {
             console.error('❌ LLM error:', err.message);
             if (!isClosed) await speak('मुझे समझ नहीं आया।');
@@ -251,38 +337,37 @@ wss.on('connection', (ws) => {
     }
 
     async function speak(sentence) {
-    if (!sentence.trim() || isClosed) return;
-    console.log(`🔊 TTS: ${sentence}`);
-    console.log('🔊 MP3 stream received from ElevenLabs'); 
-    try {
-        const mp3Stream = await ttsStream(sentence);
-        const pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
-        console.log(`🔊 PCM converted: ${pcmBuffer.length} bytes`);
+        if (!sentence.trim() || isClosed) return;
+        console.log(`🔊 TTS: ${sentence}`);
+        console.log('🔊 MP3 stream received from ElevenLabs');
+        try {
+            const mp3Stream = await ttsStream(sentence);
+            const pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
+            console.log(`🔊 PCM converted: ${pcmBuffer.length} bytes`);
 
-        // Fix 1: 640 bytes = 20ms @ 16kHz 16-bit mono
-        const CHUNK_SIZE = 640; 
-        const CHUNK_DURATION_MS = 20; // 640 bytes / (16000*2) * 1000 = 20ms
-        
-        let sentBytes = 0;
-        const startTime = Date.now();
-        
-        for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
-            if (isClosed || ws.readyState!== ws.OPEN) break;
-            const chunk = pcmBuffer.slice(i, i + CHUNK_SIZE);
-            ws.send(chunk);
-            sentBytes += chunk.length;
-            
-            // Fix 2: Real-time sync - jitna audio bheja utna hi wait karo
-            const expectedTime = (sentBytes / (16000 * 2)) * 1000; // ms
-            const elapsedTime = Date.now() - startTime;
-            const waitTime = Math.max(0, expectedTime - elapsedTime);
-            if (waitTime > 0) await new Promise(r => setTimeout(r, waitTime));
+            const CHUNK_SIZE = 640;
+            const CHUNK_DURATION_MS = 20;
+
+            let sentBytes = 0;
+            const startTime = Date.now();
+
+            for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
+                if (isClosed || ws.readyState!== ws.OPEN) break;
+                const chunk = pcmBuffer.slice(i, i + CHUNK_SIZE);
+                ws.send(chunk);
+                sentBytes += chunk.length;
+
+                const expectedTime = (sentBytes / (16000 * 2)) * 1000;
+                const elapsedTime = Date.now() - startTime;
+                const waitTime = Math.max(0, expectedTime - elapsedTime);
+                if (waitTime > 0) await new Promise(r => setTimeout(r, waitTime));
+            }
+            console.log('🔊 PCM sent to client complete');
+        } catch (err) {
+            console.error('❌ TTS error:', err.message);
         }
-        console.log('🔊 PCM sent to client complete');
-    } catch (err) {
-        console.error('❌ TTS error:', err.message);
     }
-}
+
     ws.on('message', (data) => {
         if (isClosed) return;
         const chunk = Buffer.isBuffer(data)? data : Buffer.from(data);
@@ -292,10 +377,11 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', (code, reason) => {
-        console.log(`🔌 Client disconnected: code=${code}, reason=${reason?.toString() || 'none'}`);
+        console.log(`🔌 Client disconnected: ${sessionId}, code=${code}, reason=${reason?.toString() || 'none'}`);
         isClosed = true;
         if (silenceTimer) clearTimeout(silenceTimer);
         audioBuffer = [];
+        setTimeout(() => sessionHistories.delete(sessionId), 5 * 60 * 1000);
     });
 
     ws.on('error', (err) => {
