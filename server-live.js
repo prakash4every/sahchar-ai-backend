@@ -9,7 +9,7 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
-import { MongoClient } from 'mongodb'; // <-- Naya
+import { MongoClient } from 'mongodb';
 
 dotenv.config();
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
@@ -40,21 +40,20 @@ if (process.env.MONGODB_URI) {
     });
 }
 
-// MongoDB se history load karne ka function
 async function loadConversationFromDB(deviceId, limit = 10) {
     if (!db ||!deviceId) return [];
     try {
         const convCollection = db.collection('conversations');
         const messages = await convCollection.find({ sessionId: deviceId })
-        .sort({ timestamp: 1 })
-        .limit(limit)
-        .toArray();
+           .sort({ timestamp: -1 })
+           .limit(limit)
+           .toArray();
 
         const history = [];
-        for (const msg of messages) {
+        messages.reverse().forEach(msg => {
             history.push({ role: "user", content: msg.userMessage });
             history.push({ role: "assistant", content: msg.botReply });
-        }
+        });
         console.log(`📚 Loaded ${history.length} messages from MongoDB for ${deviceId}`);
         return history;
     } catch (err) {
@@ -133,16 +132,16 @@ function convertMp3StreamToPcm16k(mp3Stream) {
     return new Promise((resolve, reject) => {
         const chunks = [];
         ffmpeg(mp3Stream)
-      .audioCodec('pcm_s16le')
-      .format('s16le')
-      .audioChannels(1)
-      .audioFrequency(16000)
-      .outputOptions('-ar 16000')
-      .outputOptions('-ac 1')
-      .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
-      .on('end', () => resolve(Buffer.concat(chunks)))
-      .pipe()
-      .on('data', (chunk) => chunks.push(chunk));
+           .audioCodec('pcm_s16le')
+           .format('s16le')
+           .audioChannels(1)
+           .audioFrequency(16000)
+           .outputOptions('-ar 16000')
+           .outputOptions('-ac 1')
+           .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
+           .on('end', () => resolve(Buffer.concat(chunks)))
+           .pipe()
+           .on('data', (chunk) => chunks.push(chunk));
     });
 }
 
@@ -185,9 +184,7 @@ async function bufferToReadableStream(buffer) {
 }
 
 // ==================== WebSocket Handler ====================
-const sessionHistories = new Map(); // sessionId -> messages array
-
-// server-live.js me ye changes karo
+const sessionHistories = new Map();
 
 wss.on('connection', async (ws, req) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -198,7 +195,7 @@ wss.on('connection', async (ws, req) => {
 
     const pastMessages = await loadConversationFromDB(deviceId, 10);
     const history = [
-        { role: 'system', content: 'You are SahcharAI, a helpful Hindi voice assistant. Give short replies. Max 2 sentences. Remember context. Behave like a friend.' },
+        { role: 'system', content: 'You are SahcharAI, a helpful Hindi voice assistant. Give short replies. Max 2 sentences. Remember context. Behave like a friend. Never make up facts. If you don\'t understand, say "समझ नहीं आया".' },
        ...pastMessages
     ];
     sessionHistories.set(sessionId, history);
@@ -220,7 +217,15 @@ wss.on('connection', async (ws, req) => {
                 console.log('Silence detected, processing...');
                 processAudio();
             }
-        }, 800); // 600 se 800 kiya - jaldi trigger na ho
+        }, 800);
+    }
+
+    function checkMaxDuration() {
+        const totalBytes = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
+        if (totalBytes >= MAX_CHUNK_BYTES &&!isProcessing && audioBuffer.length > 0 &&!isClosed) {
+            console.log('Max 0.25s reached, processing...');
+            processAudio();
+        }
     }
 
     async function processAudio() {
@@ -229,176 +234,4 @@ wss.on('connection', async (ws, req) => {
         if (silenceTimer) clearTimeout(silenceTimer);
 
         let totalBytes = 0;
-        let chunksToSend = [];
-        for (const chunk of audioBuffer) {
-            if (totalBytes + chunk.length <= MAX_CHUNK_BYTES) {
-                chunksToSend.push(chunk);
-                totalBytes += chunk.length;
-            } else {
-                const remaining = MAX_CHUNK_BYTES - totalBytes;
-                if (remaining > 0) chunksToSend.push(chunk.slice(0, remaining));
-                break;
-            }
-        }
-
-        // Fix 1: Bahut chhota audio ignore karo - noise hai
-        if (totalBytes < 3200) { // 0.1 second se kam = ignore
-            console.log('⚠️ Audio too short, ignoring noise');
-            audioBuffer = [];
-            isProcessing = false;
-            return;
-        }
-
-        // Baaki buffer logic same...
-        let processedBytes = 0;
-        const newBuffer = [];
-        for (const chunk of audioBuffer) {
-            if (processedBytes + chunk.length <= totalBytes) {
-                processedBytes += chunk.length;
-                continue;
-            } else {
-                const remaining = chunk.length - (totalBytes - processedBytes);
-                if (remaining > 0) newBuffer.push(chunk.slice(-remaining));
-                break;
-            }
-        }
-        audioBuffer = newBuffer;
-
-        const fullAudio = Buffer.concat(chunksToSend, totalBytes);
-        const wavBuffer = pcmToWav(fullAudio, SAMPLE_RATE, 1, 16);
-
-        try {
-            const audioStream = await bufferToReadableStream(wavBuffer);
-            const response = await groqClient.audio.transcriptions.create({
-                file: audioStream,
-                model: 'whisper-large-v3',
-                language: 'hi',
-                response_format: 'text',
-                temperature: 0, // Fix 2: Hallucination kam karo
-            });
-            const transcript = response.trim();
-
-            // Fix 3: Khaali ya bekar transcript ignore karo
-            if (!transcript || transcript.length < 2 ||
-                ['हाँ', 'हम्म', 'अच्छा', 'Mumbai', 'Subscribe', 'Thank you'].includes(transcript)) {
-                console.log(`⚠️ Ignoring bad transcript: "${transcript}"`);
-                isProcessing = false;
-                return;
-            }
-
-            console.log(`📝 Transcript: ${transcript}`);
-
-            // Fix 4: User ka text Android ko bhejo
-            if (ws.readyState === ws.OPEN) {
-                ws.send(JSON.stringify({ type: 'user_text', text: transcript }));
-            }
-
-            if (!isBotSpeaking &&!isClosed) {
-                isBotSpeaking = true;
-                await sendToLLM(transcript);
-            }
-        } catch (err) {
-            console.error('❌ Groq error:', err.message);
-        } finally {
-            isProcessing = false;
-            if (audioBuffer.length > 0 &&!isClosed) processAudio();
-        }
-    }
-
-    async function sendToLLM(text) {
-        if (isClosed) return;
-        console.log(`🤖 LLM: ${text}`);
-
-        const history = sessionHistories.get(sessionId);
-        history.push({ role: 'user', content: text });
-        if (history.length > 7) history.splice(1, history.length - 7);
-
-        try {
-            const fullReply = await callNvidiaWithFallback(history);
-            if (fullReply) history.push({ role: 'assistant', content: fullReply });
-
-            // Fix 5: Bot ka text bhi Android ko bhejo
-            if (ws.readyState === ws.OPEN) {
-                ws.send(JSON.stringify({ type: 'bot_text', text: fullReply }));
-            }
-
-            if (db) {
-                db.collection('conversations').insertOne({
-                    sessionId: deviceId,
-                    userMessage: text,
-                    botReply: fullReply,
-                    timestamp: new Date()
-                }).catch(e => console.error("MongoDB insert error:", e));
-            }
-
-            const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
-            for (const sentence of sentences) {
-                if (isClosed) break;
-                await speak(sentence.trim());
-            }
-        } catch (err) {
-            console.error('❌ LLM error:', err.message);
-            if (!isClosed) await speak('मुझे समझ नहीं आया।');
-        } finally {
-            isBotSpeaking = false;
-        }
-    }
-
-    // speak() function same rahega
-
-    // Baaki ws.on('message'), ws.on('close') same
-});
-
-    async function speak(sentence) {
-        if (!sentence.trim() || isClosed) return;
-        console.log(`🔊 TTS: ${sentence}`);
-        console.log('🔊 MP3 stream received from ElevenLabs');
-        try {
-            const mp3Stream = await ttsStream(sentence);
-            const pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
-            console.log(`🔊 PCM converted: ${pcmBuffer.length} bytes`);
-
-            const CHUNK_SIZE = 640;
-            const CHUNK_DURATION_MS = 20;
-
-            let sentBytes = 0;
-            const startTime = Date.now();
-
-            for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
-                if (isClosed || ws.readyState!== ws.OPEN) break;
-                const chunk = pcmBuffer.slice(i, i + CHUNK_SIZE);
-                ws.send(chunk);
-                sentBytes += chunk.length;
-
-                const expectedTime = (sentBytes / (16000 * 2)) * 1000;
-                const elapsedTime = Date.now() - startTime;
-                const waitTime = Math.max(0, expectedTime - elapsedTime);
-                if (waitTime > 0) await new Promise(r => setTimeout(r, waitTime));
-            }
-            console.log('🔊 PCM sent to client complete');
-        } catch (err) {
-            console.error('❌ TTS error:', err.message);
-        }
-    }
-
-    ws.on('message', (data) => {
-        if (isClosed) return;
-        const chunk = Buffer.isBuffer(data)? data : Buffer.from(data);
-        audioBuffer.push(chunk);
-        resetSilenceTimer();
-        checkMaxDuration();
-    });
-
-    ws.on('close', (code, reason) => {
-        console.log(`🔌 Client disconnected: ${sessionId}, code=${code}, reason=${reason?.toString() || 'none'}`);
-        isClosed = true;
-        if (silenceTimer) clearTimeout(silenceTimer);
-        audioBuffer = [];
-        setTimeout(() => sessionHistories.delete(sessionId), 5 * 60 * 1000);
-    });
-
-    ws.on('error', (err) => {
-        console.error('WebSocket error:', err);
-        isClosed = true;
-    });
-});
+        let
