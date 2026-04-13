@@ -187,22 +187,21 @@ async function bufferToReadableStream(buffer) {
 // ==================== WebSocket Handler ====================
 const sessionHistories = new Map(); // sessionId -> messages array
 
+// server-live.js me ye changes karo
+
 wss.on('connection', async (ws, req) => {
-    // Fix: URL se deviceId nikalo
     const url = new URL(req.url, `http://${req.headers.host}`);
     const deviceId = url.searchParams.get('deviceId') || 'default';
     const sessionId = randomUUID();
 
     console.log(`🔌 Client connected: session=${sessionId}, deviceId=${deviceId}`);
 
-    // Fix: MongoDB se history load karo
     const pastMessages = await loadConversationFromDB(deviceId, 10);
     const history = [
         { role: 'system', content: 'You are SahcharAI, a helpful Hindi voice assistant. Give short replies. Max 2 sentences. Remember context. Behave like a friend.' },
        ...pastMessages
     ];
     sessionHistories.set(sessionId, history);
-    console.log(`📚 Loaded history: ${history.length} messages`);
 
     let audioBuffer = [];
     let isProcessing = false;
@@ -221,15 +220,7 @@ wss.on('connection', async (ws, req) => {
                 console.log('Silence detected, processing...');
                 processAudio();
             }
-        }, 600);
-    }
-
-    function checkMaxDuration() {
-        const totalBytes = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
-        if (totalBytes >= MAX_CHUNK_BYTES &&!isProcessing && audioBuffer.length > 0 &&!isClosed) {
-            console.log('Max 0.25s reached, processing...');
-            processAudio();
-        }
+        }, 800); // 600 se 800 kiya - jaldi trigger na ho
     }
 
     async function processAudio() {
@@ -250,6 +241,15 @@ wss.on('connection', async (ws, req) => {
             }
         }
 
+        // Fix 1: Bahut chhota audio ignore karo - noise hai
+        if (totalBytes < 3200) { // 0.1 second se kam = ignore
+            console.log('⚠️ Audio too short, ignoring noise');
+            audioBuffer = [];
+            isProcessing = false;
+            return;
+        }
+
+        // Baaki buffer logic same...
         let processedBytes = 0;
         const newBuffer = [];
         for (const chunk of audioBuffer) {
@@ -274,22 +274,31 @@ wss.on('connection', async (ws, req) => {
                 model: 'whisper-large-v3',
                 language: 'hi',
                 response_format: 'text',
+                temperature: 0, // Fix 2: Hallucination kam karo
             });
             const transcript = response.trim();
-            if (transcript) {
-                console.log(`📝 Transcript: ${transcript}`);
-                if (!isBotSpeaking &&!isClosed) {
-                    isBotSpeaking = true;
-                    await sendToLLM(transcript);
-                }
-            } else if (!isBotSpeaking &&!isClosed) {
-                await speak('हाँ');
+
+            // Fix 3: Khaali ya bekar transcript ignore karo
+            if (!transcript || transcript.length < 2 ||
+                ['हाँ', 'हम्म', 'अच्छा', 'Mumbai', 'Subscribe', 'Thank you'].includes(transcript)) {
+                console.log(`⚠️ Ignoring bad transcript: "${transcript}"`);
+                isProcessing = false;
+                return;
+            }
+
+            console.log(`📝 Transcript: ${transcript}`);
+
+            // Fix 4: User ka text Android ko bhejo
+            if (ws.readyState === ws.OPEN) {
+                ws.send(JSON.stringify({ type: 'user_text', text: transcript }));
+            }
+
+            if (!isBotSpeaking &&!isClosed) {
+                isBotSpeaking = true;
+                await sendToLLM(transcript);
             }
         } catch (err) {
             console.error('❌ Groq error:', err.message);
-            if (!isBotSpeaking &&!isClosed) {
-                await speak('क्षमा करें, फिर से बोलें।');
-            }
         } finally {
             isProcessing = false;
             if (audioBuffer.length > 0 &&!isClosed) processAudio();
@@ -302,27 +311,26 @@ wss.on('connection', async (ws, req) => {
 
         const history = sessionHistories.get(sessionId);
         history.push({ role: 'user', content: text });
-
-        // Last 6 messages rakho
         if (history.length > 7) history.splice(1, history.length - 7);
 
         try {
             const fullReply = await callNvidiaWithFallback(history);
-
-            // History me save karo
             if (fullReply) history.push({ role: 'assistant', content: fullReply });
 
-            // MongoDB me bhi save karo
+            // Fix 5: Bot ka text bhi Android ko bhejo
+            if (ws.readyState === ws.OPEN) {
+                ws.send(JSON.stringify({ type: 'bot_text', text: fullReply }));
+            }
+
             if (db) {
                 db.collection('conversations').insertOne({
-                    sessionId: deviceId, // deviceId use karo
+                    sessionId: deviceId,
                     userMessage: text,
                     botReply: fullReply,
                     timestamp: new Date()
                 }).catch(e => console.error("MongoDB insert error:", e));
             }
 
-            // Stream karke bolo
             const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
             for (const sentence of sentences) {
                 if (isClosed) break;
@@ -335,6 +343,11 @@ wss.on('connection', async (ws, req) => {
             isBotSpeaking = false;
         }
     }
+
+    // speak() function same rahega
+
+    // Baaki ws.on('message'), ws.on('close') same
+});
 
     async function speak(sentence) {
         if (!sentence.trim() || isClosed) return;
