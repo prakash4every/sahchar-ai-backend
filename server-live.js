@@ -72,6 +72,8 @@ function convertMp3StreamToPcm16k(mp3Stream) {
        .format('s16le')
        .audioChannels(1)
        .audioFrequency(16000)
+       .outputOptions('-ar 16000') // <-- Force 16kHz
+       .outputOptions('-ac 1')     // <-- Force mono
        .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
        .on('end', () => resolve(Buffer.concat(chunks)))
        .pipe()
