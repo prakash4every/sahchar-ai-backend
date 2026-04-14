@@ -215,6 +215,7 @@ wss.on('connection', async (ws, req) => {
     let audioBuffer = [];
     let isProcessing = false;
     let isBotSpeaking = false;
+    let botSpeakingEndTime = 0;
     let silenceTimer = null;
     let isClosed = false;
 
