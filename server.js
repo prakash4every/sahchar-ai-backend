@@ -176,7 +176,7 @@ app.get("/chat", (req, res) => {
   res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅");
 });
 
-// ==================== DEEPSEEK CHAT (SahcharAI – unchanged) ====================
+// ==================== DEEPSEEK CHAT (SahcharAI – OPTIMIZED) ====================
 app.post("/chat", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
@@ -200,8 +200,9 @@ app.post("/chat", async (req, res) => {
 
     const imageContext = getImageContextText(sid);
 
+    // FIX 1: Cache me history rakho, DB se sirf ek baar load karo
     if (!conversations[sid]) {
-      const history = await loadConversationFromDB(sid, 20);
+      const history = await loadConversationFromDB(sid, 10); // 20 se 10 kar diya
       const systemMsg = {
         role: "system",
         content: `तुम 'सहचर' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
@@ -218,36 +219,44 @@ app.post("/chat", async (req, res) => {
 - उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना。
 ${imageContext}`
       };
-      conversations[sid] = [systemMsg, ...history];
+      conversations[sid] = [systemMsg,...history];
     } else {
+      // FIX 2: Sirf time update karo, pura string replace mat karo
       const systemMsg = conversations[sid][0];
       if (systemMsg && systemMsg.role === "system") {
-        let newContent = systemMsg.content.replace(
+        systemMsg.content = systemMsg.content.replace(
           /वर्तमान तारीख और समय है:.*?(?=\n|$)/,
           `वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)`
         );
+        // Image context update
         if (imageContext) {
-          if (newContent.includes("📷 **पिछली बातचीत का संदर्भ:**")) {
-            newContent = newContent.replace(/📷 \*\*पिछली बातचीत का संदर्भ:\*\*[\s\S]*?(?=\n\n)/, imageContext.trim());
+          if (systemMsg.content.includes("📷 **पिछली बातचीत का संदर्भ:**")) {
+            systemMsg.content = systemMsg.content.replace(/📷 \*\*पिछली बातचीत का संदर्भ:\*\*[\s\S]*?(?=\n\n)/, imageContext.trim());
           } else {
-            newContent = newContent + imageContext;
+            systemMsg.content = systemMsg.content + imageContext;
           }
         }
-        systemMsg.content = newContent;
       }
     }
 
     conversations[sid].push({ role: "user", content: message });
 
+    // FIX 3: Context trim karo - 8000 se 4000
     const estimateTokens = (msgs) => {
       return msgs.reduce((acc, msg) => acc + JSON.stringify(msg).length / 4, 0);
     };
 
-    while (estimateTokens(conversations[sid]) > 8000 && conversations[sid].length > 2) {
+    while (estimateTokens(conversations[sid]) > 4000 && conversations[sid].length > 2) {
       conversations[sid].splice(1, 1);
     }
 
     console.log(`📤 DeepSeek session ${sid}: ${conversations[sid].length} messages, ~${Math.round(estimateTokens(conversations[sid]))} tokens`);
+
+    // FIX 4: STREAMING ENABLE KARO - Turant response
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
 
     const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
@@ -257,60 +266,84 @@ ${imageContext}`
       },
       body: JSON.stringify({
         model: "deepseek-chat",
-        messages: conversations[sid]
+        messages: conversations[sid],
+        stream: true, // STREAMING ON
+        max_tokens: 512 // 2048 se kam kar diya - fast response
       })
     });
 
-    const data = await response.json();
-
     if (!response.ok) {
-      console.error("❌ DeepSeek API error status:", response.status);
-      return res.status(500).json({
-        reply: `क्षमा करें, API त्रुटि: ${data.error?.message || "अज्ञात त्रुटि"} 🙏`
-      });
+      throw new Error(`DeepSeek API error: ${response.status}`);
     }
 
-    const botReply = data.choices?.[0]?.message?.content;
+    let botReply = "";
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
 
-    if (!botReply) {
-      return res.status(500).json({ 
-        reply: "क्षमा करें, AI response अभी उपलब्ध नहीं है 🙏" 
-      });
-    }
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    conversations[sid].push({ role: "assistant", content: botReply });
+      const chunk = decoder.decode(value);
+      const lines = chunk.split('\n').filter(line => line.trim()!== '');
 
-    if (conversations[sid].length > 50) {
-      conversations[sid] = [
-        conversations[sid][0],
-        ...conversations[sid].slice(-45)
-      ];
-    }
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') break;
 
-    if (db) {
-      try {
-        const messagesCollection = db.collection('conversations');
-        await messagesCollection.insertOne({
-          sessionId: sid,
-          userMessage: message,
-          botReply: botReply,
-          timestamp: new Date()
-        });
-      } catch (dbError) {
-        console.error("❌ MongoDB insert error:", dbError.message);
+          try {
+            const parsed = JSON.parse(data);
+            const delta = parsed.choices[0]?.delta?.content || "";
+            if (delta) {
+              botReply += delta;
+              // Turant client ko bhejo
+              res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+            }
+          } catch (e) {
+            // Ignore parse errors
+          }
+        }
       }
     }
 
-    res.json({ reply: botReply });
+    // Final message
+    res.write(`data: ${JSON.stringify({ done: true, reply: botReply })}\n\n`);
+    res.end();
+
+    // FIX 5: Cache me save karo
+    conversations[sid].push({ role: "assistant", content: botReply });
+
+    // Cache trim
+    if (conversations[sid].length > 30) {
+      conversations[sid] = [
+        conversations[sid][0],
+       ...conversations[sid].slice(-25)
+      ];
+    }
+
+    // FIX 6: MongoDB me async save karo - response block mat karo
+    if (db) {
+      db.collection('conversations').insertOne({
+        sessionId: sid,
+        userMessage: message,
+        botReply: botReply,
+        timestamp: new Date()
+      }).catch(e => console.error("MongoDB insert error:", e));
+    }
 
   } catch (error) {
     console.error("❌ Server error:", error);
-    res.status(500).json({ 
-      reply: "सर्वर में त्रुटि हुई, कृपया बाद में प्रयास करें 🙏" 
-    });
+    if (!res.headersSent) {
+      res.status(500).json({
+        reply: "सर्वर में त्रुटि हुई, कृपया बाद में प्रयास करें 🙏"
+      });
+    } else {
+      res.write(`data: ${JSON.stringify({ error: "सर्वर में त्रुटि हुई" })}\n\n`);
+      res.end();
+    }
   }
 });
-
 // ==================== OPENAI ASSISTANT (SahcharAssistant – unchanged) ====================
 app.post("/chat-assistant", async (req, res) => {
   const { message, threadId } = req.body;
