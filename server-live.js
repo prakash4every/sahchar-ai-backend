@@ -45,9 +45,9 @@ async function loadConversationFromDB(deviceId, limit = 10) {
     try {
         const convCollection = db.collection('conversations');
         const messages = await convCollection.find({ sessionId: deviceId })
-          .sort({ timestamp: -1 })
-          .limit(limit)
-          .toArray();
+         .sort({ timestamp: -1 })
+         .limit(limit)
+         .toArray();
 
         const history = [];
         messages.reverse().forEach(msg => {
@@ -102,11 +102,10 @@ async function callNvidiaWithFallback(messages) {
     throw new Error("All NVIDIA keys failed");
 }
 
-// ==================== ElevenLabs TTS - HINDI VOICE ====================
+// ==================== ElevenLabs TTS - HINDI MALE ====================
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-// FIX 1: Hindi voice ID use karo. Ye "Ananya" - Hindi female hai
-// Agar male chahiye to 'yoZ06aMxZJJ28mfd3POQ' use karo
-const VOICE_ID_HINDI = process.env.ELEVENLABS_VOICE_ID || 'IKne3meq5aSn9XLyUdCD';
+// yoZ06aMxZJJ28mfd3POQ = "Aadi" - Hindi male voice
+const VOICE_ID_HINDI = process.env.ELEVENLABS_VOICE_ID || 'yoZ06aMxZJJ28mfd3POQ';
 
 async function ttsStream(text) {
     if (!ELEVENLABS_API_KEY) throw new Error('Missing ELEVENLABS_API_KEY');
@@ -120,7 +119,7 @@ async function ttsStream(text) {
         },
         data: {
             text: text,
-            model_id: 'eleven_multilingual_v2', // FIX 2: Multilingual model for Hindi
+            model_id: 'eleven_multilingual_v2',
             voice_settings: { stability: 0.6, similarity_boost: 0.8 },
             output_format: 'mp3_44100_128',
         },
@@ -134,16 +133,16 @@ function convertMp3StreamToPcm16k(mp3Stream) {
     return new Promise((resolve, reject) => {
         const chunks = [];
         ffmpeg(mp3Stream)
-          .audioCodec('pcm_s16le')
-          .format('s16le')
-          .audioChannels(1)
-          .audioFrequency(16000)
-          .outputOptions('-ar 16000')
-          .outputOptions('-ac 1')
-          .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
-          .on('end', () => resolve(Buffer.concat(chunks)))
-          .pipe()
-          .on('data', (chunk) => chunks.push(chunk));
+         .audioCodec('pcm_s16le')
+         .format('s16le')
+         .audioChannels(1)
+         .audioFrequency(16000)
+         .outputOptions('-ar 16000')
+         .outputOptions('-ac 1')
+         .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
+         .on('end', () => resolve(Buffer.concat(chunks)))
+         .pipe()
+         .on('data', (chunk) => chunks.push(chunk));
     });
 }
 
@@ -185,13 +184,23 @@ async function bufferToReadableStream(buffer) {
     return stream;
 }
 
+// ==================== VAD Helper ====================
+function calculateRMS(buffer) {
+    let sum = 0;
+    for (let i = 0; i < buffer.length; i += 2) {
+        const sample = buffer.readInt16LE(i);
+        sum += sample * sample;
+    }
+    return Math.sqrt(sum / (buffer.length / 2)) / 32768.0;
+}
+
 // ==================== WebSocket Handler ====================
 const sessionHistories = new Map();
 
 wss.on('connection', async (ws, req) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const deviceId = url.searchParams.get('deviceId') || 'default';
-    const language = url.searchParams.get('language') || 'hi'; // language param lelo
+    const language = url.searchParams.get('language') || 'hi';
     const sessionId = randomUUID();
 
     console.log(`🔌 Client connected: session=${sessionId}, deviceId=${deviceId}, lang=${language}`);
@@ -199,7 +208,7 @@ wss.on('connection', async (ws, req) => {
     const pastMessages = await loadConversationFromDB(deviceId, 10);
     const history = [
         { role: 'system', content: 'You are SahcharAI, a helpful Hindi voice assistant. Give short replies. Max 2 sentences. Remember context. Behave like a friend. Never make up facts. If you don\'t understand, say "समझ नहीं आया".' },
-      ...pastMessages
+     ...pastMessages
     ];
     sessionHistories.set(sessionId, history);
 
@@ -211,7 +220,9 @@ wss.on('connection', async (ws, req) => {
 
     const SAMPLE_RATE = 16000;
     const BYTES_PER_SECOND = SAMPLE_RATE * 2;
-    const MAX_CHUNK_BYTES = BYTES_PER_SECOND / 4;
+    // FIX 1: 1 second ka chunk lo, 0.25s bahut chota tha
+    const MAX_CHUNK_BYTES = BYTES_PER_SECOND * 1;
+    const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.5; // Min 0.5 sec speech chahiye
 
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
@@ -220,19 +231,27 @@ wss.on('connection', async (ws, req) => {
                 console.log('Silence detected, processing...');
                 processAudio();
             }
-        }, 800);
+        }, 1200); // 1.2 sec silence wait karo
     }
 
     function checkMaxDuration() {
         const totalBytes = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
         if (totalBytes >= MAX_CHUNK_BYTES &&!isProcessing && audioBuffer.length > 0 &&!isClosed) {
-            console.log('Max 0.25s reached, processing...');
+            console.log('Max 1s reached, processing...');
             processAudio();
         }
     }
 
     async function processAudio() {
         if (audioBuffer.length === 0 || isProcessing || isClosed) return;
+
+        // FIX 2: Bot bol raha hai to user ka audio ignore karo - echo avoid
+        if (isBotSpeaking) {
+            console.log('⚠️ Bot speaking, dropping user audio to avoid echo');
+            audioBuffer = [];
+            return;
+        }
+
         isProcessing = true;
         if (silenceTimer) clearTimeout(silenceTimer);
 
@@ -249,8 +268,20 @@ wss.on('connection', async (ws, req) => {
             }
         }
 
-        if (totalBytes < 3200) {
-            console.log('⚠️ Audio too short, ignoring noise');
+        // FIX 3: Min 0.5 sec audio chahiye + RMS check
+        if (totalBytes < MIN_SPEECH_BYTES) {
+            console.log(`⚠️ Audio too short: ${totalBytes} bytes, ignoring`);
+            audioBuffer = [];
+            isProcessing = false;
+            return;
+        }
+
+        const fullAudio = Buffer.concat(chunksToSend, totalBytes);
+
+        // FIX 4: RMS check - agar awaaz bahut dheemi hai to ignore
+        const rms = calculateRMS(fullAudio);
+        if (rms < 0.01) { // -40dB se kam
+            console.log(`⚠️ Audio too quiet RMS=${rms.toFixed(4)}, ignoring noise`);
             audioBuffer = [];
             isProcessing = false;
             return;
@@ -270,7 +301,6 @@ wss.on('connection', async (ws, req) => {
         }
         audioBuffer = newBuffer;
 
-        const fullAudio = Buffer.concat(chunksToSend, totalBytes);
         const wavBuffer = pcmToWav(fullAudio, SAMPLE_RATE, 1, 16);
 
         try {
@@ -284,9 +314,14 @@ wss.on('connection', async (ws, req) => {
             });
             const transcript = response.trim();
 
-            // FIX 3: "झाल" ko bhi blacklist me add karo
-            const badWords = ['हाँ', 'हम्म', 'अच्छा', 'Mumbai', 'Subscribe', 'Thank you', 'okay', 'झाल', 'कुण', 'ओ', 'आ'];
-            if (!transcript || transcript.length < 2 || badWords.includes(transcript)) {
+            // FIX 5: Strong blacklist
+            const badWords = [
+                'हाँ', 'हम्म', 'अच्छा', 'Mumbai', 'Subscribe', 'Thank you', 'okay',
+                'झाल', 'कुण', 'ओ', 'आ', 'हाई', 'अहाँ', 'मदद', 'पूछ', 'धन्यवाद',
+                'Hello', 'Hi', 'Yes', 'No', 'OK'
+            ];
+
+            if (!transcript || transcript.length < 3 || badWords.some(w => transcript.includes(w))) {
                 console.log(`⚠️ Ignoring bad transcript: "${transcript}"`);
                 isProcessing = false;
                 return;
