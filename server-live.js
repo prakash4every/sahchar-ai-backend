@@ -45,9 +45,9 @@ async function loadConversationFromDB(deviceId, limit = 10) {
     try {
         const convCollection = db.collection('conversations');
         const messages = await convCollection.find({ sessionId: deviceId })
-           .sort({ timestamp: -1 })
-           .limit(limit)
-           .toArray();
+          .sort({ timestamp: -1 })
+          .limit(limit)
+          .toArray();
 
         const history = [];
         messages.reverse().forEach(msg => {
@@ -102,15 +102,17 @@ async function callNvidiaWithFallback(messages) {
     throw new Error("All NVIDIA keys failed");
 }
 
-// ==================== ElevenLabs TTS ====================
+// ==================== ElevenLabs TTS - HINDI VOICE ====================
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
+// FIX 1: Hindi voice ID use karo. Ye "Ananya" - Hindi female hai
+// Agar male chahiye to 'yoZ06aMxZJJ28mfd3POQ' use karo
+const VOICE_ID_HINDI = process.env.ELEVENLABS_VOICE_ID || 'IKne3meq5aSn9XLyUdCD';
 
 async function ttsStream(text) {
     if (!ELEVENLABS_API_KEY) throw new Error('Missing ELEVENLABS_API_KEY');
     const response = await axios({
         method: 'POST',
-        url: `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream`,
+        url: `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID_HINDI}/stream`,
         headers: {
             'Accept': 'audio/mpeg',
             'Content-Type': 'application/json',
@@ -118,8 +120,8 @@ async function ttsStream(text) {
         },
         data: {
             text: text,
-            model_id: 'eleven_turbo_v2',
-            voice_settings: { stability: 0.5, similarity_boost: 0.5 },
+            model_id: 'eleven_multilingual_v2', // FIX 2: Multilingual model for Hindi
+            voice_settings: { stability: 0.6, similarity_boost: 0.8 },
             output_format: 'mp3_44100_128',
         },
         responseType: 'stream',
@@ -132,16 +134,16 @@ function convertMp3StreamToPcm16k(mp3Stream) {
     return new Promise((resolve, reject) => {
         const chunks = [];
         ffmpeg(mp3Stream)
-           .audioCodec('pcm_s16le')
-           .format('s16le')
-           .audioChannels(1)
-           .audioFrequency(16000)
-           .outputOptions('-ar 16000')
-           .outputOptions('-ac 1')
-           .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
-           .on('end', () => resolve(Buffer.concat(chunks)))
-           .pipe()
-           .on('data', (chunk) => chunks.push(chunk));
+          .audioCodec('pcm_s16le')
+          .format('s16le')
+          .audioChannels(1)
+          .audioFrequency(16000)
+          .outputOptions('-ar 16000')
+          .outputOptions('-ac 1')
+          .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
+          .on('end', () => resolve(Buffer.concat(chunks)))
+          .pipe()
+          .on('data', (chunk) => chunks.push(chunk));
     });
 }
 
@@ -189,14 +191,15 @@ const sessionHistories = new Map();
 wss.on('connection', async (ws, req) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const deviceId = url.searchParams.get('deviceId') || 'default';
+    const language = url.searchParams.get('language') || 'hi'; // language param lelo
     const sessionId = randomUUID();
 
-    console.log(`🔌 Client connected: session=${sessionId}, deviceId=${deviceId}`);
+    console.log(`🔌 Client connected: session=${sessionId}, deviceId=${deviceId}, lang=${language}`);
 
     const pastMessages = await loadConversationFromDB(deviceId, 10);
     const history = [
         { role: 'system', content: 'You are SahcharAI, a helpful Hindi voice assistant. Give short replies. Max 2 sentences. Remember context. Behave like a friend. Never make up facts. If you don\'t understand, say "समझ नहीं आया".' },
-       ...pastMessages
+      ...pastMessages
     ];
     sessionHistories.set(sessionId, history);
 
@@ -281,8 +284,9 @@ wss.on('connection', async (ws, req) => {
             });
             const transcript = response.trim();
 
-            if (!transcript || transcript.length < 2 ||
-                ['हाँ', 'हम्म', 'अच्छा', 'Mumbai', 'Subscribe', 'Thank you', 'okay'].includes(transcript)) {
+            // FIX 3: "झाल" ko bhi blacklist me add karo
+            const badWords = ['हाँ', 'हम्म', 'अच्छा', 'Mumbai', 'Subscribe', 'Thank you', 'okay', 'झाल', 'कुण', 'ओ', 'आ'];
+            if (!transcript || transcript.length < 2 || badWords.includes(transcript)) {
                 console.log(`⚠️ Ignoring bad transcript: "${transcript}"`);
                 isProcessing = false;
                 return;
@@ -347,7 +351,6 @@ wss.on('connection', async (ws, req) => {
     async function speak(sentence) {
         if (!sentence.trim() || isClosed) return;
         console.log(`🔊 TTS: ${sentence}`);
-        console.log('🔊 MP3 stream received from ElevenLabs');
         try {
             const mp3Stream = await ttsStream(sentence);
             const pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
