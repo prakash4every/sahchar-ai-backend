@@ -45,9 +45,9 @@ async function loadConversationFromDB(deviceId, limit = 10) {
     try {
         const convCollection = db.collection('conversations');
         const messages = await convCollection.find({ sessionId: deviceId })
-        .sort({ timestamp: -1 })
-        .limit(limit)
-        .toArray();
+         .sort({ timestamp: -1 })
+         .limit(limit)
+         .toArray();
 
         const history = [];
         messages.reverse().forEach(msg => {
@@ -132,16 +132,16 @@ function convertMp3StreamToPcm16k(mp3Stream) {
     return new Promise((resolve, reject) => {
         const chunks = [];
         ffmpeg(mp3Stream)
-        .audioCodec('pcm_s16le')
-        .format('s16le')
-        .audioChannels(1)
-        .audioFrequency(16000)
-        .outputOptions('-ar 16000')
-        .outputOptions('-ac 1')
-        .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
-        .on('end', () => resolve(Buffer.concat(chunks)))
-        .pipe()
-        .on('data', (chunk) => chunks.push(chunk));
+         .audioCodec('pcm_s16le')
+         .format('s16le')
+         .audioChannels(1)
+         .audioFrequency(16000)
+         .outputOptions('-ar 16000')
+         .outputOptions('-ac 1')
+         .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
+         .on('end', () => resolve(Buffer.concat(chunks)))
+         .pipe()
+         .on('data', (chunk) => chunks.push(chunk));
     });
 }
 
@@ -209,10 +209,10 @@ wss.on('connection', async (ws, req) => {
     const sessionId = randomUUID();
     console.log(`🔌 Client connected: session=${sessionId}, deviceId=${deviceId}`);
 
-    const pastMessages = await loadConversationFromDB(deviceId, 3);
+    const pastMessages = await loadConversationFromDB(deviceId, 3); // 5 se 3 kar diya
     const history = [
-        { role: 'system', content: '' },
-   ...pastMessages
+        { role: 'system', content: '' }, // Neeche set hoga
+    ...pastMessages
     ];
     sessionHistories.set(sessionId, history);
 
@@ -222,13 +222,13 @@ wss.on('connection', async (ws, req) => {
     let botSpeakingEndTime = 0;
     let silenceTimer = null;
     let isClosed = false;
-    let lastBotText = "";
-    let interruptCount = 0;
+    let lastBotText = ""; // FIX 1: Bot ne kya bola track karo
+    let interruptCount = 0; // FIX 2: Barge-in debounce
 
     const SAMPLE_RATE = 16000;
     const BYTES_PER_SECOND = SAMPLE_RATE * 2;
     const MAX_CHUNK_BYTES = BYTES_PER_SECOND * 1;
-    const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.8;
+    const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.8; // 0.5 se 0.8 - clear bolna padega
 
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
@@ -237,7 +237,7 @@ wss.on('connection', async (ws, req) => {
                 console.log('Silence detected, processing...');
                 processAudio();
             }
-        }, 800);
+        }, 800); // 1000 se 800 - fast response
     }
 
     function checkMaxDuration() {
@@ -248,26 +248,30 @@ wss.on('connection', async (ws, req) => {
         }
     }
 
+    // FIX 3: String similarity check - echo detect karne ke liye
     function isSimilarToLastBotText(text) {
-        if (!lastBotText || text.length < 3) return false;
-        const botKeywords = lastBotText.split(' ').slice(-5).join(' ').toLowerCase();
-        const cleanText = text.toLowerCase();
-        const words = cleanText.split(' ');
-        let matchCount = 0;
-        for (const word of words) {
-            if (word.length > 2 && botKeywords.includes(word)) {
-                matchCount++;
-            }
+    if (!lastBotText || text.length < 3) return false;
+    const botKeywords = lastBotText.split(' ').slice(-5).join(' ').replace(/[।!?😊🤔,]/g, '').toLowerCase(); // अंतिम 5 शब्द
+    const cleanText = text.replace(/[।!?😊🤔,]/g, '').toLowerCase();
+
+    const words = cleanText.split(' ');
+    let matchCount = 0;
+    for (const word of words) {
+        if (botKeywords.includes(word)) {
+            matchCount++;
         }
-        return matchCount / words.length > 0.7;
+    }
+    return matchCount / words.length > 0.7; // 70% से अधिक मैच
     }
 
     async function processAudio() {
         if (audioBuffer.length === 0 || isProcessing || isClosed) return;
 
+        // FIX 4: 1500ms echo window - speaker ki awaaz khatam hone do
         if (Date.now() < botSpeakingEndTime) {
-            console.log('⚠️ Dropping audio - bot speaking or echo window');
+            console.log("⚠️ Dropping audio - bot speaking or echo window");
             audioBuffer = [];
+            isProcessing = false; // सुनिश्चित करें कि प्रोसेसिंग फ्लैग रीसेट हो गया है
             return;
         }
 
@@ -298,6 +302,7 @@ wss.on('connection', async (ws, req) => {
         const rms = calculateRMS(fullAudio);
         console.log(`🎤 Audio RMS: ${rms.toFixed(4)}, Bytes: ${totalBytes}`);
 
+        // FIX 5: RMS 0.01 se kam = noise
         if (rms < 0.01) {
             console.log(`⚠️ Audio too quiet RMS=${rms.toFixed(4)}, ignoring noise/echo`);
             isProcessing = false;
@@ -318,8 +323,11 @@ wss.on('connection', async (ws, req) => {
             });
             const transcript = response.trim();
 
+            // FIX 6: Echo check + blacklist
             const badWords = [
-                'ओ', 'आ', 'उम', 'हम', 'uh', 'umm'
+                // केवल स्पष्ट इको या शोर का संकेत देने वाले शब्द रखें
+                // 'हाँ', 'हम्म', 'अच्छा', 'ठीक है' जैसे शब्दों को हटा दें यदि वे वैध उपयोगकर्ता इनपुट हो सकते हैं
+                'ओ', 'आ', 'उम', 'हम'
             ];
 
             if (!transcript || transcript.length < 4 ||
@@ -341,25 +349,27 @@ wss.on('connection', async (ws, req) => {
                 await sendToLLM(transcript);
             }
         } catch (err) {
-            console.error('❌ Groq error:', err.message);
+            console.error("❌ Groq error:", err.message);
         } finally {
             isProcessing = false;
-            if (audioBuffer.length > 0 &&!isClosed) processAudio();
+            // यदि ऑडियोबफर में अभी भी डेटा है और बॉट नहीं बोल रहा है, तो फिर से प्रोसेस करें
+            if (audioBuffer.length > 0 &&!isClosed && Date.now() >= botSpeakingEndTime) processAudio();
         }
     }
 
     async function sendToLLM(text) {
-    if (isClosed) return;
-    console.log(`🤖 LLM: ${text}`);
+        if (isClosed) return;
+        console.log(`🤖 LLM: ${text}`);
 
-    const now = new Date();
-    const currentDateTime = now.toLocaleString('hi-IN', {
-        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-        hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
-    });
+        const now = new Date();
+        const currentDateTime = now.toLocaleString('hi-IN', {
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+            hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
+        });
 
-    const history = sessionHistories.get(sessionId);
-    history[0].content = `तुम 'SuperSahchar' हो - एक समझदार दोस्त।
+        const history = sessionHistories.get(sessionId);
+        // FIX 7: Strong prompt - user ke words repeat mat karo
+        history[0].content = `तुम 'SuperSahchar' हो - एक समझदार दोस्त।
 
 SAKHT NIYAM:
 1. User ne jo bola usko REPEAT kabhi mat karna।
@@ -372,50 +382,56 @@ SAKHT NIYAM:
 User: हेलो
 Tum: नमस्ते दोस्त! कैसे हो? 😊
 
+User: अपने बारे में बताओ
+Tum: मैं SuperSahchar हूँ। तुम्हारा नाम क्या है? 😊
+
+Galat: User: हेलो → Tum: हेलो
+
 वर्तमान समय: ${currentDateTime}
 तुम्हें राम प्रकाश कुमार ने बनाया है।`;
 
-    history.push({ role: 'user', content: text });
-    if (history.length > 7) history.splice(1, history.length - 7);
+        history.push({ role: 'user', content: text });
+        if (history.length > 7) history.splice(1, history.length - 7);
 
-    try {
-        const fullReply = await callNvidiaWithFallback(history);
-        if (fullReply) {
-            history.push({ role: 'assistant', content: fullReply });
-            lastBotText = fullReply;
+        try {
+            const fullReply = await callNvidiaWithFallback(history);
+            if (fullReply) {
+                history.push({ role: "assistant", content: fullReply });
+                lastBotText = fullReply; // FIX 8: Track karo kya bola
+            }
+
+            if (ws.readyState === ws.OPEN) {
+                ws.send(JSON.stringify({ type: "bot_text", text: fullReply }));
+            }
+
+            if (db) {
+                db.collection("conversations").insertOne({
+                    sessionId: deviceId,
+                    userMessage: text,
+                    botReply: fullReply,
+                    timestamp: new Date()
+                }).catch(e => console.error("MongoDB insert error:", e));
+            }
+
+            // FIX 9: botSpeakingEndTime को बॉट के बोलने की अनुमानित अवधि के आधार पर सेट करें
+            // यह एक अनुमान है, सटीक अवधि TTS सेवा से प्राप्त की जा सकती है यदि उपलब्ध हो
+            const estimatedSpeechDuration = (fullReply.length / 10) * 1000; // प्रति 10 अक्षर 1 सेकंड का अनुमान
+            botSpeakingEndTime = Date.now() + estimatedSpeechDuration + 500; // 500ms का बफर जोड़ें
+            isBotSpeaking = true; // सुनिश्चित करें कि यह यहां सेट है
+
+            const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
+            for (const sentence of sentences) {
+                if (isClosed) break;
+                await speak(sentence.trim());
+            }
+        } catch (err) {
+            console.error("❌ LLM error:", err.message);
+            if (!isClosed) await speak("फिर से बोलो?");
+        } finally {
+            // isBotSpeaking को यहां रीसेट न करें, इसे speak() के finally ब्लॉक में करें
         }
-
-        if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ type: 'bot_text', text: fullReply }));
-        }
-
-        if (db) {
-            db.collection('conversations').insertOne({
-                sessionId: deviceId,
-                userMessage: text,
-                botReply: fullReply,
-                timestamp: new Date()
-            }).catch(e => console.error("MongoDB insert error:", e));
-        }
-
-        // FIX 2: TTS shuru karne se PEHLE mic mute karo
-        const estimatedDuration = (fullReply.length / 8) * 1000 + 1500; // 8 char/sec + 1.5s buffer
-        botSpeakingEndTime = Date.now() + estimatedDuration;
-        isBotSpeaking = true;
-        console.log(`🔇 Mic muted for ${estimatedDuration}ms`);
-
-        const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
-        for (const sentence of sentences) {
-            if (isClosed) break;
-            await speak(sentence.trim());
-        }
-    } catch (err) {
-        console.error('❌ LLM error:', err.message);
-        if (!isClosed) await speak('फिर से बोलो?');
-    } finally {
-        // FIX 3: Yahan se isBotSpeaking false mat karo. speak() karega.
     }
-}
+
     async function speak(sentence) {
         if (!sentence.trim() || isClosed) return;
         console.log(`🔊 TTS: ${sentence}`);
@@ -432,31 +448,40 @@ Tum: नमस्ते दोस्त! कैसे हो? 😊
         } catch (err) {
             console.error('❌ TTS error:', err.message);
         } finally {
-            // FIX: botSpeakingEndTime already set in sendToLLM, yahan bas log karo
+            // FIX 10: isBotSpeaking को बॉट के बोलने के बाद रीसेट करें
+            // botSpeakingEndTime को पहले ही sendToLLM में सेट कर दिया गया है
+            const delay = Math.max(0, botSpeakingEndTime - Date.now());
             setTimeout(() => {
-                console.log('🎤 Mic unmuted after bot finished');
-            }, 100);
+                isBotSpeaking = false;
+                console.log("🎤 Mic unmuted after bot finished");
+            }, delay);
         }
     }
 
     ws.on('message', (data) => {
         if (isClosed) return;
         const chunk = Buffer.isBuffer(data)? data : Buffer.from(data);
-if (isBotSpeaking || Date.now() < botSpeakingEndTime) {
-        return; 
-    }
-        const rms = calculateRMS(chunk);
-        if (isBotSpeaking && rms > 0.04 && chunk.length > 400) {
-            interruptCount++;
-            if (interruptCount >= 3) {
-                console.log('🛑 User interrupted - stopping bot');
-                isBotSpeaking = false;
-                botSpeakingEndTime = 0;
+
+        // यदि बॉट बोल रहा है, तो उपयोगकर्ता के ऑडियो को प्रोसेस न करें जब तक कि यह एक स्पष्ट बारगे-इन न हो
+        if (isBotSpeaking && Date.now() < botSpeakingEndTime) {
+            // FIX 11: Barge-in के लिए 3 chunks का RMS check - 1 chunk से interrupt मत करो
+            const rms = calculateRMS(chunk);
+            if (rms > 0.04 && chunk.length > 400) {
+                interruptCount++;
+                if (interruptCount >= 3) { // 3 बार loud आए तब interrupt
+                    console.log("🛑 User interrupted - stopping bot");
+                    isBotSpeaking = false;
+                    botSpeakingEndTime = 0; // इको विंडो को तुरंत रीसेट करें
+                    interruptCount = 0;
+                    ws.send(JSON.stringify({ type: "stop_tts" }));
+                    audioBuffer = []; // बफर को साफ़ करें ताकि नया उपयोगकर्ता इनपुट तुरंत प्रोसेस हो सके
+                }
+            } else {
                 interruptCount = 0;
-                ws.send(JSON.stringify({ type: 'stop_tts' }));
             }
-        } else {
-            interruptCount = 0;
+            // यदि बॉट बोल रहा है और यह बारगे-इन नहीं है, तो ऑडियो को बफर में जोड़ें लेकिन तुरंत प्रोसेस न करें
+            audioBuffer.push(chunk);
+            return; // यहां से बाहर निकलें, processAudio को कॉल न करें
         }
 
         audioBuffer.push(chunk);
