@@ -389,9 +389,9 @@ Galat: User: हेलो → Tum: हेलो
 
         try {
             const fullReply = await callNvidiaWithFallback(history);
-            if (fullReply) {
-                history.push({ role: 'assistant', content: fullReply });
-                lastBotText = fullReply; // FIX 8: Track karo kya bola
+if (fullReply) {
+    history.push({ role: 'assistant', content: fullReply });
+    lastBotText = fullReply;
             }
 
             if (ws.readyState === ws.OPEN) {
@@ -441,11 +441,11 @@ Galat: User: हेलो → Tum: हेलो
             console.error('❌ TTS error:', err.message);
         } finally {
             // FIX 10: 1500ms window
-            botSpeakingEndTime = Date.now() + 1500;
-            setTimeout(() => {
-                isBotSpeaking = false;
-                console.log('🎤 Mic unmuted after bot finished');
-            }, 1500);
+            const estimatedDuration = (fullReply.length / 10) * 1000 + 500; // 500ms buffer
+    botSpeakingEndTime = Date.now() + estimatedDuration;
+    isBotSpeaking = true;
+    console.log(`🔇 Mic muted for ${estimatedDuration}ms`);
+}
         }
     }
 
