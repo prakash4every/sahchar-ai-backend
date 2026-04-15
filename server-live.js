@@ -251,7 +251,7 @@ wss.on('connection', async (ws, req) => {
     // FIX 3: String similarity check - echo detect karne ke liye
     function isSimilarToLastBotText(text) {
     if (!lastBotText || text.length < 3) return false;
-    const botKeywords = lastBotText.split(' ').slice(-5).join(' ').replace(/[।!?😊🤔,]/g, '').toLowerCase(); // अंतिम 5 शब्द
+    const botKeywords = lastBotText.split(' ').slice(-5).join(' ').replace(/[।!?😊🤔,]/g, '').toLowerCase(); 
     const cleanText = text.replace(/[।!?😊🤔,]/g, '').toLowerCase();
 
     const words = cleanText.split(' ');
@@ -271,7 +271,7 @@ wss.on('connection', async (ws, req) => {
         if (Date.now() < botSpeakingEndTime) {
             console.log("⚠️ Dropping audio - bot speaking or echo window");
             audioBuffer = [];
-            isProcessing = false; // सुनिश्चित करें कि प्रोसेसिंग फ्लैग रीसेट हो गया है
+            isProcessing = false; 
             return;
         }
 
@@ -319,7 +319,7 @@ wss.on('connection', async (ws, req) => {
                 language: 'hi',
                 response_format: 'text',
                 temperature: 0,
-                prompt: "ये हिंदी में दोस्तों की बातचीत है। सिर्फ साफ पूरे वाक्य लिखो।"
+                prompt: "सिर्फ साफ पूरे वाक्य लिखो।"
             });
             const transcript = response.trim();
 
@@ -352,7 +352,6 @@ wss.on('connection', async (ws, req) => {
             console.error("❌ Groq error:", err.message);
         } finally {
             isProcessing = false;
-            // यदि ऑडियोबफर में अभी भी डेटा है और बॉट नहीं बोल रहा है, तो फिर से प्रोसेस करें
             if (audioBuffer.length > 0 &&!isClosed && Date.now() >= botSpeakingEndTime) processAudio();
         }
     }
@@ -412,12 +411,9 @@ Galat: User: हेलो → Tum: हेलो
                     timestamp: new Date()
                 }).catch(e => console.error("MongoDB insert error:", e));
             }
-
-            // FIX 9: botSpeakingEndTime को बॉट के बोलने की अनुमानित अवधि के आधार पर सेट करें
-            // यह एक अनुमान है, सटीक अवधि TTS सेवा से प्राप्त की जा सकती है यदि उपलब्ध हो
-            const estimatedSpeechDuration = (fullReply.length / 10) * 1000; // प्रति 10 अक्षर 1 सेकंड का अनुमान
-            botSpeakingEndTime = Date.now() + estimatedSpeechDuration + 500; // 500ms का बफर जोड़ें
-            isBotSpeaking = true; // सुनिश्चित करें कि यह यहां सेट है
+            const estimatedSpeechDuration = (fullReply.length / 10) * 1000; 
+            botSpeakingEndTime = Date.now() + estimatedSpeechDuration + 500; 
+            isBotSpeaking = true; 
 
             const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
             for (const sentence of sentences) {
@@ -428,7 +424,6 @@ Galat: User: हेलो → Tum: हेलो
             console.error("❌ LLM error:", err.message);
             if (!isClosed) await speak("फिर से बोलो?");
         } finally {
-            // isBotSpeaking को यहां रीसेट न करें, इसे speak() के finally ब्लॉक में करें
         }
     }
 
@@ -448,8 +443,6 @@ Galat: User: हेलो → Tum: हेलो
         } catch (err) {
             console.error('❌ TTS error:', err.message);
         } finally {
-            // FIX 10: isBotSpeaking को बॉट के बोलने के बाद रीसेट करें
-            // botSpeakingEndTime को पहले ही sendToLLM में सेट कर दिया गया है
             const delay = Math.max(0, botSpeakingEndTime - Date.now());
             setTimeout(() => {
                 isBotSpeaking = false;
@@ -474,14 +467,13 @@ Galat: User: हेलो → Tum: हेलो
                     botSpeakingEndTime = 0; // इको विंडो को तुरंत रीसेट करें
                     interruptCount = 0;
                     ws.send(JSON.stringify({ type: "stop_tts" }));
-                    audioBuffer = []; // बफर को साफ़ करें ताकि नया उपयोगकर्ता इनपुट तुरंत प्रोसेस हो सके
+                    audioBuffer = []; 
                 }
             } else {
                 interruptCount = 0;
             }
-            // यदि बॉट बोल रहा है और यह बारगे-इन नहीं है, तो ऑडियो को बफर में जोड़ें लेकिन तुरंत प्रोसेस न करें
             audioBuffer.push(chunk);
-            return; // यहां से बाहर निकलें, processAudio को कॉल न करें
+            return; 
         }
 
         audioBuffer.push(chunk);
