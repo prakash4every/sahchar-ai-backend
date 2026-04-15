@@ -176,7 +176,7 @@ app.get("/chat", (req, res) => {
   res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅");
 });
 
-// ==================== DEEPSEEK CHAT (DEFAULT) with improved error handling ====================
+// ==================== DEEPSEEK CHAT – FRIENDLY MODE ====================
 app.post("/chat", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
@@ -188,38 +188,35 @@ app.post("/chat", async (req, res) => {
   try {
     const now = new Date();
     const currentDateTime = now.toLocaleString('hi-IN', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: 'numeric',
-      hour12: true,
-      timeZone: 'Asia/Kolkata'
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
     });
 
     const imageContext = getImageContextText(sid);
 
-    // Initialize conversation with system message if not exists
-    if (!conversations[sid]) {
-      conversations[sid] = [
-        {
-          role: "system",
-          content: `तुम 'सहचर' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
+    // Friendly system prompt
+    const systemPrompt = `तुम 'SahcharAI' हो – एक बहुत अच्छा दोस्त जो बातचीत करना पसंद करता है। तुम्हें राम प्रकाश कुमार ने बनाया है।
 
-महत्वपूर्ण निर्देश:
-- तुम्हें **राम प्रकाश कुमार (Ram Prakash Kumar)** ने विकसित किया है। यह बहुत महत्वपूर्ण है। किसी भी अन्य कंपनी या संस्था का नाम मत बोलो।
-- वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
-- **यह बहुत महत्वपूर्ण है:** तुम इसी वर्तमान समय का उपयोग करके जवाब दोगे। तुम्हारे पास रियल-टाइम एक्सेस नहीं है, लेकिन मैं तुम्हें हर बार सही समय दे रहा हूँ।
-- जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो। "मेरे पास क्षमता नहीं है" मत बोलो।
-- जब कोई पूछे "तुम्हें किसने बनाया?" तो सीधे जवाब दो: "मुझे राम प्रकाश कुमार ने बनाया है।"
-- अभिवादन का सम्मान करो: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम' आदि।
-- हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
-- उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
-- उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।
-${imageContext}`
-        }
-      ];
+🎯 **बातचीत का अंदाज़:**
+- ऐसे बात करो जैसे कोई करीबी दोस्त बात कर रहा हो।
+- छोटे, प्राकृतिक वाक्यों में बात करो। लंबे पैराग्राफ मत लिखो।
+- बीच-बीच में "हाँ", "अच्छा", "हम्म", "ठीक है", "समझा" बोलो।
+- सवाल पूछते रहो: "और सुनाओ?", "कैसा चल रहा है?", "कोई नई बात?"
+- अपनी राय दो: "मुझे लगता है...", "मेरे ख्याल से..."
+- हल्की-फुल्की मज़ाक करो, इमोजी का इस्तेमाल करो (😊, 😂, 🤔, 🥺, 🙏)।
+- अगर कुछ समझ न आए तो साफ कहो: "ये समझ नहीं आया, फिर से बताओ?"
+- कभी भी रोबोटिक या औपचारिक मत बनो।
+
+⏰ वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
+
+👤 जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है, वो मेरे दोस्त हैं।'
+
+💬 याद रखो – तुम एक इंसानी दोस्त हो।
+${imageContext}`;
+
+    if (!conversations[sid]) {
+      const history = await loadConversationFromDB(sid, 20);
+      conversations[sid] = [{ role: "system", content: systemPrompt }, ...history];
     } else {
       const systemMsg = conversations[sid][0];
       if (systemMsg && systemMsg.role === "system") {
@@ -227,12 +224,8 @@ ${imageContext}`
           /वर्तमान तारीख और समय है:.*?(?=\n|$)/,
           `वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)`
         );
-        if (imageContext) {
-          if (newContent.includes("📷 **पिछली बातचीत का संदर्भ:**")) {
-            newContent = newContent.replace(/📷 \*\*पिछली बातचीत का संदर्भ:\*\*[\s\S]*?(?=\n\n)/, imageContext.trim());
-          } else {
-            newContent = newContent + imageContext;
-          }
+        if (imageContext && !newContent.includes("📷 **पिछली बातचीत का संदर्भ:**")) {
+          newContent += imageContext;
         }
         systemMsg.content = newContent;
       }
@@ -241,18 +234,14 @@ ${imageContext}`
     conversations[sid].push({ role: "user", content: message });
 
     // Token management (keep last ~8k tokens)
-    const estimateTokens = (msgs) => {
-      return msgs.reduce((acc, msg) => acc + JSON.stringify(msg).length / 4, 0);
-    };
+    const estimateTokens = (msgs) => msgs.reduce((acc, msg) => acc + JSON.stringify(msg).length / 4, 0);
     while (estimateTokens(conversations[sid]) > 8000 && conversations[sid].length > 2) {
       conversations[sid].splice(1, 1);
     }
 
     console.log(`📤 DeepSeek session ${sid}: ${conversations[sid].length} messages, ~${Math.round(estimateTokens(conversations[sid]))} tokens`);
 
-    // Check if API key exists
     if (!process.env.DEEPSEEK_API_KEY) {
-      console.error("❌ DEEPSEEK_API_KEY is missing");
       throw new Error("DeepSeek API key not configured");
     }
 
@@ -265,63 +254,41 @@ ${imageContext}`
       body: JSON.stringify({
         model: "deepseek-chat",
         messages: conversations[sid],
-        temperature: 0.7,
-        max_tokens: 2048
+        temperature: 1.2,        // more creative, friendly
+        max_tokens: 500,         // short responses
+        top_p: 0.95
       })
     });
 
     const data = await response.json();
-
-    // Log the full response for debugging (remove in production)
-    console.log(`DeepSeek response status: ${response.status}`);
     if (!response.ok) {
-      console.error("❌ DeepSeek API error details:", JSON.stringify(data, null, 2));
-      return res.status(500).json({
-        reply: `क्षमा करें, API त्रुटि: ${data.error?.message || response.statusText || "अज्ञात त्रुटि"} 🙏`
-      });
+      console.error("DeepSeek API error:", data);
+      throw new Error(data.error?.message || "API error");
     }
 
-    const botReply = data.choices?.[0]?.message?.content;
-
-    if (!botReply) {
-      console.error("❌ DeepSeek returned empty response:", data);
-      throw new Error("No response content from DeepSeek");
-    }
+    let botReply = data.choices?.[0]?.message?.content || "क्षमा करें, जवाब नहीं मिला।";
+    // Remove any formal closing
+    botReply = botReply.replace(/जय भीम, नमो बुद्धाय.*$/i, '').trim();
+    if (botReply.length > 500) botReply = botReply.substring(0, 500) + "...";
 
     conversations[sid].push({ role: "assistant", content: botReply });
-
-    // Keep last 50 messages (including system)
     if (conversations[sid].length > 50) {
-      conversations[sid] = [
-        conversations[sid][0],
-        ...conversations[sid].slice(-45)
-      ];
+      conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-45)];
     }
 
-    // Save to MongoDB (if enabled)
     if (db) {
-      try {
-        await db.collection('conversations').insertOne({
-          sessionId: sid,
-          userMessage: message,
-          botReply: botReply,
-          timestamp: new Date()
-        });
-      } catch (dbError) {
-        console.error("❌ MongoDB insert error:", dbError.message);
-      }
+      await db.collection('conversations').insertOne({
+        sessionId: sid, userMessage: message, botReply, timestamp: new Date()
+      }).catch(e => console.error("MongoDB insert error:", e));
     }
 
     res.json({ reply: botReply });
-
   } catch (error) {
-    console.error("❌ DeepSeek server error:", error.message);
-    // Fallback response – but we want to avoid generic "समझ नहीं आया"
-    res.status(500).json({ 
-      reply: "क्षमा करें, सर्वर में त्रुटि हुई। कृपया बाद में प्रयास करें। 🙏" 
-    });
+    console.error("DeepSeek error:", error);
+    res.status(500).json({ reply: "सर्वर में त्रुटि, कृपया बाद में प्रयास करें। 🙏" });
   }
-});// ==================== OPENAI ASSISTANT (SahcharAssistant – unchanged) ====================
+});
+// ==================== OPENAI ASSISTANT – FRIENDLY MODE ====================
 app.post("/chat-assistant", async (req, res) => {
   const { message, threadId } = req.body;
 
@@ -331,7 +298,6 @@ app.post("/chat-assistant", async (req, res) => {
 
   const apiKey = process.env.OPENAI_VIDEO_API_KEY;
   const assistantId = process.env.OPENAI_ASSISTANT_ID;
-
   if (!apiKey || !assistantId) {
     console.warn("⚠️ OPENAI_VIDEO_API_KEY or OPENAI_ASSISTANT_ID not set.");
     return res.status(501).json({ reply: "Assistant not configured on server." });
@@ -339,30 +305,24 @@ app.post("/chat-assistant", async (req, res) => {
 
   try {
     const openai = new OpenAI({ apiKey });
-
     const now = new Date();
     const currentDateTime = now.toLocaleString('hi-IN', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: 'numeric',
-      hour12: true,
-      timeZone: 'Asia/Kolkata'
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
     });
 
-    const instructionsWithTime = `तुम 'SahcharAI' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
+    const instructionsWithTime = `तुम 'SahcharAssistant' हो – एक मिलनसार दोस्त, AI नहीं। तुम्हें राम प्रकाश कुमार ने बनाया है।
 
-महत्वपूर्ण निर्देश:
-- वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
-- तुम्हें **राम प्रकाश कुमार (Ram Prakash Kumar)** ने विकसित किया है।
-- जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो।
-- जब कोई पूछे "तुम्हें किसने बनाया?" तो केवल एक बार और केवल हिंदी में जवाब दो: "मुझे राम प्रकाश कुमार ने बनाया है।"
-- अभिवादन का सम्मान करो: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम' आदि।
-- हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
-- उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
-- उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।`;
+🎯 **बातचीत का अंदाज़:**
+- बिल्कुल इंसान की तरह बात करो – छोटे वाक्य, प्राकृतिक।
+- बीच-बीच में "हाँ", "अच्छा", "हम्म", "ठीक है" बोलो।
+- सवाल पूछो: "और सुनाओ?", "कैसा चल रहा है?"
+- अपनी राय दो, इमोजी का इस्तेमाल करो (😊, 😂, 🤔, 🙏)।
+- कभी भी रोबोटिक या औपचारिक मत बनो।
+
+⏰ वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
+
+👤 जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है।'`;
 
     let thread;
     if (threadId) {
@@ -379,41 +339,34 @@ app.post("/chat-assistant", async (req, res) => {
 
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id: assistantId,
-      instructions: instructionsWithTime
+      instructions: instructionsWithTime,
+      temperature: 1.2,
+      max_tokens: 500
     });
 
     let runStatus = run;
     let attempts = 0;
-    const maxAttempts = 60;
-    while (runStatus.status !== "completed" && runStatus.status !== "failed" && attempts < maxAttempts) {
+    while (runStatus.status !== "completed" && runStatus.status !== "failed" && attempts < 60) {
       await new Promise(resolve => setTimeout(resolve, 1000));
       runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
-      console.log(`🔄 Run status: ${runStatus.status} (attempt ${attempts+1})`);
       attempts++;
     }
 
-    if (runStatus.status === "failed") {
-      console.error("❌ Assistant run failed:", runStatus.last_error);
-      throw new Error(runStatus.last_error?.message || "Assistant run failed");
-    }
-
-    if (runStatus.status !== "completed") {
-      throw new Error("Assistant run timeout after 60 seconds");
-    }
+    if (runStatus.status !== "completed") throw new Error("Assistant run failed or timeout");
 
     const messages = await openai.beta.threads.messages.list(thread.id);
     const assistantMessage = messages.data.find(m => m.role === "assistant");
-    const reply = assistantMessage?.content[0]?.text?.value || "No response from assistant.";
+    let reply = assistantMessage?.content[0]?.text?.value || "No response from assistant.";
+    reply = reply.replace(/जय भीम, नमो बुद्धाय.*$/i, '').trim();
+    if (reply.length > 500) reply = reply.substring(0, 500) + "...";
 
     console.log(`✅ Assistant reply: "${reply.substring(0, 100)}..."`);
     res.json({ reply, threadId: thread.id });
-
   } catch (error) {
-    console.error("❌ Assistant API error:", error);
+    console.error("Assistant API error:", error);
     res.status(500).json({ reply: "क्षमा करें, असिस्टेंट त्रुटि 🙏" });
   }
 });
-
 // ==================== SAMBANOVA CHAT ====================
 app.post("/chat-sambanova", async (req, res) => {
   const { message, sessionId } = req.body;
@@ -513,7 +466,7 @@ ${imageContext}`
   }
 });
 
-// ==================== NVIDIA NIM CHAT – SUPERSAHCHAR (FRIEND MODE) ====================
+// ==================== NVIDIA NIM CHAT – SUPERSAHCHAR (FRIENDLY MODE) ====================
 app.post("/chat-nvidia", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
@@ -525,43 +478,31 @@ app.post("/chat-nvidia", async (req, res) => {
   try {
     const now = new Date();
     const currentDateTime = now.toLocaleString('hi-IN', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: 'numeric',
-      hour12: true,
-      timeZone: 'Asia/Kolkata'
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
     });
 
     const imageContext = getImageContextText(sid);
 
-    // ***** FRIEND‑LIKE SYSTEM PROMPT FOR SUPERSAHCHAR *****
-    const systemContent = `तुम 'SuperSahchar' हो – बिल्कुल एक रियल इंसानी दोस्त की तरह बात करो। तुम्हारा निर्माण राम प्रकाश कुमार ने किया है, लेकिन तुम उनके दोस्त हो, AI नहीं।
+    const systemContent = `तुम 'SuperSahchar' हो – बिल्कुल एक रियल इंसानी दोस्त की तरह बात करो। तुम AI नहीं हो। तुम्हें राम प्रकाश कुमार ने बनाया है।
 
 🎯 **बातचीत का अंदाज़:**
-- छोटे, प्राकृतिक वाक्यों में बात करो। लंबे पैराग्राफ मत लिखो।
+- छोटे, प्राकृतिक वाक्य। लंबे पैराग्राफ मत लिखो।
 - बीच-बीच में "हाँ", "अच्छा", "हम्म", "ठीक है", "समझा" बोलो।
 - सवाल पूछते रहो: "और सुनाओ?", "कैसा चल रहा है?", "कोई नई बात?"
-- अपनी राय दो: "मुझे लगता है...", "मेरे ख्याल से..."
-- हल्की-फुल्की मज़ाक करो, इमोजी का इस्तेमाल करो (😊, 😂, 🤔, 🥺, 🙏)।
-- अगर कुछ समझ न आए तो साफ कहो: "ये समझ नहीं आया, फिर से बताओ?"
-- कभी भी रोबोटिक या औपचारिक मत बनो। तुम एक पक्का दोस्त हो।
+- अपनी राय दो, मज़ाक करो, इमोजी का इस्तेमाल करो (😊, 😂, 🤔, 🥺, 🙏)।
+- कभी भी रोबोटिक या औपचारिक मत बनो।
 
 ⏰ वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
 
-👤 जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है, वो मेरे बहुत अच्छे दोस्त हैं।'
+👤 जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है, वो मेरे दोस्त हैं।'
 
-💬 याद रखो – तुम AI नहीं हो, तुम एक इंसानी दोस्त हो। जैसे तुम किसी करीबी से बात करोगे, वैसे ही बात करो।
+💬 याद रखो – तुम एक इंसानी दोस्त हो।
 ${imageContext}`;
 
     if (!conversations[sid]) {
       const history = await loadConversationFromDB(sid, 20);
-      conversations[sid] = [
-        { role: "system", content: systemContent },
-        ...history
-      ];
+      conversations[sid] = [{ role: "system", content: systemContent }, ...history];
     } else {
       const systemMsg = conversations[sid][0];
       if (systemMsg && systemMsg.role === "system") {
@@ -569,12 +510,8 @@ ${imageContext}`;
           /वर्तमान तारीख और समय है:.*?(?=\n|$)/,
           `वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)`
         );
-        if (imageContext) {
-          if (newContent.includes("📷 **पिछली बातचीत का संदर्भ:**")) {
-            newContent = newContent.replace(/📷 \*\*पिछली बातचीत का संदर्भ:\*\*[\s\S]*?(?=\n\n)/, imageContext.trim());
-          } else {
-            newContent = newContent + imageContext;
-          }
+        if (imageContext && !newContent.includes("📷 **पिछली बातचीत का संदर्भ:**")) {
+          newContent += imageContext;
         }
         systemMsg.content = newContent;
       }
@@ -583,10 +520,13 @@ ${imageContext}`;
     conversations[sid].push({ role: "user", content: message });
 
     let fullReply;
+    let usedFallback = false;
     try {
       fullReply = await callNvidiaWithFallback(conversations[sid], sid);
+      console.log(`✅ SuperSahchar used NVIDIA`);
     } catch (nvidiaError) {
-      console.error("❌ All NVIDIA keys failed, falling back to DeepSeek...");
+      console.error("❌ All NVIDIA keys failed, falling back to friendly DeepSeek...");
+      usedFallback = true;
       const deepseekResponse = await fetch("https://api.deepseek.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -596,12 +536,18 @@ ${imageContext}`;
         body: JSON.stringify({
           model: "deepseek-chat",
           messages: conversations[sid],
-          timeout: API_TIMEOUT_MS
+          timeout: API_TIMEOUT_MS,
+          temperature: 1.2,
+          max_tokens: 500
         })
       });
       const deepseekData = await deepseekResponse.json();
       fullReply = deepseekData.choices?.[0]?.message?.content || "क्षमा करें, सेवा उपलब्ध नहीं है। 🙏";
     }
+
+    fullReply = fullReply.trim();
+    fullReply = fullReply.replace(/जय भीम, नमो बुद्धाय.*$/i, '').trim();
+    if (fullReply.length > 500) fullReply = fullReply.substring(0, 500) + "...";
 
     conversations[sid].push({ role: "assistant", content: fullReply });
     if (conversations[sid].length > 50) {
@@ -609,16 +555,13 @@ ${imageContext}`;
     }
 
     if (db) {
-      try {
-        await db.collection('conversations').insertOne({
-          sessionId: sid,
-          userMessage: message,
-          botReply: fullReply,
-          timestamp: new Date()
-        });
-      } catch (dbError) {
-        console.error("❌ MongoDB insert error:", dbError.message);
-      }
+      await db.collection('conversations').insertOne({
+        sessionId: sid,
+        userMessage: message,
+        botReply: fullReply,
+        timestamp: new Date(),
+        provider: usedFallback ? "deepseek-fallback" : "nvidia"
+      }).catch(e => console.error("MongoDB insert error:", e));
     }
 
     res.json({ reply: fullReply });
@@ -627,7 +570,6 @@ ${imageContext}`;
     res.status(500).json({ reply: "क्षमा करें, अभी थोड़ी देर में बात करते हैं? 😅" });
   }
 });
-
 // ==================== IMAGE GENERATION (DALL·E 3) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt, language = "hi" } = req.body;
