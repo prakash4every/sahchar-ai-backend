@@ -277,7 +277,6 @@ ${imageContext}`
     }
 
     let botReply = "";
-    const reader = response.body.getReader();
     const decoder = new TextDecoder();
 
     while (true) {
