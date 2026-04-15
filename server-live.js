@@ -375,68 +375,79 @@ Tum: नमस्ते दोस्त! कैसे हो? 😊
         history.push({ role: 'user', content: text });
         if (history.length > 7) history.splice(1, history.length - 7);
 
-        try {
-            const fullReply = await callNvidiaWithFallback(history);
-            if (fullReply) {
-                history.push({ role: "assistant", content: fullReply });
-                lastBotText = fullReply;
-            }
-
-            if (ws.readyState === ws.OPEN) {
-                ws.send(JSON.stringify({ type: "bot_text", text: fullReply }));
-            }
-
-            if (db) {
-                db.collection("conversations").insertOne({
-                    sessionId: deviceId,
-                    userMessage: text,
-                    botReply: fullReply,
-                    timestamp: new Date()
-                }).catch(e => console.error("MongoDB insert error:", e));
-            }
-
-            // FIX: Duration yahan set karo, fullReply se
-            const estimatedDuration = (fullReply.length / 8) * 1000 + 1500; // 8 char/sec + 1.5s buffer
-            botSpeakingEndTime = Date.now() + estimatedDuration;
-            isBotSpeaking = true;
-            console.log(`🔇 Mic muted for ${estimatedDuration}ms`);
-
-            const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
-            for (const sentence of sentences) {
-                if (isClosed) break;
-                await speak(sentence.trim());
-            }
-        } catch (err) {
-            console.error("❌ LLM error:", err.message);
-            if (!isClosed) await speak("फिर से बोलो?");
-        } finally {
-            // isBotSpeaking ko speak() ke end me false karo
-        }
+     try {
+    const fullReply = await callNvidiaWithFallback(history);
+    if (fullReply) {
+        history.push({ role: "assistant", content: fullReply });
+        lastBotText = fullReply;
     }
 
-    async function speak(sentence) {
-        if (!sentence.trim() || isClosed) return;
-        console.log(`🔊 TTS: ${sentence}`);
-        try {
-            const mp3Stream = await ttsStream(sentence);
-            const pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
+    if (ws.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({ type: "bot_text", text: fullReply }));
+    }
 
-            const CHUNK_SIZE = 640;
-            for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
-                if (isClosed || ws.readyState!== ws.OPEN) break;
-                ws.send(pcmBuffer.slice(i, i + CHUNK_SIZE));
-                await new Promise(r => setTimeout(r, 20));
+    if (db) {
+        db.collection("conversations").insertOne({
+            sessionId: deviceId,
+            userMessage: text,
+            botReply: fullReply,
+            timestamp: new Date()
+        }).catch(e => console.error("MongoDB insert error:", e));
+    }
+
+    const estimatedDuration = (fullReply.length / 8) * 1000 + 1500;
+    botSpeakingEndTime = Date.now() + estimatedDuration;
+    isBotSpeaking = true;
+    console.log(`🔇 Mic muted for ${estimatedDuration}ms`);
+
+    const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
+    for (const sentence of sentences) {
+        if (isClosed) break; // FIX 5: Beech me check
+        await speak(sentence.trim());
+    }
+} catch (err) {
+    console.error("❌ LLM error:", err.message);
+    if (!isClosed && ws.readyState === ws.OPEN) await speak("फिर से बोलो?");
+} finally {
+    // Yahan se isBotSpeaking false mat karo, speak() karega
+}
+
+    async function speak(sentence) {
+    if (!sentence.trim() || isClosed) return;
+    console.log(`🔊 TTS: ${sentence}`);
+    let pcmBuffer;
+    try {
+        const mp3Stream = await ttsStream(sentence);
+        pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
+    } catch (err) {
+        console.error('❌ TTS/FFmpeg error:', err.message);
+        return; // FFmpeg fail to kuch mat karo
+    }
+
+    const CHUNK_SIZE = 640;
+    try {
+        for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
+            // FIX 1: Har chunk se pehle check karo
+            if (isClosed ||!ws || ws.readyState!== ws.OPEN) {
+                console.log('🛑 WS closed during TTS, stopping stream');
+                break;
             }
-        } catch (err) {
-            console.error('❌ TTS error:', err.message);
-        } finally {
-            // FIX: botSpeakingEndTime already set hai, bas unmute ka wait
-            const delay = Math.max(0, botSpeakingEndTime - Date.now());
-            setTimeout(() => {
+            ws.send(pcmBuffer.slice(i, i + CHUNK_SIZE));
+            await new Promise(r => setTimeout(r, 20));
+        }
+    } catch (err) {
+        // FIX 2: Send error ko catch karo, crash mat hone do
+        console.error('❌ WS send error during TTS:', err.message);
+    } finally {
+        const delay = Math.max(0, botSpeakingEndTime - Date.now());
+        setTimeout(() => {
+            if (!isClosed) { // FIX 3: Agar close nahi hua to hi unmute
                 isBotSpeaking = false;
                 console.log("🎤 Mic unmuted after bot finished");
-            }, delay);
-        }
+            }
+        }, delay);
+    }
+}
     }
 
     // FIX: Barge-in COMPLETELY HATAO. Hard mute.
@@ -455,13 +466,15 @@ Tum: नमस्ते दोस्त! कैसे हो? 😊
     });
 
     ws.on('close', (code, reason) => {
-        console.log(`🔌 Client disconnected: ${sessionId}, code=${code}, reason=${reason?.toString() || 'none'}`);
-        isClosed = true;
-        if (silenceTimer) clearTimeout(silenceTimer);
-        audioBuffer = [];
-        activeSessions.delete(deviceId);
-        setTimeout(() => sessionHistories.delete(sessionId), 5 * 60 * 1000);
-    });
+    console.log(`🔌 Client disconnected: ${sessionId}, code=${code}, reason=${reason?.toString() || 'none'}`);
+    isClosed = true;
+    isBotSpeaking = false; // FIX 4: Force stop
+    botSpeakingEndTime = 0;
+    if (silenceTimer) clearTimeout(silenceTimer);
+    audioBuffer = [];
+    activeSessions.delete(deviceId);
+    setTimeout(() => sessionHistories.delete(sessionId), 5 * 60 * 1000);
+});
 
     ws.on('error', (err) => {
         console.error('WebSocket error:', err);
