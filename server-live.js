@@ -304,17 +304,18 @@ wss.on('connection', async (ws, req) => {
             const transcript = response.trim();
 
             const badWords = [
-                'हाँ', 'हम्म', 'अच्छा', 'ठीक है', 'समझ', 'बोल', 'सुन',
-                'गुड़ा', 'गुड़', 'बिच्चा', 'बिच्छू', 'पिज़्ज़ा', 'खाना',
-                'झाल', 'कुण', 'ओ', 'आ', 'उम', 'हम', 'Mumbai', 'Subscribe',
-                'Thank you', 'okay', 'Hello', 'Hi', 'Yes', 'No', 'OK'
-            ];
+    'हाँ', 'हम्म', 'अच्छा', 'ठीक है', 'समझ', 'बोल', 'सुन',
+    'हाँ?', 'अच्छा?', 'समझ गया?', 'नमस्ते', 'कैसे हो', // Bot ke replies
+    'गुड़ा', 'गुड़', 'बिच्चा', 'बिच्छू', 'पिज़्ज़ा', 'खाना',
+    'झाल', 'कुण', 'ओ', 'आ', 'उम', 'हम', 'Mumbai', 'Subscribe',
+    'Thank you', 'okay', 'Hello', 'Hi', 'Yes', 'No', 'OK'
+];
 
-            if (!transcript || transcript.length < 3 || badWords.some(w => transcript.includes(w))) {
-                console.log(`⚠️ Ignoring echo/hallucination: "${transcript}"`);
-                isProcessing = false;
-                return;
-            }
+            if (!transcript || transcript.length < 4 || badWords.some(w => transcript === w || transcript.includes(w))) {
+    console.log(`⚠️ Ignoring echo/hallucination: "${transcript}"`);
+    isProcessing = false;
+    return;
+}
 
             console.log(`📝 Transcript: ${transcript}`);
 
@@ -377,7 +378,7 @@ wss.on('connection', async (ws, req) => {
                 }).catch(e => console.error("MongoDB insert error:", e));
             }
 
-            botSpeakingEndTime = Date.now() + 800;
+            botSpeakingEndTime = Date.now() + 1200;
             isBotSpeaking = true;
 
             const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
