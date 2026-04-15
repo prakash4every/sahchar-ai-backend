@@ -349,17 +349,17 @@ wss.on('connection', async (ws, req) => {
     }
 
     async function sendToLLM(text) {
-        if (isClosed) return;
-        console.log(`🤖 LLM: ${text}`);
+    if (isClosed) return;
+    console.log(`🤖 LLM: ${text}`);
 
-        const now = new Date();
-        const currentDateTime = now.toLocaleString('hi-IN', {
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-            hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
-        });
+    const now = new Date();
+    const currentDateTime = now.toLocaleString('hi-IN', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+        hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
+    });
 
-        const history = sessionHistories.get(sessionId);
-        history[0].content = `तुम 'SuperSahchar' हो - एक समझदार दोस्त।
+    const history = sessionHistories.get(sessionId);
+    history[0].content = `तुम 'SuperSahchar' हो - एक समझदार दोस्त।
 
 SAKHT NIYAM:
 1. User ne jo bola usko REPEAT kabhi mat karna।
@@ -372,56 +372,50 @@ SAKHT NIYAM:
 User: हेलो
 Tum: नमस्ते दोस्त! कैसे हो? 😊
 
-User: अपने बारे में बताओ
-Tum: मैं SuperSahchar हूँ। तुम्हारा नाम क्या है? 😊
-
-Galat: User: हेलो → Tum: हेलो
-
 वर्तमान समय: ${currentDateTime}
 तुम्हें राम प्रकाश कुमार ने बनाया है।`;
 
-        history.push({ role: 'user', content: text });
-        if (history.length > 7) history.splice(1, history.length - 7);
+    history.push({ role: 'user', content: text });
+    if (history.length > 7) history.splice(1, history.length - 7);
 
-        try {
-            const fullReply = await callNvidiaWithFallback(history);
-            if (fullReply) {
-                history.push({ role: 'assistant', content: fullReply });
-                lastBotText = fullReply;
-            }
-
-            if (ws.readyState === ws.OPEN) {
-                ws.send(JSON.stringify({ type: 'bot_text', text: fullReply }));
-            }
-
-            if (db) {
-                db.collection('conversations').insertOne({
-                    sessionId: deviceId,
-                    userMessage: text,
-                    botReply: fullReply,
-                    timestamp: new Date()
-                }).catch(e => console.error("MongoDB insert error:", e));
-            }
-
-            // FIX: Duration yahan calculate karo, speak me nahi
-            const estimatedDuration = (fullReply.length / 10) * 1000 + 800;
-            botSpeakingEndTime = Date.now() + estimatedDuration;
-            isBotSpeaking = true;
-            console.log(`🔇 Mic muted for ${estimatedDuration}ms`);
-
-            const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
-            for (const sentence of sentences) {
-                if (isClosed) break;
-                await speak(sentence.trim());
-            }
-        } catch (err) {
-            console.error('❌ LLM error:', err.message);
-            if (!isClosed) await speak('फिर से बोलो?');
-        } finally {
-            isBotSpeaking = false;
+    try {
+        const fullReply = await callNvidiaWithFallback(history);
+        if (fullReply) {
+            history.push({ role: 'assistant', content: fullReply });
+            lastBotText = fullReply;
         }
-    }
 
+        if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify({ type: 'bot_text', text: fullReply }));
+        }
+
+        if (db) {
+            db.collection('conversations').insertOne({
+                sessionId: deviceId,
+                userMessage: text,
+                botReply: fullReply,
+                timestamp: new Date()
+            }).catch(e => console.error("MongoDB insert error:", e));
+        }
+
+        // FIX 2: TTS shuru karne se PEHLE mic mute karo
+        const estimatedDuration = (fullReply.length / 8) * 1000 + 1500; // 8 char/sec + 1.5s buffer
+        botSpeakingEndTime = Date.now() + estimatedDuration;
+        isBotSpeaking = true;
+        console.log(`🔇 Mic muted for ${estimatedDuration}ms`);
+
+        const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
+        for (const sentence of sentences) {
+            if (isClosed) break;
+            await speak(sentence.trim());
+        }
+    } catch (err) {
+        console.error('❌ LLM error:', err.message);
+        if (!isClosed) await speak('फिर से बोलो?');
+    } finally {
+        // FIX 3: Yahan se isBotSpeaking false mat karo. speak() karega.
+    }
+}
     async function speak(sentence) {
         if (!sentence.trim() || isClosed) return;
         console.log(`🔊 TTS: ${sentence}`);
