@@ -45,9 +45,9 @@ async function loadConversationFromDB(deviceId, limit = 10) {
     try {
         const convCollection = db.collection('conversations');
         const messages = await convCollection.find({ sessionId: deviceId })
-          .sort({ timestamp: -1 })
-          .limit(limit)
-          .toArray();
+         .sort({ timestamp: -1 })
+         .limit(limit)
+         .toArray();
 
         const history = [];
         messages.reverse().forEach(msg => {
@@ -102,7 +102,7 @@ async function callNvidiaWithFallback(messages) {
     throw new Error("All NVIDIA keys failed");
 }
 
-// ==================== ElevenLabs TTS - HINDI MALE ====================
+// ==================== ElevenLabs TTS ====================
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const VOICE_ID_HINDI = process.env.ELEVENLABS_VOICE_ID || 'yoZ06aMxZJJ28mfd3POQ';
 
@@ -132,16 +132,16 @@ function convertMp3StreamToPcm16k(mp3Stream) {
     return new Promise((resolve, reject) => {
         const chunks = [];
         ffmpeg(mp3Stream)
-          .audioCodec('pcm_s16le')
-          .format('s16le')
-          .audioChannels(1)
-          .audioFrequency(16000)
-          .outputOptions('-ar 16000')
-          .outputOptions('-ac 1')
-          .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
-          .on('end', () => resolve(Buffer.concat(chunks)))
-          .pipe()
-          .on('data', (chunk) => chunks.push(chunk));
+         .audioCodec('pcm_s16le')
+         .format('s16le')
+         .audioChannels(1)
+         .audioFrequency(16000)
+         .outputOptions('-ar 16000')
+         .outputOptions('-ac 1')
+         .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
+         .on('end', () => resolve(Buffer.concat(chunks)))
+         .pipe()
+         .on('data', (chunk) => chunks.push(chunk));
     });
 }
 
@@ -183,7 +183,6 @@ async function bufferToReadableStream(buffer) {
     return stream;
 }
 
-// ==================== VAD Helper ====================
 function calculateRMS(buffer) {
     let sum = 0;
     for (let i = 0; i < buffer.length; i += 2) {
@@ -195,13 +194,12 @@ function calculateRMS(buffer) {
 
 // ==================== WebSocket Handler ====================
 const sessionHistories = new Map();
-const activeSessions = new Map(); // FIX: Duplicate connection rokne ke liye
+const activeSessions = new Map();
 
 wss.on('connection', async (ws, req) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const deviceId = url.searchParams.get('deviceId') || 'default';
 
-    // FIX 1: Agar is device ka connection already hai to purana close karo
     if (activeSessions.has(deviceId)) {
         console.log(`⚠️ Duplicate connection for ${deviceId}, closing old`);
         activeSessions.get(deviceId).close();
@@ -211,7 +209,7 @@ wss.on('connection', async (ws, req) => {
     const sessionId = randomUUID();
     console.log(`🔌 Client connected: session=${sessionId}, deviceId=${deviceId}`);
 
-    const pastMessages = await loadConversationFromDB(deviceId, 5); // 10 se 5 kar diya
+    const pastMessages = await loadConversationFromDB(deviceId, 5);
     const history = [
         { role: 'system', content: 'You are SahcharAI, a helpful Hindi voice assistant. Give short replies. Max 1 sentence. Never repeat user words. If you hear your own words, say "समझ नहीं आया".' },
      ...pastMessages
@@ -221,7 +219,7 @@ wss.on('connection', async (ws, req) => {
     let audioBuffer = [];
     let isProcessing = false;
     let isBotSpeaking = false;
-    let botSpeakingEndTime = 0; // FIX 2: Echo avoid ke liye
+    let botSpeakingEndTime = 0;
     let silenceTimer = null;
     let isClosed = false;
 
@@ -237,13 +235,21 @@ wss.on('connection', async (ws, req) => {
                 console.log('Silence detected, processing...');
                 processAudio();
             }
-        }, 1000); // 1200 se 1000 kar diya
+        }, 1000);
+    }
+
+    // FIX: checkMaxDuration yahan define karo - ws.on se pehle
+    function checkMaxDuration() {
+        const totalBytes = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
+        if (totalBytes >= MAX_CHUNK_BYTES &&!isProcessing && audioBuffer.length > 0 &&!isClosed) {
+            console.log('Max 1s reached, processing...');
+            processAudio();
+        }
     }
 
     async function processAudio() {
         if (audioBuffer.length === 0 || isProcessing || isClosed) return;
 
-        // FIX 3: Bot ke bolne ke 800ms baad tak audio ignore - echo rokne ke liye
         if (Date.now() < botSpeakingEndTime) {
             console.log('⚠️ Dropping audio - bot speaking or echo window');
             audioBuffer = [];
@@ -272,12 +278,11 @@ wss.on('connection', async (ws, req) => {
         }
 
         const fullAudio = Buffer.concat(chunksToSend, totalBytes);
-        audioBuffer = []; // Clear karo
+        audioBuffer = [];
 
         const rms = calculateRMS(fullAudio);
         console.log(`🎤 Audio RMS: ${rms.toFixed(4)}, Bytes: ${totalBytes}`);
 
-        // FIX 4: RMS 0.005 se kam = noise ya echo
         if (rms < 0.005) {
             console.log(`⚠️ Audio too quiet RMS=${rms.toFixed(4)}, ignoring noise/echo`);
             isProcessing = false;
@@ -294,11 +299,10 @@ wss.on('connection', async (ws, req) => {
                 language: 'hi',
                 response_format: 'text',
                 temperature: 0,
-                prompt: "ये हिंदी में बातचीत है। सिर्फ साफ शब्द लिखो।" // Whisper ko guide karo
+                prompt: "ये हिंदी में बातचीत है। सिर्फ साफ शब्द लिखो।"
             });
             const transcript = response.trim();
 
-            // FIX 5: STRONG Blacklist - bot ke khud ke words
             const badWords = [
                 'हाँ', 'हम्म', 'अच्छा', 'ठीक है', 'समझ', 'बोल', 'सुन',
                 'गुड़ा', 'गुड़', 'बिच्चा', 'बिच्छू', 'पिज़्ज़ा', 'खाना',
@@ -306,7 +310,6 @@ wss.on('connection', async (ws, req) => {
                 'Thank you', 'okay', 'Hello', 'Hi', 'Yes', 'No', 'OK'
             ];
 
-            // Agar transcript 1-2 word ka hai ya badWords me hai to ignore
             if (!transcript || transcript.length < 3 || badWords.some(w => transcript.includes(w))) {
                 console.log(`⚠️ Ignoring echo/hallucination: "${transcript}"`);
                 isProcessing = false;
@@ -374,8 +377,7 @@ wss.on('connection', async (ws, req) => {
                 }).catch(e => console.error("MongoDB insert error:", e));
             }
 
-            // FIX 6: Bot bolna start kar raha hai - mic mute karo
-            botSpeakingEndTime = Date.now() + 800; // 800ms tak mic band
+            botSpeakingEndTime = Date.now() + 800;
             isBotSpeaking = true;
 
             const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
@@ -407,7 +409,6 @@ wss.on('connection', async (ws, req) => {
         } catch (err) {
             console.error('❌ TTS error:', err.message);
         } finally {
-            // FIX 7: Bot khatam hone ke 800ms baad mic kholo - echo avoid
             botSpeakingEndTime = Date.now() + 800;
             setTimeout(() => {
                 isBotSpeaking = false;
@@ -420,7 +421,6 @@ wss.on('connection', async (ws, req) => {
         if (isClosed) return;
         const chunk = Buffer.isBuffer(data)? data : Buffer.from(data);
 
-        // FIX 8: Barge-in ke liye RMS check - halki awaaz pe interrupt mat karo
         const rms = calculateRMS(chunk);
         if (isBotSpeaking && rms > 0.02 && chunk.length > 200) {
             console.log('🛑 User interrupted - stopping bot');
@@ -439,7 +439,7 @@ wss.on('connection', async (ws, req) => {
         isClosed = true;
         if (silenceTimer) clearTimeout(silenceTimer);
         audioBuffer = [];
-        activeSessions.delete(deviceId); // FIX 9: Connection clear karo
+        activeSessions.delete(deviceId);
         setTimeout(() => sessionHistories.delete(sessionId), 5 * 60 * 1000);
     });
 
