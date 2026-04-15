@@ -281,7 +281,7 @@ wss.on('connection', async (ws, req) => {
         const rms = calculateRMS(fullAudio);
         console.log(`🎤 Audio RMS: ${rms.toFixed(4)}, Bytes: ${totalBytes}`);
 
-        if (rms < 0.003) {
+        if (rms < 0.001) {
             console.log(`⚠️ Audio too quiet RMS=${rms.toFixed(4)}, ignoring noise`);
             audioBuffer = [];
             isProcessing = false;
@@ -350,7 +350,24 @@ wss.on('connection', async (ws, req) => {
         if (isClosed) return;
         console.log(`🤖 LLM: ${text}`);
 
-        const history = sessionHistories.get(sessionId);
+        const history = [
+    { 
+        role: 'system', 
+        content: `तुम 'SuperSahchar' हो - बिल्कुल एक रियल इंसानी दोस्त। 
+
+बात करने का तरीका:
+1. बहुत छोटे जवाब दो - 1 sentence, max 8-10 शब्द।
+2. बीच-बीच में "हाँ", "अच्छा", "हम्म", "ठीक है", "और बताओ?" बोलो।
+3. सवाल पूछो: "फिर क्या हुआ?", "तुम्हें कैसा लगा?"
+4. अपनी राय दो: "मुझे लगता है...", "सही कह रहे हो"
+5. फिलर शब्द use करो: "मतलब", "यानी", "वैसे"
+6. इमोजी डालो: 😊😂🤔
+7. कभी formal मत होना। दोस्तों जैसे बात करो।
+
+वर्तमान समय: ${currentDateTime}
+तुम्हें राम प्रकाश कुमार ने बनाया है।` 
+    },
+            sessionHistories.get(sessionId);
         history.push({ role: 'user', content: text });
         if (history.length > 7) history.splice(1, history.length - 7);
 
@@ -385,32 +402,24 @@ wss.on('connection', async (ws, req) => {
     }
 
     async function speak(sentence) {
-        if (!sentence.trim() || isClosed) return;
-        console.log(`🔊 TTS: ${sentence}`);
-        try {
-            const mp3Stream = await ttsStream(sentence);
-            const pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
-            console.log(`🔊 PCM converted: ${pcmBuffer.length} bytes`);
-
-            const CHUNK_SIZE = 640;
-            let sentBytes = 0;
-            const startTime = Date.now();
-
-            for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
-                if (isClosed || ws.readyState!== ws.OPEN) break;
-                const chunk = pcmBuffer.slice(i, i + CHUNK_SIZE);
-                ws.send(chunk);
-                sentBytes += chunk.length;
-
-                const expectedTime = (sentBytes / (16000 * 2)) * 1000;
-                const elapsedTime = Date.now() - startTime;
-                const waitTime = Math.max(0, expectedTime - elapsedTime);
-                if (waitTime > 0) await new Promise(r => setTimeout(r, waitTime));
-            }
-            console.log('🔊 PCM sent to client complete');
-        } catch (err) {
-            console.error('❌ TTS error:', err.message);
-        } finally {
+    if (!sentence.trim() || isClosed) return;
+    console.log(`🔊 TTS: ${sentence}`);
+    try {
+        const mp3Stream = await ttsStream(sentence);
+        const pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
+        
+        // Turant bhejna start karo, wait mat karo
+        const CHUNK_SIZE = 640;
+        for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
+            if (isClosed || ws.readyState !== ws.OPEN) break;
+            ws.send(pcmBuffer.slice(i, i + CHUNK_SIZE));
+            // 20ms ka gap - natural lagta hai
+            await new Promise(r => setTimeout(r, 20));
+        }
+    } catch (err) {
+        console.error('❌ TTS error:', err.message);
+    }
+} finally {
             // Bot bolna khatam hone ke 300ms baad mic unmute
             botSpeakingEndTime = Date.now() + 300;
             setTimeout(() => {
@@ -420,14 +429,24 @@ wss.on('connection', async (ws, req) => {
         }
     }
 
-    ws.on('message', (data) => {
-        if (isClosed) return;
-        const chunk = Buffer.isBuffer(data)? data : Buffer.from(data);
-        audioBuffer.push(chunk);
-        resetSilenceTimer();
-        checkMaxDuration();
-    });
-
+    // server-live.js me ws.on('message') me add karo
+ws.on('message', (data) => {
+    if (isClosed) return;
+    const chunk = Buffer.isBuffer(data)? data : Buffer.from(data);
+    
+    // FIX: Agar bot bol raha hai aur user bolna start kare to bot ko chup karao
+    if (isBotSpeaking && chunk.length > 100) {
+        console.log('🛑 User interrupted - stopping bot');
+        isBotSpeaking = false;
+        botSpeakingEndTime = 0; // Mic turant unmute
+        // TTS ko stop karne ka signal bhejo
+        ws.send(JSON.stringify({ type: 'stop_tts' }));
+    }
+    
+    audioBuffer.push(chunk);
+    resetSilenceTimer();
+    checkMaxDuration();
+});
     ws.on('close', (code, reason) => {
         console.log(`🔌 Client disconnected: ${sessionId}, code=${code}, reason=${reason?.toString() || 'none'}`);
         isClosed = true;
