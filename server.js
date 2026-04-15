@@ -375,7 +375,8 @@ app.post("/chat-assistant", async (req, res) => {
       reply: "क्षमा करें, असिस्टेंट सेवा उपलब्ध नहीं है। कृपया बाद में प्रयास करें। 🙏" 
     });
   }
-});});// ==================== SAMBANOVA CHAT ====================
+});
+// ==================== SAMBANOVA CHAT ====================
 app.post("/chat-sambanova", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
