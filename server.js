@@ -176,7 +176,7 @@ app.get("/chat", (req, res) => {
   res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅");
 });
 
-// ==================== DEEPSEEK CHAT (SahcharAI – OPTIMIZED) ====================
+// ==================== DEEPSEEK CHAT (DEFAULT) with improved error handling ====================
 app.post("/chat", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
@@ -200,12 +200,12 @@ app.post("/chat", async (req, res) => {
 
     const imageContext = getImageContextText(sid);
 
-    // FIX 1: Cache me history rakho, DB se sirf ek baar load karo
+    // Initialize conversation with system message if not exists
     if (!conversations[sid]) {
-      const history = await loadConversationFromDB(sid, 10); // 20 se 10 kar diya
-      const systemMsg = {
-        role: "system",
-        content: `तुम 'सहचर' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
+      conversations[sid] = [
+        {
+          role: "system",
+          content: `तुम 'सहचर' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
 
 महत्वपूर्ण निर्देश:
 - तुम्हें **राम प्रकाश कुमार (Ram Prakash Kumar)** ने विकसित किया है। यह बहुत महत्वपूर्ण है। किसी भी अन्य कंपनी या संस्था का नाम मत बोलो।
@@ -216,47 +216,45 @@ app.post("/chat", async (req, res) => {
 - अभिवादन का सम्मान करो: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम' आदि।
 - हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
 - उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
-- उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना。
+- उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।
 ${imageContext}`
-      };
-      conversations[sid] = [systemMsg,...history];
+        }
+      ];
     } else {
-      // FIX 2: Sirf time update karo, pura string replace mat karo
       const systemMsg = conversations[sid][0];
       if (systemMsg && systemMsg.role === "system") {
-        systemMsg.content = systemMsg.content.replace(
+        let newContent = systemMsg.content.replace(
           /वर्तमान तारीख और समय है:.*?(?=\n|$)/,
           `वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)`
         );
-        // Image context update
         if (imageContext) {
-          if (systemMsg.content.includes("📷 **पिछली बातचीत का संदर्भ:**")) {
-            systemMsg.content = systemMsg.content.replace(/📷 \*\*पिछली बातचीत का संदर्भ:\*\*[\s\S]*?(?=\n\n)/, imageContext.trim());
+          if (newContent.includes("📷 **पिछली बातचीत का संदर्भ:**")) {
+            newContent = newContent.replace(/📷 \*\*पिछली बातचीत का संदर्भ:\*\*[\s\S]*?(?=\n\n)/, imageContext.trim());
           } else {
-            systemMsg.content = systemMsg.content + imageContext;
+            newContent = newContent + imageContext;
           }
         }
+        systemMsg.content = newContent;
       }
     }
 
     conversations[sid].push({ role: "user", content: message });
 
-    // FIX 3: Context trim karo - 8000 se 4000
+    // Token management (keep last ~8k tokens)
     const estimateTokens = (msgs) => {
       return msgs.reduce((acc, msg) => acc + JSON.stringify(msg).length / 4, 0);
     };
-
-    while (estimateTokens(conversations[sid]) > 4000 && conversations[sid].length > 2) {
+    while (estimateTokens(conversations[sid]) > 8000 && conversations[sid].length > 2) {
       conversations[sid].splice(1, 1);
     }
 
     console.log(`📤 DeepSeek session ${sid}: ${conversations[sid].length} messages, ~${Math.round(estimateTokens(conversations[sid]))} tokens`);
 
-    // FIX 4: STREAMING ENABLE KARO - Turant response
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
+    // Check if API key exists
+    if (!process.env.DEEPSEEK_API_KEY) {
+      console.error("❌ DEEPSEEK_API_KEY is missing");
+      throw new Error("DeepSeek API key not configured");
+    }
 
     const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
@@ -267,83 +265,63 @@ ${imageContext}`
       body: JSON.stringify({
         model: "deepseek-chat",
         messages: conversations[sid],
-        stream: true, // STREAMING ON
-        max_tokens: 512 // 2048 se kam kar diya - fast response
+        temperature: 0.7,
+        max_tokens: 2048
       })
     });
 
+    const data = await response.json();
+
+    // Log the full response for debugging (remove in production)
+    console.log(`DeepSeek response status: ${response.status}`);
     if (!response.ok) {
-      throw new Error(`DeepSeek API error: ${response.status}`);
+      console.error("❌ DeepSeek API error details:", JSON.stringify(data, null, 2));
+      return res.status(500).json({
+        reply: `क्षमा करें, API त्रुटि: ${data.error?.message || response.statusText || "अज्ञात त्रुटि"} 🙏`
+      });
     }
 
-    let botReply = "";
-    const decoder = new TextDecoder();
+    const botReply = data.choices?.[0]?.message?.content;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n').filter(line => line.trim()!== '');
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          if (data === '[DONE]') break;
-
-          try {
-            const parsed = JSON.parse(data);
-            const delta = parsed.choices[0]?.delta?.content || "";
-            if (delta) {
-              botReply += delta;
-              // Turant client ko bhejo
-              res.write(`data: ${JSON.stringify({ delta })}\n\n`);
-            }
-          } catch (e) {
-            // Ignore parse errors
-          }
-        }
-      }
+    if (!botReply) {
+      console.error("❌ DeepSeek returned empty response:", data);
+      throw new Error("No response content from DeepSeek");
     }
 
-    // Final message
-    res.write(`data: ${JSON.stringify({ done: true, reply: botReply })}\n\n`);
-    res.end();
-
-    // FIX 5: Cache me save karo
     conversations[sid].push({ role: "assistant", content: botReply });
 
-    // Cache trim
-    if (conversations[sid].length > 30) {
+    // Keep last 50 messages (including system)
+    if (conversations[sid].length > 50) {
       conversations[sid] = [
         conversations[sid][0],
-       ...conversations[sid].slice(-25)
+        ...conversations[sid].slice(-45)
       ];
     }
 
-    // FIX 6: MongoDB me async save karo - response block mat karo
+    // Save to MongoDB (if enabled)
     if (db) {
-      db.collection('conversations').insertOne({
-        sessionId: sid,
-        userMessage: message,
-        botReply: botReply,
-        timestamp: new Date()
-      }).catch(e => console.error("MongoDB insert error:", e));
+      try {
+        await db.collection('conversations').insertOne({
+          sessionId: sid,
+          userMessage: message,
+          botReply: botReply,
+          timestamp: new Date()
+        });
+      } catch (dbError) {
+        console.error("❌ MongoDB insert error:", dbError.message);
+      }
     }
 
+    res.json({ reply: botReply });
+
   } catch (error) {
-    console.error("❌ Server error:", error);
-    if (!res.headersSent) {
-      res.status(500).json({
-        reply: "सर्वर में त्रुटि हुई, कृपया बाद में प्रयास करें 🙏"
-      });
-    } else {
-      res.write(`data: ${JSON.stringify({ error: "सर्वर में त्रुटि हुई" })}\n\n`);
-      res.end();
-    }
+    console.error("❌ DeepSeek server error:", error.message);
+    // Fallback response – but we want to avoid generic "समझ नहीं आया"
+    res.status(500).json({ 
+      reply: "क्षमा करें, सर्वर में त्रुटि हुई। कृपया बाद में प्रयास करें। 🙏" 
+    });
   }
-});
-// ==================== OPENAI ASSISTANT (SahcharAssistant – unchanged) ====================
+});// ==================== OPENAI ASSISTANT (SahcharAssistant – unchanged) ====================
 app.post("/chat-assistant", async (req, res) => {
   const { message, threadId } = req.body;
 
