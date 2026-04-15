@@ -250,14 +250,22 @@ wss.on('connection', async (ws, req) => {
 
     // FIX 3: String similarity check - echo detect karne ke liye
     function isSimilarToLastBotText(text) {
-        if (!lastBotText || text.length < 3) return false;
-        const cleanBot = lastBotText.replace(/[।!?😊🤔,]/g, '').toLowerCase();
-        const cleanText = text.replace(/[।!?😊🤔,]/g, '').toLowerCase();
-        // Agar 50% se zyada match to echo hai
-        const words = cleanText.split(' ');
-        const matchCount = words.filter(w => cleanBot.includes(w)).length;
-        return matchCount / words.length > 0.5;
+    if (!lastBotText || text.length < 3) return false;
+
+    // FIX: Bot ke last 5 words hi lo
+    const botKeywords = lastBotText.split(' ').slice(-5).join(' ').toLowerCase();
+    const cleanText = text.toLowerCase();
+
+    // 70% similarity check
+    const words = cleanText.split(' ');
+    let matchCount = 0;
+    for (const word of words) {
+        if (word.length > 2 && botKeywords.includes(word)) {
+            matchCount++;
+        }
     }
+    return matchCount / words.length > 0.7; // 50% se 70%
+}
 
     async function processAudio() {
         if (audioBuffer.length === 0 || isProcessing || isClosed) return;
