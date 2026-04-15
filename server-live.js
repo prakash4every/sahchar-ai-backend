@@ -299,7 +299,7 @@ wss.on('connection', async (ws, req) => {
                 language: 'hi',
                 response_format: 'text',
                 temperature: 0,
-                prompt: "ये हिंदी में बातचीत है। सिर्फ साफ शब्द लिखो।"
+                prompt: "ये हिंदी में बातचीत है। सिर्फ स्पष्ट हिंदी शब्द लिखो। 'हाँ?', 'अच्छा?' जैसे फिलर मत लिखो।"
             });
             const transcript = response.trim();
 
