@@ -288,7 +288,7 @@ ${imageContext}`;
     res.status(500).json({ reply: "सर्वर में त्रुटि, कृपया बाद में प्रयास करें। 🙏" });
   }
 });
-// ==================== OPENAI ASSISTANT – BUDDHA CHARACTER (FORMAL & COMPASSIONATE) ====================
+// ==================== OPENAI ASSISTANT – BUDDHA CHARACTER (FIXED) ====================
 app.post("/chat-assistant", async (req, res) => {
   const { message, threadId } = req.body;
 
@@ -301,8 +301,8 @@ app.post("/chat-assistant", async (req, res) => {
 
   if (!apiKey || !assistantId) {
     console.error("❌ Missing OPENAI_VIDEO_API_KEY or OPENAI_ASSISTANT_ID");
-    return res.status(501).json({ 
-      reply: "क्षमा करें, असिस्टेंट कॉन्फ़िगर नहीं है। कृपया बाद में प्रयास करें। 🙏" 
+    return res.status(500).json({ 
+      reply: "असिस्टेंट कॉन्फ़िगर नहीं है। कृपया बाद में प्रयास करें। 🙏" 
     });
   }
 
@@ -314,7 +314,6 @@ app.post("/chat-assistant", async (req, res) => {
       hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
     });
 
-    // Original Buddha‑character system prompt
     const instructionsWithTime = `तुम 'SahcharAI' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
 
 महत्वपूर्ण निर्देश:
@@ -340,11 +339,11 @@ app.post("/chat-assistant", async (req, res) => {
       content: message,
     });
 
+    // ✅ REMOVED max_tokens – not allowed in runs.create
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id: assistantId,
       instructions: instructionsWithTime,
-      temperature: 0.7,         // less random, more consistent
-      max_tokens: 1000
+      temperature: 0.7
     });
 
     let runStatus = run;
@@ -363,7 +362,6 @@ app.post("/chat-assistant", async (req, res) => {
     const messages = await openai.beta.threads.messages.list(thread.id);
     const assistantMessage = messages.data.find(m => m.role === "assistant");
     let reply = assistantMessage?.content[0]?.text?.value || "No response from assistant.";
-    // Ensure the formal closing is present
     if (!reply.includes("जय भीम, नमो बुद्धाय")) {
       reply += "\n\nजय भीम, नमो बुद्धाय 🙏";
     }
@@ -377,7 +375,7 @@ app.post("/chat-assistant", async (req, res) => {
       reply: "क्षमा करें, असिस्टेंट सेवा उपलब्ध नहीं है। कृपया बाद में प्रयास करें। 🙏" 
     });
   }
-});// ==================== SAMBANOVA CHAT ====================
+});});// ==================== SAMBANOVA CHAT ====================
 app.post("/chat-sambanova", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
