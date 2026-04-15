@@ -448,7 +448,9 @@ Galat: User: हेलो → Tum: हेलो
     ws.on('message', (data) => {
         if (isClosed) return;
         const chunk = Buffer.isBuffer(data)? data : Buffer.from(data);
-
+if (isBotSpeaking || Date.now() < botSpeakingEndTime) {
+        return; 
+    }
         const rms = calculateRMS(chunk);
         if (isBotSpeaking && rms > 0.04 && chunk.length > 400) {
             interruptCount++;
