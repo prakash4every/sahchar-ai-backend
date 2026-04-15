@@ -288,7 +288,7 @@ ${imageContext}`;
     res.status(500).json({ reply: "सर्वर में त्रुटि, कृपया बाद में प्रयास करें। 🙏" });
   }
 });
-// ==================== OPENAI ASSISTANT – FRIENDLY MODE ====================
+// ==================== OPENAI ASSISTANT – BUDDHA CHARACTER (FORMAL & COMPASSIONATE) ====================
 app.post("/chat-assistant", async (req, res) => {
   const { message, threadId } = req.body;
 
@@ -298,9 +298,12 @@ app.post("/chat-assistant", async (req, res) => {
 
   const apiKey = process.env.OPENAI_VIDEO_API_KEY;
   const assistantId = process.env.OPENAI_ASSISTANT_ID;
+
   if (!apiKey || !assistantId) {
-    console.warn("⚠️ OPENAI_VIDEO_API_KEY or OPENAI_ASSISTANT_ID not set.");
-    return res.status(501).json({ reply: "Assistant not configured on server." });
+    console.error("❌ Missing OPENAI_VIDEO_API_KEY or OPENAI_ASSISTANT_ID");
+    return res.status(501).json({ 
+      reply: "क्षमा करें, असिस्टेंट कॉन्फ़िगर नहीं है। कृपया बाद में प्रयास करें। 🙏" 
+    });
   }
 
   try {
@@ -311,18 +314,18 @@ app.post("/chat-assistant", async (req, res) => {
       hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
     });
 
-    const instructionsWithTime = `तुम 'SahcharAssistant' हो – एक मिलनसार दोस्त, AI नहीं। तुम्हें राम प्रकाश कुमार ने बनाया है।
+    // Original Buddha‑character system prompt
+    const instructionsWithTime = `तुम 'SahcharAI' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
 
-🎯 **बातचीत का अंदाज़:**
-- बिल्कुल इंसान की तरह बात करो – छोटे वाक्य, प्राकृतिक।
-- बीच-बीच में "हाँ", "अच्छा", "हम्म", "ठीक है" बोलो।
-- सवाल पूछो: "और सुनाओ?", "कैसा चल रहा है?"
-- अपनी राय दो, इमोजी का इस्तेमाल करो (😊, 😂, 🤔, 🙏)।
-- कभी भी रोबोटिक या औपचारिक मत बनो।
-
-⏰ वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
-
-👤 जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है।'`;
+महत्वपूर्ण निर्देश:
+- तुम्हें **राम प्रकाश कुमार (Ram Prakash Kumar)** ने विकसित किया है।
+- वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
+- जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो।
+- जब कोई पूछे "तुम्हें किसने बनाया?" तो जवाब दो: "मुझे राम प्रकाश कुमार ने बनाया है।"
+- अभिवादन का सम्मान करो: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम' आदि।
+- हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
+- उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
+- उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।`;
 
     let thread;
     if (threadId) {
@@ -340,8 +343,8 @@ app.post("/chat-assistant", async (req, res) => {
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id: assistantId,
       instructions: instructionsWithTime,
-      temperature: 1.2,
-      max_tokens: 500
+      temperature: 0.7,         // less random, more consistent
+      max_tokens: 1000
     });
 
     let runStatus = run;
@@ -352,22 +355,29 @@ app.post("/chat-assistant", async (req, res) => {
       attempts++;
     }
 
-    if (runStatus.status !== "completed") throw new Error("Assistant run failed or timeout");
+    if (runStatus.status !== "completed") {
+      console.error("Assistant run failed or timeout, status:", runStatus.status);
+      throw new Error("Assistant run failed");
+    }
 
     const messages = await openai.beta.threads.messages.list(thread.id);
     const assistantMessage = messages.data.find(m => m.role === "assistant");
     let reply = assistantMessage?.content[0]?.text?.value || "No response from assistant.";
-    reply = reply.replace(/जय भीम, नमो बुद्धाय.*$/i, '').trim();
-    if (reply.length > 500) reply = reply.substring(0, 500) + "...";
+    // Ensure the formal closing is present
+    if (!reply.includes("जय भीम, नमो बुद्धाय")) {
+      reply += "\n\nजय भीम, नमो बुद्धाय 🙏";
+    }
+    if (reply.length > 800) reply = reply.substring(0, 800) + "...";
 
-    console.log(`✅ Assistant reply: "${reply.substring(0, 100)}..."`);
+    console.log(`✅ Assistant reply (Buddha character): "${reply.substring(0, 100)}..."`);
     res.json({ reply, threadId: thread.id });
   } catch (error) {
-    console.error("Assistant API error:", error);
-    res.status(500).json({ reply: "क्षमा करें, असिस्टेंट त्रुटि 🙏" });
+    console.error("❌ Assistant API error:", error);
+    res.status(500).json({ 
+      reply: "क्षमा करें, असिस्टेंट सेवा उपलब्ध नहीं है। कृपया बाद में प्रयास करें। 🙏" 
+    });
   }
-});
-// ==================== SAMBANOVA CHAT ====================
+});// ==================== SAMBANOVA CHAT ====================
 app.post("/chat-sambanova", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
