@@ -209,10 +209,10 @@ wss.on('connection', async (ws, req) => {
     const sessionId = randomUUID();
     console.log(`🔌 Client connected: session=${sessionId}, deviceId=${deviceId}`);
 
-    const pastMessages = await loadConversationFromDB(deviceId, 5);
+    const pastMessages = await loadConversationFromDB(deviceId, 3); // 5 se 3 kar diya
     const history = [
-        { role: 'system', content: 'You are SahcharAI, a helpful Hindi voice assistant. Give short replies. Max 1 sentence. Never repeat user words. If you hear your own words, say "समझ नहीं आया".' },
-     ...pastMessages
+        { role: 'system', content: '' }, // Neeche set hoga
+    ...pastMessages
     ];
     sessionHistories.set(sessionId, history);
 
@@ -222,11 +222,13 @@ wss.on('connection', async (ws, req) => {
     let botSpeakingEndTime = 0;
     let silenceTimer = null;
     let isClosed = false;
+    let lastBotText = ""; // FIX 1: Bot ne kya bola track karo
+    let interruptCount = 0; // FIX 2: Barge-in debounce
 
     const SAMPLE_RATE = 16000;
     const BYTES_PER_SECOND = SAMPLE_RATE * 2;
     const MAX_CHUNK_BYTES = BYTES_PER_SECOND * 1;
-    const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.5;
+    const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.8; // 0.5 se 0.8 - clear bolna padega
 
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
@@ -235,10 +237,9 @@ wss.on('connection', async (ws, req) => {
                 console.log('Silence detected, processing...');
                 processAudio();
             }
-        }, 1000);
+        }, 800); // 1000 se 800 - fast response
     }
 
-    // FIX: checkMaxDuration yahan define karo - ws.on se pehle
     function checkMaxDuration() {
         const totalBytes = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
         if (totalBytes >= MAX_CHUNK_BYTES &&!isProcessing && audioBuffer.length > 0 &&!isClosed) {
@@ -247,9 +248,21 @@ wss.on('connection', async (ws, req) => {
         }
     }
 
+    // FIX 3: String similarity check - echo detect karne ke liye
+    function isSimilarToLastBotText(text) {
+        if (!lastBotText || text.length < 3) return false;
+        const cleanBot = lastBotText.replace(/[।!?😊🤔,]/g, '').toLowerCase();
+        const cleanText = text.replace(/[।!?😊🤔,]/g, '').toLowerCase();
+        // Agar 50% se zyada match to echo hai
+        const words = cleanText.split(' ');
+        const matchCount = words.filter(w => cleanBot.includes(w)).length;
+        return matchCount / words.length > 0.5;
+    }
+
     async function processAudio() {
         if (audioBuffer.length === 0 || isProcessing || isClosed) return;
 
+        // FIX 4: 1500ms echo window - speaker ki awaaz khatam hone do
         if (Date.now() < botSpeakingEndTime) {
             console.log('⚠️ Dropping audio - bot speaking or echo window');
             audioBuffer = [];
@@ -283,7 +296,8 @@ wss.on('connection', async (ws, req) => {
         const rms = calculateRMS(fullAudio);
         console.log(`🎤 Audio RMS: ${rms.toFixed(4)}, Bytes: ${totalBytes}`);
 
-        if (rms < 0.005) {
+        // FIX 5: RMS 0.01 se kam = noise
+        if (rms < 0.01) {
             console.log(`⚠️ Audio too quiet RMS=${rms.toFixed(4)}, ignoring noise/echo`);
             isProcessing = false;
             return;
@@ -299,23 +313,25 @@ wss.on('connection', async (ws, req) => {
                 language: 'hi',
                 response_format: 'text',
                 temperature: 0,
-                prompt: "ये हिंदी में बातचीत है। सिर्फ स्पष्ट हिंदी शब्द लिखो। 'हाँ?', 'अच्छा?' जैसे फिलर मत लिखो।"
+                prompt: "ये हिंदी में दोस्तों की बातचीत है। सिर्फ साफ पूरे वाक्य लिखो।"
             });
             const transcript = response.trim();
 
+            // FIX 6: Echo check + blacklist
             const badWords = [
-    'हाँ', 'हम्म', 'अच्छा', 'ठीक है', 'समझ', 'बोल', 'सुन',
-    'हाँ?', 'अच्छा?', 'समझ गया?', 'नमस्ते', 'कैसे हो', // Bot ke replies
-    'गुड़ा', 'गुड़', 'बिच्चा', 'बिच्छू', 'पिज़्ज़ा', 'खाना',
-    'झाल', 'कुण', 'ओ', 'आ', 'उम', 'हम', 'Mumbai', 'Subscribe',
-    'Thank you', 'okay', 'Hello', 'Hi', 'Yes', 'No', 'OK'
-];
+                'हाँ', 'हम्म', 'अच्छा', 'ठीक है', 'समझ', 'बोल', 'सुन',
+                'हाँ?', 'अच्छा?', 'समझ गया?', 'नमस्ते', 'कैसे हो', 'बताओ',
+                'बुधवार', 'बनाया', 'गुड़ा', 'बिच्चा', 'पिज़्ज़ा', 'खाना',
+                'झाल', 'कुण', 'ओ', 'आ', 'उम', 'हम'
+            ];
 
-            if (!transcript || transcript.length < 4 || badWords.some(w => transcript === w || transcript.includes(w))) {
-    console.log(`⚠️ Ignoring echo/hallucination: "${transcript}"`);
-    isProcessing = false;
-    return;
-}
+            if (!transcript || transcript.length < 4 ||
+                badWords.some(w => transcript === w || transcript.includes(w)) ||
+                isSimilarToLastBotText(transcript)) {
+                console.log(`⚠️ Ignoring echo/hallucination: "${transcript}"`);
+                isProcessing = false;
+                return;
+            }
 
             console.log(`📝 Transcript: ${transcript}`);
 
@@ -346,14 +362,24 @@ wss.on('connection', async (ws, req) => {
         });
 
         const history = sessionHistories.get(sessionId);
-        history[0].content = `तुम 'SuperSahchar' हो - रियल इंसानी दोस्त।
+        // FIX 7: Strong prompt - user ke words repeat mat karo
+        history[0].content = `तुम 'SuperSahchar' हो - एक समझदार दोस्त।
 
-नियम:
-1. सिर्फ 1 sentence, max 6 शब्द।
-2. "हाँ", "अच्छा", "और बताओ?" जैसे शब्द use करो।
-3. Kabhi user ke words repeat mat karo।
-4. Agar samajh na aaye to "समझ नहीं आया" bolo।
-5. Emoji: 😊🤔
+SAKHT NIYAM:
+1. User ne jo bola usko REPEAT kabhi mat karna।
+2. 1-2 sentence me जवाब दो, max 12 शब्द।
+3. Hamesha naya content bolo, sawal poocho।
+4. Agar samajh na aaye: "फिर से बोलो?" bolo।
+5. Apne pichle message ko kabhi repeat mat karo।
+
+उदाहरण:
+User: हेलो
+Tum: नमस्ते दोस्त! कैसे हो? 😊
+
+User: अपने बारे में बताओ
+Tum: मैं SuperSahchar हूँ। तुम्हारा नाम क्या है? 😊
+
+Galat: User: हेलो → Tum: हेलो
 
 वर्तमान समय: ${currentDateTime}
 तुम्हें राम प्रकाश कुमार ने बनाया है।`;
@@ -363,7 +389,10 @@ wss.on('connection', async (ws, req) => {
 
         try {
             const fullReply = await callNvidiaWithFallback(history);
-            if (fullReply) history.push({ role: 'assistant', content: fullReply });
+            if (fullReply) {
+                history.push({ role: 'assistant', content: fullReply });
+                lastBotText = fullReply; // FIX 8: Track karo kya bola
+            }
 
             if (ws.readyState === ws.OPEN) {
                 ws.send(JSON.stringify({ type: 'bot_text', text: fullReply }));
@@ -378,7 +407,8 @@ wss.on('connection', async (ws, req) => {
                 }).catch(e => console.error("MongoDB insert error:", e));
             }
 
-            botSpeakingEndTime = Date.now() + 1200;
+            // FIX 9: 1500ms echo window
+            botSpeakingEndTime = Date.now() + 1500;
             isBotSpeaking = true;
 
             const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
@@ -388,7 +418,7 @@ wss.on('connection', async (ws, req) => {
             }
         } catch (err) {
             console.error('❌ LLM error:', err.message);
-            if (!isClosed) await speak('समझ नहीं आया।');
+            if (!isClosed) await speak('फिर से बोलो?');
         } finally {
             isBotSpeaking = false;
         }
@@ -410,11 +440,12 @@ wss.on('connection', async (ws, req) => {
         } catch (err) {
             console.error('❌ TTS error:', err.message);
         } finally {
-            botSpeakingEndTime = Date.now() + 800;
+            // FIX 10: 1500ms window
+            botSpeakingEndTime = Date.now() + 1500;
             setTimeout(() => {
                 isBotSpeaking = false;
                 console.log('🎤 Mic unmuted after bot finished');
-            }, 800);
+            }, 1500);
         }
     }
 
@@ -422,12 +453,19 @@ wss.on('connection', async (ws, req) => {
         if (isClosed) return;
         const chunk = Buffer.isBuffer(data)? data : Buffer.from(data);
 
+        // FIX 11: Barge-in ke liye 3 chunks ka RMS check - 1 chunk se interrupt mat karo
         const rms = calculateRMS(chunk);
-        if (isBotSpeaking && rms > 0.02 && chunk.length > 200) {
-            console.log('🛑 User interrupted - stopping bot');
-            isBotSpeaking = false;
-            botSpeakingEndTime = 0;
-            ws.send(JSON.stringify({ type: 'stop_tts' }));
+        if (isBotSpeaking && rms > 0.04 && chunk.length > 400) {
+            interruptCount++;
+            if (interruptCount >= 3) { // 3 baar loud aaye tab interrupt
+                console.log('🛑 User interrupted - stopping bot');
+                isBotSpeaking = false;
+                botSpeakingEndTime = 0;
+                interruptCount = 0;
+                ws.send(JSON.stringify({ type: 'stop_tts' }));
+            }
+        } else {
+            interruptCount = 0;
         }
 
         audioBuffer.push(chunk);
