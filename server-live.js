@@ -41,14 +41,13 @@ if (process.env.MONGODB_URI) {
 }
 
 async function loadConversationFromDB(deviceId, limit = 10) {
-    if (!db ||!deviceId) return [];
+    if (!db || !deviceId) return [];
     try {
         const convCollection = db.collection('conversations');
         const messages = await convCollection.find({ sessionId: deviceId })
             .sort({ timestamp: -1 })
             .limit(limit)
             .toArray();
-
         const history = [];
         messages.reverse().forEach(msg => {
             history.push({ role: "user", content: msg.userMessage });
@@ -223,7 +222,7 @@ wss.on('connection', async (ws, req) => {
     let silenceTimer = null;
     let isClosed = false;
     let lastBotText = "";
-    let accumulatedText = "";
+    let accumulatedText = "";  // Missing variable added
 
     const SAMPLE_RATE = 16000;
     const BYTES_PER_SECOND = SAMPLE_RATE * 2;
@@ -246,6 +245,18 @@ wss.on('connection', async (ws, req) => {
             console.log('Max 2s reached, processing...');
             processAudio();
         }
+    }
+
+    function isSimilarToLastBotText(text) {
+        if (!lastBotText || text.length < 3) return false;
+        const botKeywords = lastBotText.split(' ').slice(-5).join(' ').replace(/[।!?😊🤔,]/g, '').toLowerCase();
+        const cleanText = text.replace(/[।!?😊🤔,]/g, '').toLowerCase();
+        const words = cleanText.split(' ');
+        let matchCount = 0;
+        for (const word of words) {
+            if (botKeywords.includes(word)) matchCount++;
+        }
+        return matchCount / words.length > 0.7;
     }
 
     async function processAudio() {
@@ -403,7 +414,7 @@ Tum: नमस्ते दोस्त! कैसे हो? 😊
             console.error("❌ LLM error:", err.message);
             if (!isClosed && ws.readyState === ws.OPEN) await speak("फिर से बोलो?");
         } finally {
-            // isBotSpeaking will be set false after speak completes
+            // isBotSpeaking will be set to false inside speak() after TTS finishes
         }
     }
 
@@ -445,9 +456,11 @@ Tum: नमस्ते दोस्त! कैसे हो? 😊
     ws.on('message', (data) => {
         if (isClosed) return;
         const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+
         if (isBotSpeaking || Date.now() < botSpeakingEndTime) {
             return;
         }
+
         audioBuffer.push(chunk);
         resetSilenceTimer();
         checkMaxDuration();
