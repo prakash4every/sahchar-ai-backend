@@ -224,10 +224,10 @@ wss.on('connection', async (ws, req) => {
     let isClosed = false;
     let lastBotText = "";
 
-    const SAMPLE_RATE = 16000;
-    const BYTES_PER_SECOND = SAMPLE_RATE * 2;
-    const MAX_CHUNK_BYTES = BYTES_PER_SECOND * 1;
-    const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.8;
+   const SAMPLE_RATE = 16000;
+const BYTES_PER_SECOND = SAMPLE_RATE * 2;
+const MAX_CHUNK_BYTES = BYTES_PER_SECOND * 2; // 2 seconds (was 1 second)
+const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.5; // 0.5 seconds minimum
 
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
@@ -307,44 +307,46 @@ wss.on('connection', async (ws, req) => {
         const wavBuffer = pcmToWav(fullAudio, SAMPLE_RATE, 1, 16);
 
         try {
-            const audioStream = await bufferToReadableStream(wavBuffer);
-            const response = await groqClient.audio.transcriptions.create({
-                file: audioStream,
-                model: 'whisper-large-v3',
-                language: 'hi',
-                response_format: 'text',
-                temperature: 0,
-                prompt: "सिर्फ साफ पूरे वाक्य लिखो।"
-            });
-            const transcript = response.trim();
-
-            const badWords = ['ओ', 'आ', 'उम', 'हम'];
-            if (!transcript || transcript.length < 4 ||
-                badWords.some(w => transcript === w || transcript.includes(w)) ||
-                isSimilarToLastBotText(transcript)) {
-                console.log(`⚠️ Ignoring echo/hallucination: "${transcript}"`);
-                isProcessing = false;
-                return;
-            }
-
-            console.log(`📝 Transcript: ${transcript}`);
-
-            if (ws.readyState === ws.OPEN) {
-                ws.send(JSON.stringify({ type: 'user_text', text: transcript }));
-            }
-
-            if (!isBotSpeaking &&!isClosed) {
-                isBotSpeaking = true;
-                await sendToLLM(transcript);
-            }
-        } catch (err) {
-            console.error("❌ Groq error:", err.message);
-        } finally {
-            isProcessing = false;
-            if (audioBuffer.length > 0 &&!isClosed && Date.now() >= botSpeakingEndTime) processAudio();
-        }
+    const response = await groqClient.audio.transcriptions.create({
+        file: audioStream,
+        model: 'whisper-large-v3',
+        language: 'hi',
+        response_format: 'text',
+        temperature: 0.2,  // Lower temperature for more accurate Hindi
+        prompt: "यह हिंदी भाषा में बातचीत है। केवल हिंदी शब्दों को ट्रांसक्राइब करें। सिर्फ साफ पूरे वाक्य लिखो।"
+    });
+    let transcript = response.trim();
+    
+    // Filter out common noise words and very short transcripts
+    const noiseWords = ['झाल', 'कुण', 'हाँ', 'ना', 'ओ', 'आ', 'उम', 'हम', 'हम्म', 'अच्छा', 'ठीक है', 'हां', 'नहीं'];
+    let cleanTranscript = transcript;
+    for (const noise of noiseWords) {
+        cleanTranscript = cleanTranscript.replace(new RegExp(`\\b${noise}\\b`, 'gi'), '').trim();
     }
-
+    
+    // Also remove very short transcripts (likely misrecognition)
+    if (cleanTranscript.length < 3) {
+        console.log(`⚠️ Ignoring short/noise transcript: "${transcript}"`);
+        isProcessing = false;
+        return;
+    }
+    
+    console.log(`📝 Raw transcript: ${transcript}`);
+    console.log(`📝 Cleaned transcript: ${cleanTranscript}`);
+    
+    // Use cleaned transcript
+    accumulatedText += cleanTranscript + ' ';
+    if (!isBotSpeaking) {
+        isBotSpeaking = true;
+        await sendToLLM(accumulatedText.trim());
+        accumulatedText = '';
+    }
+} catch (err) {
+    console.error("❌ Groq error:", err.message);
+    if (!isBotSpeaking) {
+        await speak('क्षमा करें, फिर से बोलें।');
+    }
+}
     async function sendToLLM(text) {
         if (isClosed) return;
         console.log(`🤖 LLM: ${text}`);
