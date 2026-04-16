@@ -45,9 +45,9 @@ async function loadConversationFromDB(deviceId, limit = 10) {
     try {
         const convCollection = db.collection('conversations');
         const messages = await convCollection.find({ sessionId: deviceId })
-       .sort({ timestamp: -1 })
-       .limit(limit)
-       .toArray();
+            .sort({ timestamp: -1 })
+            .limit(limit)
+            .toArray();
 
         const history = [];
         messages.reverse().forEach(msg => {
@@ -68,7 +68,7 @@ const nvidiaApiKeys = [
     process.env.NGC_API_KEY_2,
     process.env.NGC_API_KEY_3,
     process.env.NGC_API_KEY
-].filter(key => key && key.trim()!== "");
+].filter(key => key && key.trim() !== "");
 
 async function callNvidiaWithFallback(messages) {
     if (nvidiaApiKeys.length === 0) throw new Error("No NVIDIA keys");
@@ -132,16 +132,16 @@ function convertMp3StreamToPcm16k(mp3Stream) {
     return new Promise((resolve, reject) => {
         const chunks = [];
         ffmpeg(mp3Stream)
-       .audioCodec('pcm_s16le')
-       .format('s16le')
-       .audioChannels(1)
-       .audioFrequency(16000)
-       .outputOptions('-ar 16000')
-       .outputOptions('-ac 1')
-       .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
-       .on('end', () => resolve(Buffer.concat(chunks)))
-       .pipe()
-       .on('data', (chunk) => chunks.push(chunk));
+            .audioCodec('pcm_s16le')
+            .format('s16le')
+            .audioChannels(1)
+            .audioFrequency(16000)
+            .outputOptions('-ar 16000')
+            .outputOptions('-ac 1')
+            .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
+            .on('end', () => resolve(Buffer.concat(chunks)))
+            .pipe()
+            .on('data', (chunk) => chunks.push(chunk));
     });
 }
 
@@ -212,7 +212,7 @@ wss.on('connection', async (ws, req) => {
     const pastMessages = await loadConversationFromDB(deviceId, 3);
     const history = [
         { role: 'system', content: '' },
-  ...pastMessages
+        ...pastMessages
     ];
     sessionHistories.set(sessionId, history);
 
@@ -223,16 +223,17 @@ wss.on('connection', async (ws, req) => {
     let silenceTimer = null;
     let isClosed = false;
     let lastBotText = "";
+    let accumulatedText = "";
 
-   const SAMPLE_RATE = 16000;
-const BYTES_PER_SECOND = SAMPLE_RATE * 2;
-const MAX_CHUNK_BYTES = BYTES_PER_SECOND * 2; // 2 seconds (was 1 second)
-const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.5; // 0.5 seconds minimum
+    const SAMPLE_RATE = 16000;
+    const BYTES_PER_SECOND = SAMPLE_RATE * 2;
+    const MAX_CHUNK_BYTES = BYTES_PER_SECOND * 2; // 2 seconds
+    const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.5; // 0.5 seconds
 
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
         silenceTimer = setTimeout(() => {
-            if (audioBuffer.length > 0 &&!isProcessing &&!isClosed) {
+            if (audioBuffer.length > 0 && !isProcessing && !isClosed) {
                 console.log('Silence detected, processing...');
                 processAudio();
             }
@@ -241,24 +242,10 @@ const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.5; // 0.5 seconds minimum
 
     function checkMaxDuration() {
         const totalBytes = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
-        if (totalBytes >= MAX_CHUNK_BYTES &&!isProcessing && audioBuffer.length > 0 &&!isClosed) {
-            console.log('Max 1s reached, processing...');
+        if (totalBytes >= MAX_CHUNK_BYTES && !isProcessing && audioBuffer.length > 0 && !isClosed) {
+            console.log('Max 2s reached, processing...');
             processAudio();
         }
-    }
-
-    function isSimilarToLastBotText(text) {
-        if (!lastBotText || text.length < 3) return false;
-        const botKeywords = lastBotText.split(' ').slice(-5).join(' ').replace(/[।!?😊🤔,]/g, '').toLowerCase();
-        const cleanText = text.replace(/[।!?😊🤔,]/g, '').toLowerCase();
-        const words = cleanText.split(' ');
-        let matchCount = 0;
-        for (const word of words) {
-            if (botKeywords.includes(word)) {
-                matchCount++;
-            }
-        }
-        return matchCount / words.length > 0.7;
     }
 
     async function processAudio() {
@@ -305,48 +292,53 @@ const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.5; // 0.5 seconds minimum
         }
 
         const wavBuffer = pcmToWav(fullAudio, SAMPLE_RATE, 1, 16);
+        const audioStream = await bufferToReadableStream(wavBuffer);
 
         try {
-    const response = await groqClient.audio.transcriptions.create({
-        file: audioStream,
-        model: 'whisper-large-v3',
-        language: 'hi',
-        response_format: 'text',
-        temperature: 0.2,  // Lower temperature for more accurate Hindi
-        prompt: "यह हिंदी भाषा में बातचीत है। केवल हिंदी शब्दों को ट्रांसक्राइब करें। सिर्फ साफ पूरे वाक्य लिखो।"
-    });
-    let transcript = response.trim();
-    
-    // Filter out common noise words and very short transcripts
-    const noiseWords = ['झाल', 'कुण', 'हाँ', 'ना', 'ओ', 'आ', 'उम', 'हम', 'हम्म', 'अच्छा', 'ठीक है', 'हां', 'नहीं'];
-    let cleanTranscript = transcript;
-    for (const noise of noiseWords) {
-        cleanTranscript = cleanTranscript.replace(new RegExp(`\\b${noise}\\b`, 'gi'), '').trim();
+            const response = await groqClient.audio.transcriptions.create({
+                file: audioStream,
+                model: 'whisper-large-v3',
+                language: 'hi',
+                response_format: 'text',
+                temperature: 0.2,
+                prompt: "यह हिंदी भाषा में बातचीत है। केवल हिंदी शब्दों को ट्रांसक्राइब करें। सिर्फ साफ पूरे वाक्य लिखो।"
+            });
+            let transcript = response.trim();
+
+            const noiseWords = ['झाल', 'कुण', 'हाँ', 'ना', 'ओ', 'आ', 'उम', 'हम', 'हम्म', 'अच्छा', 'ठीक है', 'हां', 'नहीं'];
+            let cleanTranscript = transcript;
+            for (const noise of noiseWords) {
+                cleanTranscript = cleanTranscript.replace(new RegExp(`\\b${noise}\\b`, 'gi'), '').trim();
+            }
+
+            if (cleanTranscript.length < 3) {
+                console.log(`⚠️ Ignoring short/noise transcript: "${transcript}"`);
+                isProcessing = false;
+                return;
+            }
+
+            console.log(`📝 Raw transcript: ${transcript}`);
+            console.log(`📝 Cleaned transcript: ${cleanTranscript}`);
+
+            accumulatedText += cleanTranscript + ' ';
+            if (!isBotSpeaking) {
+                isBotSpeaking = true;
+                await sendToLLM(accumulatedText.trim());
+                accumulatedText = '';
+            }
+        } catch (err) {
+            console.error("❌ Groq error:", err.message);
+            if (!isBotSpeaking) {
+                await speak('क्षमा करें, फिर से बोलें।');
+            }
+        } finally {
+            isProcessing = false;
+            if (audioBuffer.length > 0 && !isClosed && Date.now() >= botSpeakingEndTime) {
+                processAudio();
+            }
+        }
     }
-    
-    // Also remove very short transcripts (likely misrecognition)
-    if (cleanTranscript.length < 3) {
-        console.log(`⚠️ Ignoring short/noise transcript: "${transcript}"`);
-        isProcessing = false;
-        return;
-    }
-    
-    console.log(`📝 Raw transcript: ${transcript}`);
-    console.log(`📝 Cleaned transcript: ${cleanTranscript}`);
-    
-    // Use cleaned transcript
-    accumulatedText += cleanTranscript + ' ';
-    if (!isBotSpeaking) {
-        isBotSpeaking = true;
-        await sendToLLM(accumulatedText.trim());
-        accumulatedText = '';
-    }
-} catch (err) {
-    console.error("❌ Groq error:", err.message);
-    if (!isBotSpeaking) {
-        await speak('क्षमा करें, फिर से बोलें।');
-    }
-}
+
     async function sendToLLM(text) {
         if (isClosed) return;
         console.log(`🤖 LLM: ${text}`);
@@ -377,106 +369,100 @@ Tum: नमस्ते दोस्त! कैसे हो? 😊
         history.push({ role: 'user', content: text });
         if (history.length > 7) history.splice(1, history.length - 7);
 
-     try {
-    const fullReply = await callNvidiaWithFallback(history);
-    if (fullReply) {
-        history.push({ role: "assistant", content: fullReply });
-        lastBotText = fullReply;
-    }
+        try {
+            const fullReply = await callNvidiaWithFallback(history);
+            if (fullReply) {
+                history.push({ role: "assistant", content: fullReply });
+                lastBotText = fullReply;
+            }
 
-    if (ws.readyState === ws.OPEN) {
-        ws.send(JSON.stringify({ type: "bot_text", text: fullReply }));
-    }
+            if (ws.readyState === ws.OPEN) {
+                ws.send(JSON.stringify({ type: "bot_text", text: fullReply }));
+            }
 
-    if (db) {
-        db.collection("conversations").insertOne({
-            sessionId: deviceId,
-            userMessage: text,
-            botReply: fullReply,
-            timestamp: new Date()
-        }).catch(e => console.error("MongoDB insert error:", e));
-    }
+            if (db) {
+                db.collection("conversations").insertOne({
+                    sessionId: deviceId,
+                    userMessage: text,
+                    botReply: fullReply,
+                    timestamp: new Date()
+                }).catch(e => console.error("MongoDB insert error:", e));
+            }
 
-    const estimatedDuration = (fullReply.length / 8) * 1000 + 1500;
-    botSpeakingEndTime = Date.now() + estimatedDuration;
-    isBotSpeaking = true;
-    console.log(`🔇 Mic muted for ${estimatedDuration}ms`);
+            const estimatedDuration = (fullReply.length / 8) * 1000 + 1500;
+            botSpeakingEndTime = Date.now() + estimatedDuration;
+            isBotSpeaking = true;
+            console.log(`🔇 Mic muted for ${estimatedDuration}ms`);
 
-    const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
-    for (const sentence of sentences) {
-        if (isClosed) break; // FIX 5: Beech me check
-        await speak(sentence.trim());
+            const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
+            for (const sentence of sentences) {
+                if (isClosed) break;
+                await speak(sentence.trim());
+            }
+        } catch (err) {
+            console.error("❌ LLM error:", err.message);
+            if (!isClosed && ws.readyState === ws.OPEN) await speak("फिर से बोलो?");
+        } finally {
+            // isBotSpeaking will be set false after speak completes
+        }
     }
-} catch (err) {
-    console.error("❌ LLM error:", err.message);
-    if (!isClosed && ws.readyState === ws.OPEN) await speak("फिर से बोलो?");
-} finally {
-    // Yahan se isBotSpeaking false mat karo, speak() karega
-}
 
     async function speak(sentence) {
-    if (!sentence.trim() || isClosed) return;
-    console.log(`🔊 TTS: ${sentence}`);
-    let pcmBuffer;
-    try {
-        const mp3Stream = await ttsStream(sentence);
-        pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
-    } catch (err) {
-        console.error('❌ TTS/FFmpeg error:', err.message);
-        return; // FFmpeg fail to kuch mat karo
-    }
-
-    const CHUNK_SIZE = 640;
-    try {
-        for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
-            // FIX 1: Har chunk se pehle check karo
-            if (isClosed ||!ws || ws.readyState!== ws.OPEN) {
-                console.log('🛑 WS closed during TTS, stopping stream');
-                break;
-            }
-            ws.send(pcmBuffer.slice(i, i + CHUNK_SIZE));
-            await new Promise(r => setTimeout(r, 20));
+        if (!sentence.trim() || isClosed) return;
+        console.log(`🔊 TTS: ${sentence}`);
+        let pcmBuffer;
+        try {
+            const mp3Stream = await ttsStream(sentence);
+            pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
+        } catch (err) {
+            console.error('❌ TTS/FFmpeg error:', err.message);
+            return;
         }
-    } catch (err) {
-        // FIX 2: Send error ko catch karo, crash mat hone do
-        console.error('❌ WS send error during TTS:', err.message);
-    } finally {
-        const delay = Math.max(0, botSpeakingEndTime - Date.now());
-        setTimeout(() => {
-            if (!isClosed) { // FIX 3: Agar close nahi hua to hi unmute
-                isBotSpeaking = false;
-                console.log("🎤 Mic unmuted after bot finished");
+
+        const CHUNK_SIZE = 640;
+        try {
+            for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
+                if (isClosed || !ws || ws.readyState !== ws.OPEN) {
+                    console.log('🛑 WS closed during TTS, stopping stream');
+                    break;
+                }
+                ws.send(pcmBuffer.slice(i, i + CHUNK_SIZE));
+                await new Promise(r => setTimeout(r, 20));
             }
-        }, delay);
-    }
-}
+        } catch (err) {
+            console.error('❌ WS send error during TTS:', err.message);
+        } finally {
+            const delay = Math.max(0, botSpeakingEndTime - Date.now());
+            setTimeout(() => {
+                if (!isClosed) {
+                    isBotSpeaking = false;
+                    console.log("🎤 Mic unmuted after bot finished");
+                }
+            }, delay);
+        }
     }
 
-    // FIX: Barge-in COMPLETELY HATAO. Hard mute.
     ws.on('message', (data) => {
         if (isClosed) return;
-        const chunk = Buffer.isBuffer(data)? data : Buffer.from(data);
-
-        // Agar bot bol raha hai to 100% ignore karo. Koi barge-in nahi.
+        const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
         if (isBotSpeaking || Date.now() < botSpeakingEndTime) {
-            return; // Bas return. Audio buffer me bhi mat daalo.
+            return;
         }
-
         audioBuffer.push(chunk);
         resetSilenceTimer();
         checkMaxDuration();
     });
 
     ws.on('close', (code, reason) => {
-    console.log(`🔌 Client disconnected: ${sessionId}, code=${code}, reason=${reason?.toString() || 'none'}`);
-    isClosed = true;
-    isBotSpeaking = false; // FIX 4: Force stop
-    botSpeakingEndTime = 0;
-    if (silenceTimer) clearTimeout(silenceTimer);
-    audioBuffer = [];
-    activeSessions.delete(deviceId);
-    setTimeout(() => sessionHistories.delete(sessionId), 5 * 60 * 1000);
-});
+        console.log(`🔌 Client disconnected: ${sessionId}, code=${code}, reason=${reason?.toString() || 'none'}`);
+        isClosed = true;
+        isBotSpeaking = false;
+        botSpeakingEndTime = 0;
+        if (silenceTimer) clearTimeout(silenceTimer);
+        audioBuffer = [];
+        activeSessions.delete(deviceId);
+        setTimeout(() => sessionHistories.delete(sessionId), 5 * 60 * 1000);
+    });
 
     ws.on('error', (err) => {
         console.error('WebSocket error:', err);
