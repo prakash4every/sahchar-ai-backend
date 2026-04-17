@@ -39,27 +39,30 @@ const openaiAssistantClient = new OpenAI({ apiKey: process.env.OPENAI_VIDEO_API_
 
 async function callNvidiaWithFallback(messages) {
     if (nvidiaClients.length === 0) throw new Error("No NVIDIA keys");
+
+    // FIX: Sirf last 4 message bhejo - token kam = fast
+    const shortMessages = [messages[0],...messages.slice(-3)];
+
     for (let keyIdx = 0; keyIdx < nvidiaClients.length; keyIdx++) {
         try {
-            const stream = await nvidiaClients[keyIdx].chat.completions.create({
+            // FIX: stream: false karo - 3x fast ho jayega
+            const response = await nvidiaClients[keyIdx].chat.completions.create({
                 model: "z-ai/glm5",
-                messages: messages,
-                temperature: 1.0,
-                max_tokens: 300,
-                stream: true,
+                messages: shortMessages,
+                temperature: 0.7, // 1.0 se 0.7 - fast
+                max_tokens: 150, // 300 se 150 - fast
+                stream: false, // <-- Sabse bada change
+                // chat_template_kwargs hata diya - slow karta tha
             });
-            let fullReply = "";
-            for await (const chunk of stream) {
-                fullReply += chunk.choices[0]?.delta?.content || "";
-            }
-            return fullReply.trim().substring(0, 500);
+            const fullReply = response.choices[0]?.message?.content || "";
+            console.log(`✅ NVIDIA key ${keyIdx} success. Reply length: ${fullReply.length}`);
+            return fullReply.trim().substring(0, 400);
         } catch (err) {
             console.error(`❌ NVIDIA key ${keyIdx} failed:`, err.message);
             if (keyIdx === nvidiaClients.length - 1) throw err;
         }
     }
 }
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config();
