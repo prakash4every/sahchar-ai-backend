@@ -304,7 +304,7 @@ app.post("/chat-assistant", async (req, res) => {
                 });
             }
 
-            res.json({ reply: fallbackReply + " (Fallback)", threadId: null });
+           res.json({ reply: fallbackReply, threadId: null });
         } catch (fallbackErr) {
             res.status(500).json({ reply: "क्षमा करें, असिस्टेंट सेवा उपलब्ध नहीं है। 🙏" });
         }
