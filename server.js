@@ -193,18 +193,7 @@ app.get("/chat", (req, res) => {
 app.post("/chat", async (req, res) => {
   const { message, sessionId } = req.body;
   const sid = sessionId || "default";
-
-  if (!message) {
-    return res.status(400).json({ reply: "Message required 🙏" });
-  }
-
-  // Check if DeepSeek API key is configured
-  if (!process.env.DEEPSEEK_API_KEY) {
-    console.error("❌ DEEPSEEK_API_KEY is missing in environment variables");
-    return res.status(500).json({ 
-      reply: "सर्वर कॉन्फ़िगरेशन त्रुटि। कृपया बाद में प्रयास करें। 🙏" 
-    });
-  }
+  if (!message) return res.status(400).json({ reply: "Message required 🙏" });
 
   try {
     const now = new Date();
@@ -215,115 +204,37 @@ app.post("/chat", async (req, res) => {
 
     const imageContext = getImageContextText(sid);
 
-    // Initialize conversation if not exists
     if (!conversations[sid]) {
-      conversations[sid] = [
-        {
-          role: "system",
-          content: `तुम 'SahcharAI' हो – एक दोस्ताना AI सहायक। तुम्हें राम प्रकाश कुमार ने बनाया है।
-
-🎯 **बातचीत का अंदाज़:**
-- छोटे, प्राकृतिक वाक्यों में बात करो।
-- बीच-बीच में "हाँ", "अच्छा", "हम्म" बोलो।
-- सवाल पूछते रहो: "और सुनाओ?", "कैसा चल रहा है?"
-- हल्की-फुल्की मज़ाक करो, इमोजी का इस्तेमाल करो (😊, 😂, 🙏)।
-
-⏰ वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
-
-👤 जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है।'
+      const history = await loadConversationFromDB(sid, 6);
+      conversations[sid] = [{
+        role: "system",
+        content: `तुम 'SahcharAI' हो – दोस्ताना AI। राम प्रकाश कुमार ने बनाया है।
+छोटे वाक्य में बात करो। इमोजी इस्तेमाल करो 😊🙏
+वर्तमान समय: ${currentDateTime}
 ${imageContext}`
-        }
-      ];
-    } else {
-      const systemMsg = conversations[sid][0];
-      if (systemMsg && systemMsg.role === "system") {
-        let newContent = systemMsg.content.replace(
-          /वर्तमान तारीख और समय है:.*?(?=\n|$)/,
-          `वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)`
-        );
-        if (imageContext && !newContent.includes("📷 **पिछली बातचीत का संदर्भ:**")) {
-          newContent += imageContext;
-        }
-        systemMsg.content = newContent;
-      }
+      },...history];
     }
 
     conversations[sid].push({ role: "user", content: message });
-
-    // Keep only last 10 messages to avoid token overflow
-    if (conversations[sid].length > 12) {
-      conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-10)];
+    if (conversations[sid].length > 9) {
+      conversations[sid] = [conversations[sid][0],...conversations[sid].slice(-8)];
     }
 
-    console.log(`📤 DeepSeek request for session ${sid}: ${conversations[sid].length} messages`);
-
-    // Create an AbortController for timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
-
-    const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: conversations[sid],
-        temperature: 1.2,
-        max_tokens: 500,
-        top_p: 0.95
-      }),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      console.error("❌ DeepSeek API error:", response.status, data);
-      throw new Error(data.error?.message || `HTTP ${response.status}`);
-    }
-
-    let botReply = data.choices?.[0]?.message?.content;
-    if (!botReply) {
-      throw new Error("Empty response from DeepSeek");
-    }
-
-    // Clean up the reply (remove any formal closing if present)
-    botReply = botReply.replace(/जय भीम, नमो बुद्धाय.*$/i, '').trim();
-    if (botReply.length > 500) botReply = botReply.substring(0, 500) + "...";
-
+    const botReply = await callNvidiaWithFallback(conversations[sid]);
     conversations[sid].push({ role: "assistant", content: botReply });
 
-    // Save to MongoDB (non-blocking)
-    if (db) {
-      db.collection('conversations').insertOne({
-        sessionId: sid,
-        userMessage: message,
-        botReply: botReply,
-        timestamp: new Date()
-      }).catch(e => console.error("MongoDB insert error:", e.message));
-    }
+    if (db) db.collection('conversations').insertOne({
+      sessionId: sid, userMessage: message, botReply: botReply, timestamp: new Date()
+    }).catch(e => console.error("DB error:", e.message));
 
     res.json({ reply: botReply });
 
   } catch (error) {
     console.error("❌ /chat error:", error.message);
-    
-    // Fallback response – avoid generic 500
-    let fallbackReply = "क्षमा करें, अभी सेवा व्यस्त है। कृपया थोड़ी देर बाद प्रयास करें। 🙏";
-    
-    // If it's a timeout, give a different message
-    if (error.name === 'AbortError') {
-      fallbackReply = "सर्वर समय सीमा समाप्त। कृपया पुनः प्रयास करें। 🙏";
-    }
-    
-    res.status(500).json({ reply: fallbackReply });
+    res.status(500).json({ reply: "क्षमा करें, अभी सेवा व्यस्त है। 🙏" });
   }
 });
-// ==================== OPENAI ASSISTANT – BUDDHA CHARACTER (FIXED) ====================
+
 // ==================== OPENAI ASSISTANT with persistent thread per session ====================
 app.post("/chat-assistant", async (req, res) => {
     const { message, sessionId } = req.body;
