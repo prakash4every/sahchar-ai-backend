@@ -86,7 +86,7 @@ async function callNvidiaWithFallback(messages) {
                 timeout: 30000
             });
             const stream = await nvidiaClient.chat.completions.create({
-                model: "meta/llama3-70b-instruct", // FIX: Sahi model naam
+                model: "meta/llama3-70b-instruct", // STABLE MODEL
                 messages: messages,
                 stream: true,
                 temperature: 0.7,
@@ -102,7 +102,6 @@ async function callNvidiaWithFallback(messages) {
         } catch (err) {
             console.error(`❌ NVIDIA key ${keyIdx} failed:`, err.message);
             if (keyIdx === nvidiaApiKeys.length - 1) {
-                // Last key bhi fail - DeepSeek fallback
                 console.log("🔄 Falling back to DeepSeek...");
                 const deepseekResponse = await deepseekClient.chat.completions.create({
                     model: "deepseek-chat",
@@ -217,7 +216,7 @@ wss.on('connection', async (ws, req) => {
 
     if (activeSessions.has(deviceId)) {
         console.log(`⚠️ Duplicate connection for ${deviceId}, closing old`);
-        activeSessions.get(deviceId).close();
+        try { activeSessions.get(deviceId).close(); } catch {}
     }
     activeSessions.set(deviceId, ws);
 
@@ -244,6 +243,19 @@ wss.on('connection', async (ws, req) => {
     const BYTES_PER_SECOND = SAMPLE_RATE * 2;
     const MAX_CHUNK_BYTES = BYTES_PER_SECOND * 2;
     const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.5;
+
+    function safeSend(data) {
+        if (!isClosed && ws && ws.readyState === ws.OPEN) {
+            try {
+                ws.send(data);
+                return true;
+            } catch (err) {
+                console.error('❌ WS send error:', err.message);
+                return false;
+            }
+        }
+        return false;
+    }
 
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
@@ -335,6 +347,9 @@ wss.on('connection', async (ws, req) => {
             console.log(`📝 Raw transcript: ${transcript}`);
             console.log(`📝 Cleaned transcript: ${cleanTranscript}`);
 
+            // FIX 1: User ka bola hua text frontend ko bhejo
+            safeSend(JSON.stringify({ type: "user_text", text: cleanTranscript }));
+
             accumulatedText += cleanTranscript + ' ';
             if (!isBotSpeaking) {
                 isBotSpeaking = true;
@@ -391,9 +406,7 @@ Tum: नमस्ते दोस्त! कैसे हो? 😊
                 lastBotText = fullReply;
             }
 
-            if (ws.readyState === ws.OPEN) {
-                ws.send(JSON.stringify({ type: "bot_text", text: fullReply }));
-            }
+            safeSend(JSON.stringify({ type: "bot_text", text: fullReply }));
 
             if (db) {
                 db.collection("conversations").insertOne({
@@ -416,9 +429,7 @@ Tum: नमस्ते दोस्त! कैसे हो? 😊
             }
         } catch (err) {
             console.error("❌ LLM error:", err.message);
-            if (!isClosed && ws.readyState === ws.OPEN) await speak("फिर से बोलो?");
-        } finally {
-            // isBotSpeaking will be set to false inside speak() after TTS finishes
+            if (!isClosed) await speak("फिर से बोलो?");
         }
     }
 
@@ -437,11 +448,10 @@ Tum: नमस्ते दोस्त! कैसे हो? 😊
         const CHUNK_SIZE = 640;
         try {
             for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
-                if (isClosed ||!ws || ws.readyState!== ws.OPEN) {
+                if (isClosed ||!safeSend(pcmBuffer.slice(i, i + CHUNK_SIZE))) {
                     console.log('🛑 WS closed during TTS, stopping stream');
                     break;
                 }
-                ws.send(pcmBuffer.slice(i, i + CHUNK_SIZE));
                 await new Promise(r => setTimeout(r, 20));
             }
         } catch (err) {
