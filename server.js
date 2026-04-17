@@ -272,16 +272,14 @@ app.post("/chat-assistant", async (req, res) => {
 
 👤 जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है।'`;
 
-        // Get or create thread for this session
-        let threadId = assistantThreads.get(sid);
-        if (!threadId) {
-            const thread = await openai.beta.threads.create();
-            threadId = thread.id;
-            assistantThreads.set(sid, threadId);
-            console.log(`✅ Created new thread ${threadId} for session ${sid}`);
-        } else {
-            console.log(`📌 Reusing thread ${threadId} for session ${sid}`);
-        }
+       // /chat-assistant ke andar ye change karo
+let threadId = assistantThreads.get(sid); // sid = sessionId
+if (!threadId) {
+    const thread = await openaiAssistantClient.beta.threads.create();
+    threadId = thread.id;
+    assistantThreads.set(sid, threadId);
+    console.log(`✅ New thread ${threadId} for ${sid}`);
+}
 
         await openai.beta.threads.messages.create(threadId, {
             role: "user",
