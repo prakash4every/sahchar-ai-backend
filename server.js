@@ -193,7 +193,7 @@ app.post("/chat", async (req, res) => {
     }
 });
 
-// ==================== 2. SAHCHAR ASSISTANT - FIXED MEMORY + TIMEOUT ====================
+// ==================== 2. SAHCHAR ASSISTANT - TIMEOUT FIX ====================
 app.post("/chat-assistant", async (req, res) => {
     const { message, sessionId } = req.body;
     const sid = sessionId || "default";
@@ -205,17 +205,21 @@ app.post("/chat-assistant", async (req, res) => {
 
     try {
         const now = new Date();
-        const currentDateTime = now.toLocaleString('hi-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata' });
+        const currentDateTime = now.toLocaleString('hi-IN', {
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+            hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
+        });
 
         let threadId = assistantThreads.get(sid);
+
         if (!threadId) {
             const thread = await openaiAssistantClient.beta.threads.create();
             threadId = thread.id;
             assistantThreads.set(sid, threadId);
             console.log(`✅ New thread ${threadId} for ${sid}`);
 
-            // FIX: DB history ko thread me load karo
-            const history = await loadConversationFromDB(sid, 6);
+            // FIX 1: DB history ko thread me load karo - Sirf 3 exchange = 6 messages
+            const history = await loadConversationFromDB(sid, 3);
             for (const msg of history) {
                 await openaiAssistantClient.beta.threads.messages.create(threadId, {
                     role: msg.role,
@@ -225,46 +229,87 @@ app.post("/chat-assistant", async (req, res) => {
             console.log(`📚 Loaded ${history.length} messages to thread`);
         }
 
-        await openaiAssistantClient.beta.threads.messages.create(threadId, { role: "user", content: message });
+        await openaiAssistantClient.beta.threads.messages.create(threadId, {
+            role: "user",
+            content: message
+        });
 
         const run = await openaiAssistantClient.beta.threads.runs.create(threadId, {
             assistant_id: assistantId,
-            instructions: `वर्तमान समय: ${currentDateTime}. छोटे जवाब दो।`,
+            instructions: `वर्तमान समय: ${currentDateTime}. छोटे जवाब दो, max 2 वाक्य।`,
             max_completion_tokens: 120
         });
 
-        // FIX: 60 sec timeout
-        let runStatus = run, attempts = 0;
-        while (runStatus.status!== "completed" && runStatus.status!== "failed" && attempts < 60) {
+        // FIX 2: 90 second timeout + better error handling
+        let runStatus = run;
+        let attempts = 0;
+        const maxAttempts = 90; // 90 seconds
+
+        while (attempts < maxAttempts) {
             await new Promise(resolve => setTimeout(resolve, 1000));
             runStatus = await openaiAssistantClient.beta.threads.runs.retrieve(threadId, run.id);
+
+            if (runStatus.status === "completed") break;
+            if (runStatus.status === "failed") {
+                console.error(`❌ Run failed:`, runStatus.last_error);
+                throw new Error(`Assistant failed: ${runStatus.last_error?.message || 'Unknown error'}`);
+            }
+            if (runStatus.status === "cancelled" || runStatus.status === "expired") {
+                throw new Error(`Assistant ${runStatus.status}`);
+            }
             attempts++;
         }
 
-        if (runStatus.status!== "completed") throw new Error(`Assistant timeout after 60s. Status: ${runStatus.status}`);
+        if (runStatus.status!== "completed") {
+            throw new Error(`Assistant timeout after ${maxAttempts}s. Status: ${runStatus.status}`);
+        }
 
         const messages = await openaiAssistantClient.beta.threads.messages.list(threadId, { limit: 1 });
         let reply = messages.data[0]?.content[0]?.text?.value || "कोई जवाब नहीं।";
         reply = reply.replace(/जय भीम, नमो बुद्धाय.*$/i, '').trim().substring(0, 500);
 
-        // DB me save karo
+        // DB me save karo taaki agle baar yaad rahe
         if (db) {
             await db.collection('conversations').insertOne({
                 sessionId: sid,
                 userMessage: message,
                 botReply: reply,
                 timestamp: new Date()
-            });
+            }).catch(e => console.error("DB save error:", e));
         }
 
+        console.log(`✅ Assistant reply for session ${sid}: "${reply.substring(0, 50)}..."`);
         res.json({ reply, threadId });
 
     } catch (error) {
-        console.error("❌ Assistant API error:", error);
-        res.status(500).json({ reply: "क्षमा करें, असिस्टेंट सेवा उपलब्ध नहीं है। 🙏" });
+        console.error("❌ Assistant API error:", error.message);
+
+        // FIX 3: Fallback to NVIDIA if Assistant fails
+        try {
+            console.log("🔄 Falling back to NVIDIA for Assistant...");
+            const history = await loadConversationFromDB(sid, 3);
+            const messages = [
+                { role: "system", content: "You are Sahchar Assistant. Reply in Hindi, short 1-2 sentences." },
+               ...history,
+                { role: "user", content: message }
+            ];
+            const fallbackReply = await callNvidiaWithFallback(messages);
+
+            if (db) {
+                await db.collection('conversations').insertOne({
+                    sessionId: sid,
+                    userMessage: message,
+                    botReply: fallbackReply,
+                    timestamp: new Date()
+                });
+            }
+
+            res.json({ reply: fallbackReply + " (Fallback)", threadId: null });
+        } catch (fallbackErr) {
+            res.status(500).json({ reply: "क्षमा करें, असिस्टेंट सेवा उपलब्ध नहीं है। 🙏" });
+        }
     }
 });
-
 // ==================== 3. SAMBANOVA - FIXED MEMORY ====================
 app.post("/chat-sambanova", async (req, res) => {
     const { message, sessionId } = req.body;
