@@ -45,9 +45,9 @@ async function loadConversationFromDB(deviceId, limit = 10) {
     try {
         const convCollection = db.collection('conversations');
         const messages = await convCollection.find({ sessionId: deviceId })
-           .sort({ timestamp: -1 })
-           .limit(limit)
-           .toArray();
+          .sort({ timestamp: -1 })
+          .limit(limit)
+          .toArray();
         const history = [];
         messages.reverse().forEach(msg => {
             history.push({ role: "user", content: msg.userMessage });
@@ -146,20 +146,20 @@ function convertMp3StreamToPcm16k(mp3Stream) {
     return new Promise((resolve, reject) => {
         const chunks = [];
         ffmpeg(mp3Stream)
-           .audioCodec('pcm_s16le')
-           .format('s16le')
-           .audioChannels(1)
-           .audioFrequency(16000)
-           .outputOptions('-ar 16000')
-           .outputOptions('-ac 1')
-           .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
-           .on('end', () => resolve(Buffer.concat(chunks)))
-           .pipe()
-           .on('data', (chunk) => chunks.push(chunk));
+          .audioCodec('pcm_s16le')
+          .format('s16le')
+          .audioChannels(1)
+          .audioFrequency(16000)
+          .outputOptions('-ar 16000')
+          .outputOptions('-ac 1')
+          .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
+          .on('end', () => resolve(Buffer.concat(chunks)))
+          .pipe()
+          .on('data', (chunk) => chunks.push(chunk));
     });
 }
 
-// ==================== Groq Whisper ====================
+// ==================== Groq Whisper - HINDI FIX ====================
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const groqClient = new OpenAI({
     apiKey: GROQ_API_KEY,
@@ -226,7 +226,7 @@ wss.on('connection', async (ws, req) => {
     const pastMessages = await loadConversationFromDB(deviceId, 3);
     const history = [
         { role: 'system', content: '' },
-       ...pastMessages
+      ...pastMessages
     ];
     sessionHistories.set(sessionId, history);
 
@@ -244,6 +244,7 @@ wss.on('connection', async (ws, req) => {
     const MAX_CHUNK_BYTES = BYTES_PER_SECOND * 2;
     const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.5;
 
+    // FIX 2: Safe send function - Crash proof
     function safeSend(data) {
         if (!isClosed && ws && ws.readyState === ws.OPEN) {
             try {
@@ -322,23 +323,25 @@ wss.on('connection', async (ws, req) => {
         const audioStream = await bufferToReadableStream(wavBuffer);
 
         try {
+            // FIX 1: Better Hindi Whisper prompt
             const response = await groqClient.audio.transcriptions.create({
                 file: audioStream,
                 model: 'whisper-large-v3',
-                language: 'hi',
+                language: 'hi', // Force Hindi
                 response_format: 'text',
-                temperature: 0.2,
-                prompt: "यह हिंदी भाषा में बातचीत है। केवल हिंदी शब्दों को ट्रांसक्राइब करें। सिर्फ साफ पूरे वाक्य लिखो।"
+                temperature: 0.0, // 0.0 = most accurate
+                prompt: "यह हिंदी में बातचीत है। शब्द: नमस्ते, हेलो, गुड इवनिंग, शुभ संध्या, आज, दिन, कैसा, अच्छा, बुरा, तुम, मैं, क्या, क्यों, कैसे, कहाँ, कब, कौन, धन्यवाद, शुक्रिया, अलविदा, फिर मिलेंगे।"
             });
             let transcript = response.trim();
 
-            const noiseWords = ['झाल', 'कुण', 'हाँ', 'ना', 'ओ', 'आ', 'उम', 'हम', 'हम्म', 'अच्छा', 'ठीक है', 'हां', 'नहीं'];
+            // Improved noise filter - sirf bilkul bekar words hatao
+            const noiseWords = ['उम', 'अह', 'ओह', 'हम'];
             let cleanTranscript = transcript;
             for (const noise of noiseWords) {
                 cleanTranscript = cleanTranscript.replace(new RegExp(`\\b${noise}\\b`, 'gi'), '').trim();
             }
 
-            if (cleanTranscript.length < 3) {
+            if (cleanTranscript.length < 2) {
                 console.log(`⚠️ Ignoring short/noise transcript: "${transcript}"`);
                 isProcessing = false;
                 return;
@@ -347,7 +350,7 @@ wss.on('connection', async (ws, req) => {
             console.log(`📝 Raw transcript: ${transcript}`);
             console.log(`📝 Cleaned transcript: ${cleanTranscript}`);
 
-            // FIX 1: User ka bola hua text frontend ko bhejo
+            // Send user text to frontend
             safeSend(JSON.stringify({ type: "user_text", text: cleanTranscript }));
 
             accumulatedText += cleanTranscript + ' ';
