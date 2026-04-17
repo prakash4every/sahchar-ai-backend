@@ -211,22 +211,12 @@ app.post("/chat-assistant", async (req, res) => {
         });
 
         let threadId = assistantThreads.get(sid);
-
         if (!threadId) {
             const thread = await openaiAssistantClient.beta.threads.create();
             threadId = thread.id;
             assistantThreads.set(sid, threadId);
             console.log(`✅ New thread ${threadId} for ${sid}`);
-
-            // FIX 1: DB history ko thread me load karo - Sirf 3 exchange = 6 messages
-            //const history = await loadConversationFromDB(sid, 3);
-            //for (const msg of history) {
-                //await openaiAssistantClient.beta.threads.messages.create(threadId, {
-                    //role: msg.role,
-                    //content: msg.content
-                //});
-            //}
-            //console.log(`📚 Loaded ${history.length} messages to thread`);
+            // FIX: History load mat karo - bahut slow hai
         }
 
         await openaiAssistantClient.beta.threads.messages.create(threadId, {
@@ -236,26 +226,21 @@ app.post("/chat-assistant", async (req, res) => {
 
         const run = await openaiAssistantClient.beta.threads.runs.create(threadId, {
             assistant_id: assistantId,
-            instructions: `वर्तमान समय: ${currentDateTime}. छोटे जवाब दो, max 2 वाक्य।`,
-            max_completion_tokens: 120
+            instructions: `वर्तमान समय: ${currentDateTime}. 1 वाक्य में जवाब दो।`,
+            max_completion_tokens: 80 // Chota reply = fast
         });
 
-        // FIX 2: 90 second timeout + better error handling
+        // 30 sec timeout - Agar itne me nahi aaya to bekar
         let runStatus = run;
         let attempts = 0;
-        const maxAttempts = 90; // 90 seconds
+        const maxAttempts = 30;
 
         while (attempts < maxAttempts) {
             await new Promise(resolve => setTimeout(resolve, 1000));
             runStatus = await openaiAssistantClient.beta.threads.runs.retrieve(threadId, run.id);
-
             if (runStatus.status === "completed") break;
-            if (runStatus.status === "failed") {
-                console.error(`❌ Run failed:`, runStatus.last_error);
-                throw new Error(`Assistant failed: ${runStatus.last_error?.message || 'Unknown error'}`);
-            }
-            if (runStatus.status === "cancelled" || runStatus.status === "expired") {
-                throw new Error(`Assistant ${runStatus.status}`);
+            if (["failed", "cancelled", "expired"].includes(runStatus.status)) {
+                throw new Error(`Assistant ${runStatus.status}: ${runStatus.last_error?.message || ''}`);
             }
             attempts++;
         }
@@ -268,13 +253,9 @@ app.post("/chat-assistant", async (req, res) => {
         let reply = messages.data[0]?.content[0]?.text?.value || "कोई जवाब नहीं।";
         reply = reply.replace(/जय भीम, नमो बुद्धाय.*$/i, '').trim().substring(0, 500);
 
-        // DB me save karo taaki agle baar yaad rahe
         if (db) {
             await db.collection('conversations').insertOne({
-                sessionId: sid,
-                userMessage: message,
-                botReply: reply,
-                timestamp: new Date()
+                sessionId: sid, userMessage: message, botReply: reply, timestamp: new Date()
             }).catch(e => console.error("DB save error:", e));
         }
 
@@ -283,30 +264,26 @@ app.post("/chat-assistant", async (req, res) => {
 
     } catch (error) {
         console.error("❌ Assistant API error:", error.message);
-
-        // FIX 3: Fallback to NVIDIA if Assistant fails
+        // Fallback to NVIDIA - Ab (Fallback) text nahi jayega
         try {
             console.log("🔄 Falling back to NVIDIA for Assistant...");
             const history = await loadConversationFromDB(sid, 3);
             const messages = [
-                { role: "system", content: "You are Sahchar Assistant. Reply in Hindi, short 1-2 sentences." },
-               ...history,
+                { role: "system", content: "You are Sahchar Assistant. Reply in Hindi, 1 short sentence." },
+              ...history,
                 { role: "user", content: message }
             ];
             const fallbackReply = await callNvidiaWithFallback(messages);
 
             if (db) {
                 await db.collection('conversations').insertOne({
-                    sessionId: sid,
-                    userMessage: message,
-                    botReply: fallbackReply,
-                    timestamp: new Date()
+                    sessionId: sid, userMessage: message, botReply: fallbackReply, timestamp: new Date()
                 });
             }
 
-           res.json({ reply: fallbackReply, threadId: null });
+            res.json({ reply: fallbackReply, threadId: null }); // (Fallback) hata diya
         } catch (fallbackErr) {
-            res.status(500).json({ reply: "क्षमा करें, असिस्टेंट सेवा उपलब्ध नहीं है। 🙏" });
+            res.status(500).json({ reply: "क्षमा करें, सेवा उपलब्ध नहीं है। 🙏" });
         }
     }
 });
