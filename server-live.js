@@ -41,13 +41,13 @@ if (process.env.MONGODB_URI) {
 }
 
 async function loadConversationFromDB(deviceId, limit = 10) {
-    if (!db || !deviceId) return [];
+    if (!db ||!deviceId) return [];
     try {
         const convCollection = db.collection('conversations');
         const messages = await convCollection.find({ sessionId: deviceId })
-            .sort({ timestamp: -1 })
-            .limit(limit)
-            .toArray();
+           .sort({ timestamp: -1 })
+           .limit(limit)
+           .toArray();
         const history = [];
         messages.reverse().forEach(msg => {
             history.push({ role: "user", content: msg.userMessage });
@@ -61,13 +61,19 @@ async function loadConversationFromDB(deviceId, limit = 10) {
     }
 }
 
-// ==================== NVIDIA NIM ====================
+// ==================== NVIDIA NIM + DEEPSEEK FALLBACK ====================
 const nvidiaApiKeys = [
     process.env.NGC_API_KEY_1,
     process.env.NGC_API_KEY_2,
     process.env.NGC_API_KEY_3,
     process.env.NGC_API_KEY
-].filter(key => key && key.trim() !== "");
+].filter(key => key && key.trim()!== "");
+
+const deepseekClient = new OpenAI({
+    apiKey: process.env.DEEPSEEK_API_KEY,
+    baseURL: 'https://api.deepseek.com/v1',
+    timeout: 15000
+});
 
 async function callNvidiaWithFallback(messages) {
     if (nvidiaApiKeys.length === 0) throw new Error("No NVIDIA keys");
@@ -80,7 +86,7 @@ async function callNvidiaWithFallback(messages) {
                 timeout: 30000
             });
             const stream = await nvidiaClient.chat.completions.create({
-                model: "meta/llama-3.1-70b-instruct",
+                model: "meta/llama3-70b-instruct", // FIX: Sahi model naam
                 messages: messages,
                 stream: true,
                 temperature: 0.7,
@@ -95,7 +101,17 @@ async function callNvidiaWithFallback(messages) {
             return fullReply;
         } catch (err) {
             console.error(`❌ NVIDIA key ${keyIdx} failed:`, err.message);
-            if (keyIdx === nvidiaApiKeys.length - 1) throw err;
+            if (keyIdx === nvidiaApiKeys.length - 1) {
+                // Last key bhi fail - DeepSeek fallback
+                console.log("🔄 Falling back to DeepSeek...");
+                const deepseekResponse = await deepseekClient.chat.completions.create({
+                    model: "deepseek-chat",
+                    messages: messages,
+                    temperature: 0.7,
+                    max_tokens: 100
+                });
+                return deepseekResponse.choices[0]?.message?.content || "क्षमा करें।";
+            }
         }
     }
     throw new Error("All NVIDIA keys failed");
@@ -131,16 +147,16 @@ function convertMp3StreamToPcm16k(mp3Stream) {
     return new Promise((resolve, reject) => {
         const chunks = [];
         ffmpeg(mp3Stream)
-            .audioCodec('pcm_s16le')
-            .format('s16le')
-            .audioChannels(1)
-            .audioFrequency(16000)
-            .outputOptions('-ar 16000')
-            .outputOptions('-ac 1')
-            .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
-            .on('end', () => resolve(Buffer.concat(chunks)))
-            .pipe()
-            .on('data', (chunk) => chunks.push(chunk));
+           .audioCodec('pcm_s16le')
+           .format('s16le')
+           .audioChannels(1)
+           .audioFrequency(16000)
+           .outputOptions('-ar 16000')
+           .outputOptions('-ac 1')
+           .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
+           .on('end', () => resolve(Buffer.concat(chunks)))
+           .pipe()
+           .on('data', (chunk) => chunks.push(chunk));
     });
 }
 
@@ -211,7 +227,7 @@ wss.on('connection', async (ws, req) => {
     const pastMessages = await loadConversationFromDB(deviceId, 3);
     const history = [
         { role: 'system', content: '' },
-        ...pastMessages
+       ...pastMessages
     ];
     sessionHistories.set(sessionId, history);
 
@@ -222,17 +238,17 @@ wss.on('connection', async (ws, req) => {
     let silenceTimer = null;
     let isClosed = false;
     let lastBotText = "";
-    let accumulatedText = "";  // Missing variable added
+    let accumulatedText = "";
 
     const SAMPLE_RATE = 16000;
     const BYTES_PER_SECOND = SAMPLE_RATE * 2;
-    const MAX_CHUNK_BYTES = BYTES_PER_SECOND * 2; // 2 seconds
-    const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.5; // 0.5 seconds
+    const MAX_CHUNK_BYTES = BYTES_PER_SECOND * 2;
+    const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.5;
 
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
         silenceTimer = setTimeout(() => {
-            if (audioBuffer.length > 0 && !isProcessing && !isClosed) {
+            if (audioBuffer.length > 0 &&!isProcessing &&!isClosed) {
                 console.log('Silence detected, processing...');
                 processAudio();
             }
@@ -241,22 +257,10 @@ wss.on('connection', async (ws, req) => {
 
     function checkMaxDuration() {
         const totalBytes = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
-        if (totalBytes >= MAX_CHUNK_BYTES && !isProcessing && audioBuffer.length > 0 && !isClosed) {
+        if (totalBytes >= MAX_CHUNK_BYTES &&!isProcessing && audioBuffer.length > 0 &&!isClosed) {
             console.log('Max 2s reached, processing...');
             processAudio();
         }
-    }
-
-    function isSimilarToLastBotText(text) {
-        if (!lastBotText || text.length < 3) return false;
-        const botKeywords = lastBotText.split(' ').slice(-5).join(' ').replace(/[।!?😊🤔,]/g, '').toLowerCase();
-        const cleanText = text.replace(/[।!?😊🤔,]/g, '').toLowerCase();
-        const words = cleanText.split(' ');
-        let matchCount = 0;
-        for (const word of words) {
-            if (botKeywords.includes(word)) matchCount++;
-        }
-        return matchCount / words.length > 0.7;
     }
 
     async function processAudio() {
@@ -344,7 +348,7 @@ wss.on('connection', async (ws, req) => {
             }
         } finally {
             isProcessing = false;
-            if (audioBuffer.length > 0 && !isClosed && Date.now() >= botSpeakingEndTime) {
+            if (audioBuffer.length > 0 &&!isClosed && Date.now() >= botSpeakingEndTime) {
                 processAudio();
             }
         }
@@ -433,7 +437,7 @@ Tum: नमस्ते दोस्त! कैसे हो? 😊
         const CHUNK_SIZE = 640;
         try {
             for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
-                if (isClosed || !ws || ws.readyState !== ws.OPEN) {
+                if (isClosed ||!ws || ws.readyState!== ws.OPEN) {
                     console.log('🛑 WS closed during TTS, stopping stream');
                     break;
                 }
@@ -455,7 +459,7 @@ Tum: नमस्ते दोस्त! कैसे हो? 😊
 
     ws.on('message', (data) => {
         if (isClosed) return;
-        const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        const chunk = Buffer.isBuffer(data)? data : Buffer.from(data);
 
         if (isBotSpeaking || Date.now() < botSpeakingEndTime) {
             return;
