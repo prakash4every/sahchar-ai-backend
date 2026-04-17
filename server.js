@@ -252,12 +252,11 @@ if (!threadId) {
             content: message,
         });
 
-        const run = await openai.beta.threads.runs.create(threadId, {
-            assistant_id: assistantId,
-            instructions: instructionsWithTime,
-            temperature: 0.7,
-            max_tokens: 500
-        });
+        const run = await openaiAssistantClient.beta.threads.runs.create(threadId, {
+    assistant_id: assistantId,
+    instructions: instructionsWithTime,
+    max_completion_tokens: 300 
+});
 
         let runStatus = run;
         let attempts = 0;
