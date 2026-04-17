@@ -72,40 +72,26 @@ if (nvidiaApiKeys.length === 0) {
 }
 
 async function callNvidiaWithFallback(messages) {
-    if (nvidiaApiKeys.length === 0) throw new Error("No NVIDIA keys");
-    for (let keyIdx = 0; keyIdx < nvidiaApiKeys.length; keyIdx++) {
-        const apiKey = nvidiaApiKeys[keyIdx];
+    if (nvidiaClients.length === 0) throw new Error("No NVIDIA keys");
+    for (let keyIdx = 0; keyIdx < nvidiaClients.length; keyIdx++) {
         try {
-            const nvidiaClient = new OpenAI({
-                apiKey: apiKey,
-                baseURL: 'https://integrate.api.nvidia.com/v1',
-                timeout: 20000   // 20 seconds
-            });
-            const stream = await nvidiaClient.chat.completions.create({
+            const stream = await nvidiaClients[keyIdx].chat.completions.create({
                 model: "z-ai/glm5",
                 messages: messages,
-                temperature: 1.2,
-                top_p: 0.95,
-                frequency_penalty: 0.3,
-                presence_penalty: 0.3,
-                max_tokens: 200,        // reduced from 2048
+                temperature: 1.0,
+                max_tokens: 300,
                 stream: true,
-                chat_template_kwargs: { enable_thinking: false, clear_thinking: false }
             });
             let fullReply = "";
             for await (const chunk of stream) {
                 fullReply += chunk.choices[0]?.delta?.content || "";
             }
-            fullReply = fullReply.trim();
-            if (fullReply.length > 800) fullReply = fullReply.substring(0, 800) + "...";
-            console.log(`✅ NVIDIA key ${keyIdx} success. Reply length: ${fullReply.length}`);
-            return fullReply;
+            return fullReply.trim().substring(0, 500);
         } catch (err) {
             console.error(`❌ NVIDIA key ${keyIdx} failed:`, err.message);
-            if (keyIdx === nvidiaApiKeys.length - 1) throw err;
+            if (keyIdx === nvidiaClients.length - 1) throw err;
         }
     }
-    throw new Error("All NVIDIA keys failed");
 }
 
 const __filename = fileURLToPath(import.meta.url);
