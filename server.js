@@ -8,9 +8,26 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import axios from 'axios';
-import OpenAI from 'openai';
-const assistantThreads = new Map(); // <-- Ye line add karo
+import axios from 'axios';import OpenAI from 'openai';
+const assistantThreads = new Map();
+
+// ========== FAST CLIENTS - EK BAAR BANAO ==========
+const nvidiaApiKeys = [
+    process.env.NGC_API_KEY_1,
+    process.env.NGC_API_KEY_2,
+    process.env.NGC_API_KEY_3,
+    process.env.NGC_API_KEY
+].filter(key => key && key.trim()!== "");
+
+const nvidiaClients = []; // <-- Ye line add karni zaroori hai
+nvidiaApiKeys.forEach(key => {
+    nvidiaClients.push(new OpenAI({
+        apiKey: key,
+        baseURL: 'https://integrate.api.nvidia.com/v1',
+        timeout: 15000
+    }));
+});
+
 const deepseekClient = new OpenAI({
     apiKey: process.env.DEEPSEEK_API_KEY,
     baseURL: 'https://api.deepseek.com/v1',
@@ -19,39 +36,6 @@ const deepseekClient = new OpenAI({
 
 const openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const openaiAssistantClient = new OpenAI({ apiKey: process.env.OPENAI_VIDEO_API_KEY });
-
-// ========== FALLBACK & RETRY HELPERS ==========
-const API_TIMEOUT_MS = 30000;
-const MAX_RETRIES = 2;
-const RETRY_DELAY_MS = 1000;
-
-const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-async function withRetry(fn, context) {
-    let lastError;
-    for (let i = 0; i <= MAX_RETRIES; i++) {
-        try {
-            return await fn();
-        } catch (error) {
-            lastError = error;
-            console.error(`❌ ${context} attempt ${i+1} failed:`, error.message);
-            if (i < MAX_RETRIES) await delay(RETRY_DELAY_MS * (i + 1));
-        }
-    }
-    throw lastError;
-}
-
-// NVIDIA API Keys fallback
-const nvidiaApiKeys = [
-    process.env.NGC_API_KEY_1,
-    process.env.NGC_API_KEY_2,
-    process.env.NGC_API_KEY_3,
-    process.env.NGC_API_KEY
-].filter(key => key && key.trim() !== "");
-
-if (nvidiaApiKeys.length === 0) {
-    console.warn("⚠️ No NGC_API_KEY_* defined. NVIDIA NIM will not work.");
-}
 
 async function callNvidiaWithFallback(messages) {
     if (nvidiaClients.length === 0) throw new Error("No NVIDIA keys");
