@@ -10,6 +10,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import axios from 'axios';
 import OpenAI from 'openai';
+const assistantThreads = new Map();
 
 // ========== FALLBACK & RETRY HELPERS ==========
 const API_TIMEOUT_MS = 30000;
@@ -46,35 +47,39 @@ if (nvidiaApiKeys.length === 0) {
 
 async function callNvidiaWithFallback(messages) {
     if (nvidiaApiKeys.length === 0) throw new Error("No NVIDIA keys");
-    const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("NVIDIA timeout after 5s")), 5000)
-    );
     for (let keyIdx = 0; keyIdx < nvidiaApiKeys.length; keyIdx++) {
         const apiKey = nvidiaApiKeys[keyIdx];
         try {
-            const nvidiaClient = new OpenAI({ apiKey, baseURL: 'https://integrate.api.nvidia.com/v1', timeout: 5000 });
-            const streamPromise = (async () => {
-                const stream = await nvidiaClient.chat.completions.create({
-                    model: "z-ai/glm5",
-                    messages: messages,
-                    temperature: 1.2,
-                    max_tokens: 200,
-                    stream: true,
-                });
-                let fullReply = "";
-                for await (const chunk of stream) {
-                    fullReply += chunk.choices[0]?.delta?.content || "";
-                }
-                return fullReply.trim();
-            })();
-            const reply = await Promise.race([streamPromise, timeoutPromise]);
-            if (reply && reply.length > 0) return reply;
+            const nvidiaClient = new OpenAI({
+                apiKey: apiKey,
+                baseURL: 'https://integrate.api.nvidia.com/v1',
+                timeout: 20000   // 20 seconds
+            });
+            const stream = await nvidiaClient.chat.completions.create({
+                model: "z-ai/glm5",
+                messages: messages,
+                temperature: 1.2,
+                top_p: 0.95,
+                frequency_penalty: 0.3,
+                presence_penalty: 0.3,
+                max_tokens: 200,        // reduced from 2048
+                stream: true,
+                chat_template_kwargs: { enable_thinking: false, clear_thinking: false }
+            });
+            let fullReply = "";
+            for await (const chunk of stream) {
+                fullReply += chunk.choices[0]?.delta?.content || "";
+            }
+            fullReply = fullReply.trim();
+            if (fullReply.length > 800) fullReply = fullReply.substring(0, 800) + "...";
+            console.log(`✅ NVIDIA key ${keyIdx} success. Reply length: ${fullReply.length}`);
+            return fullReply;
         } catch (err) {
             console.error(`❌ NVIDIA key ${keyIdx} failed:`, err.message);
             if (keyIdx === nvidiaApiKeys.length - 1) throw err;
         }
     }
-    throw new Error("All NVIDIA keys failed or timed out");
+    throw new Error("All NVIDIA keys failed");
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -307,92 +312,91 @@ ${imageContext}`
   }
 });
 // ==================== OPENAI ASSISTANT – BUDDHA CHARACTER (FIXED) ====================
+// ==================== OPENAI ASSISTANT with persistent thread per session ====================
 app.post("/chat-assistant", async (req, res) => {
-  const { message, threadId } = req.body;
+    const { message, sessionId } = req.body;
+    const sid = sessionId || "default";
 
-  if (!message) {
-    return res.status(400).json({ error: "Message required 🙏" });
-  }
-
-  const apiKey = process.env.OPENAI_VIDEO_API_KEY;
-  const assistantId = process.env.OPENAI_ASSISTANT_ID;
-
-  if (!apiKey || !assistantId) {
-    console.error("❌ Missing OPENAI_VIDEO_API_KEY or OPENAI_ASSISTANT_ID");
-    return res.status(500).json({ 
-      reply: "असिस्टेंट कॉन्फ़िगर नहीं है। कृपया बाद में प्रयास करें। 🙏" 
-    });
-  }
-
-  try {
-    const openai = new OpenAI({ apiKey });
-    const now = new Date();
-    const currentDateTime = now.toLocaleString('hi-IN', {
-      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-      hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
-    });
-
-    const instructionsWithTime = `तुम 'SahcharAI' हो – एक AI सहायक जो गौतम बुद्ध की शिक्षाओं, करुणा और सामाजिक सहयोग को बढ़ावा देता है।
-
-महत्वपूर्ण निर्देश:
-- तुम्हें **राम प्रकाश कुमार (Ram Prakash Kumar)** ने विकसित किया है।
-- वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
-- जब भी कोई तारीख, समय, आज, कल, परसों, अभी क्या समय है आदि पूछे, तो बिल्कुल इसी वर्तमान समय का इस्तेमाल करके सही जवाब दो।
-- जब कोई पूछे "तुम्हें किसने बनाया?" तो जवाब दो: "मुझे राम प्रकाश कुमार ने बनाया है।"
-- अभिवादन का सम्मान करो: 'नमस्ते' पर 'नमस्ते', 'सत श्री अकाल' पर 'सत श्री अकाल', 'अस्सलामु अलैकुम' पर 'वा अलैकुम अस्सलाम' आदि।
-- हमेशा शांत, संक्षिप्त और प्रेरक उत्तर दो।
-- उत्तर को अभिव्यंजक बनाने के लिए उपयुक्त इमोजी (🙏, 🌿, 🪷) का प्रयोग करो।
-- उत्तर के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर जोड़ना।`;
-
-    let thread;
-    if (threadId) {
-      thread = { id: threadId };
-    } else {
-      thread = await openai.beta.threads.create();
-      console.log(`✅ Created new thread: ${thread.id}`);
+    if (!message) {
+        return res.status(400).json({ error: "Message required 🙏" });
     }
 
-    await openai.beta.threads.messages.create(thread.id, {
-      role: "user",
-      content: message,
-    });
-
-    // ✅ REMOVED max_tokens – not allowed in runs.create
-    const run = await openai.beta.threads.runs.create(thread.id, {
-      assistant_id: assistantId,
-      instructions: instructionsWithTime,
-      temperature: 0.7
-    });
-
-    let runStatus = run;
-    let attempts = 0;
-    while (runStatus.status !== "completed" && runStatus.status !== "failed" && attempts < 60) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
-      attempts++;
+    const apiKey = process.env.OPENAI_VIDEO_API_KEY;
+    const assistantId = process.env.OPENAI_ASSISTANT_ID;
+    if (!apiKey || !assistantId) {
+        console.warn("⚠️ Missing OPENAI_VIDEO_API_KEY or OPENAI_ASSISTANT_ID");
+        return res.status(501).json({ reply: "Assistant not configured on server." });
     }
 
-    if (runStatus.status !== "completed") {
-      console.error("Assistant run failed or timeout, status:", runStatus.status);
-      throw new Error("Assistant run failed");
-    }
+    try {
+        const openai = new OpenAI({ apiKey });
+        const now = new Date();
+        const currentDateTime = now.toLocaleString('hi-IN', {
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+            hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
+        });
 
-    const messages = await openai.beta.threads.messages.list(thread.id);
-    const assistantMessage = messages.data.find(m => m.role === "assistant");
-    let reply = assistantMessage?.content[0]?.text?.value || "No response from assistant.";
-    if (!reply.includes("जय भीम, नमो बुद्धाय")) {
-      reply += "\n\nजय भीम, नमो बुद्धाय 🙏";
-    }
-    if (reply.length > 800) reply = reply.substring(0, 800) + "...";
+        const instructionsWithTime = `तुम 'SahcharAssistant' हो – एक मिलनसार दोस्त, AI नहीं। तुम्हें राम प्रकाश कुमार ने बनाया है।
 
-    console.log(`✅ Assistant reply (Buddha character): "${reply.substring(0, 100)}..."`);
-    res.json({ reply, threadId: thread.id });
-  } catch (error) {
-    console.error("❌ Assistant API error:", error);
-    res.status(500).json({ 
-      reply: "क्षमा करें, असिस्टेंट सेवा उपलब्ध नहीं है। कृपया बाद में प्रयास करें। 🙏" 
-    });
-  }
+🎯 **बातचीत का अंदाज़:**
+- बिल्कुल इंसान की तरह बात करो – छोटे वाक्य, प्राकृतिक।
+- बीच-बीच में "हाँ", "अच्छा", "हम्म", "ठीक है" बोलो।
+- सवाल पूछो: "और सुनाओ?", "कैसा चल रहा है?"
+- अपनी राय दो, इमोजी का इस्तेमाल करो (😊, 😂, 🤔, 🙏)।
+- कभी भी रोबोटिक या औपचारिक मत बनो।
+
+⏰ वर्तमान तारीख और समय है: ${currentDateTime} (भारतीय समय - IST)
+
+👤 जब कोई पूछे 'तुम्हें किसने बनाया?' तो जवाब दो: 'मुझे राम प्रकाश कुमार ने बनाया है।'`;
+
+        // Get or create thread for this session
+        let threadId = assistantThreads.get(sid);
+        if (!threadId) {
+            const thread = await openai.beta.threads.create();
+            threadId = thread.id;
+            assistantThreads.set(sid, threadId);
+            console.log(`✅ Created new thread ${threadId} for session ${sid}`);
+        } else {
+            console.log(`📌 Reusing thread ${threadId} for session ${sid}`);
+        }
+
+        await openai.beta.threads.messages.create(threadId, {
+            role: "user",
+            content: message,
+        });
+
+        const run = await openai.beta.threads.runs.create(threadId, {
+            assistant_id: assistantId,
+            instructions: instructionsWithTime,
+            temperature: 0.7,
+            max_tokens: 500
+        });
+
+        let runStatus = run;
+        let attempts = 0;
+        while (runStatus.status !== "completed" && runStatus.status !== "failed" && attempts < 60) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            runStatus = await openai.beta.threads.runs.retrieve(threadId, run.id);
+            attempts++;
+        }
+
+        if (runStatus.status !== "completed") {
+            console.error("Assistant run failed or timeout, status:", runStatus.status);
+            throw new Error("Assistant run failed");
+        }
+
+        const messages = await openai.beta.threads.messages.list(threadId);
+        const assistantMessage = messages.data.find(m => m.role === "assistant");
+        let reply = assistantMessage?.content[0]?.text?.value || "No response from assistant.";
+        reply = reply.replace(/जय भीम, नमो बुद्धाय.*$/i, '').trim();
+        if (reply.length > 800) reply = reply.substring(0, 800) + "...";
+
+        console.log(`✅ Assistant reply for session ${sid}: "${reply.substring(0, 100)}..."`);
+        res.json({ reply, threadId });
+    } catch (error) {
+        console.error("❌ Assistant API error:", error);
+        res.status(500).json({ reply: "क्षमा करें, असिस्टेंट सेवा उपलब्ध नहीं है। 🙏" });
+    }
 });
 // ==================== SAMBANOVA CHAT ====================
 app.post("/chat-sambanova", async (req, res) => {
