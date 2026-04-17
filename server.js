@@ -11,24 +11,6 @@ import { fileURLToPath } from 'url';
 import axios from 'axios';
 import OpenAI from 'openai';
 const assistantThreads = new Map(); // <-- Ye line add karo
-
-// ========== FAST CLIENTS - EK BAAR BANAO ==========
-const nvidiaClients = [];
-const nvidiaApiKeys = [
-    process.env.NGC_API_KEY_1,
-    process.env.NGC_API_KEY_2,
-    process.env.NGC_API_KEY_3,
-    process.env.NGC_API_KEY
-].filter(key => key && key.trim()!== "");
-
-nvidiaApiKeys.forEach(key => {
-    nvidiaClients.push(new OpenAI({
-        apiKey: key,
-        baseURL: 'https://integrate.api.nvidia.com/v1',
-        timeout: 15000
-    }));
-});
-
 const deepseekClient = new OpenAI({
     apiKey: process.env.DEEPSEEK_API_KEY,
     baseURL: 'https://api.deepseek.com/v1',
