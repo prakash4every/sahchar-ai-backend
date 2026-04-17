@@ -219,14 +219,14 @@ app.post("/chat-assistant", async (req, res) => {
             console.log(`✅ New thread ${threadId} for ${sid}`);
 
             // FIX 1: DB history ko thread me load karo - Sirf 3 exchange = 6 messages
-            const history = await loadConversationFromDB(sid, 3);
-            for (const msg of history) {
-                await openaiAssistantClient.beta.threads.messages.create(threadId, {
-                    role: msg.role,
-                    content: msg.content
-                });
-            }
-            console.log(`📚 Loaded ${history.length} messages to thread`);
+            //const history = await loadConversationFromDB(sid, 3);
+            //for (const msg of history) {
+                //await openaiAssistantClient.beta.threads.messages.create(threadId, {
+                    //role: msg.role,
+                    //content: msg.content
+                //});
+            //}
+            //console.log(`📚 Loaded ${history.length} messages to thread`);
         }
 
         await openaiAssistantClient.beta.threads.messages.create(threadId, {
