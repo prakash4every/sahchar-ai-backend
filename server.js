@@ -44,39 +44,37 @@ if (nvidiaApiKeys.length === 0) {
     console.warn("⚠️ No NGC_API_KEY_* defined. NVIDIA NIM will not work.");
 }
 
-async function callNvidiaWithFallback(messages, sessionId) {
+async function callNvidiaWithFallback(messages) {
     if (nvidiaApiKeys.length === 0) throw new Error("No NVIDIA keys");
+    const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("NVIDIA timeout after 5s")), 5000)
+    );
     for (let keyIdx = 0; keyIdx < nvidiaApiKeys.length; keyIdx++) {
         const apiKey = nvidiaApiKeys[keyIdx];
-        console.log(`🔑 Trying NVIDIA key index ${keyIdx} (${keyIdx === 0 ? 'primary' : `fallback-${keyIdx}`})`);
         try {
-            const nvidiaClient = new OpenAI({
-                apiKey: apiKey,
-                baseURL: 'https://integrate.api.nvidia.com/v1',
-                timeout: API_TIMEOUT_MS
-            });
-            const stream = await nvidiaClient.chat.completions.create({
-                model: "z-ai/glm5",
-                messages: messages,
-                temperature: 1.2, top_p: 0.95,
-                frequency_penalty: 0.3, presence_penalty: 0.3,
-                max_tokens: 2048, stream: true,
-                chat_template_kwargs: { enable_thinking: false, clear_thinking: false }
-            });
-            let fullReply = "";
-            for await (const chunk of stream) {
-                fullReply += chunk.choices[0]?.delta?.content || "";
-            }
-            fullReply = fullReply.trim();
-            if (fullReply.length > 800) fullReply = fullReply.substring(0, 800) + "...";
-            console.log(`✅ NVIDIA key ${keyIdx} success. Reply length: ${fullReply.length}`);
-            return fullReply;
+            const nvidiaClient = new OpenAI({ apiKey, baseURL: 'https://integrate.api.nvidia.com/v1', timeout: 5000 });
+            const streamPromise = (async () => {
+                const stream = await nvidiaClient.chat.completions.create({
+                    model: "z-ai/glm5",
+                    messages: messages,
+                    temperature: 1.2,
+                    max_tokens: 200,
+                    stream: true,
+                });
+                let fullReply = "";
+                for await (const chunk of stream) {
+                    fullReply += chunk.choices[0]?.delta?.content || "";
+                }
+                return fullReply.trim();
+            })();
+            const reply = await Promise.race([streamPromise, timeoutPromise]);
+            if (reply && reply.length > 0) return reply;
         } catch (err) {
             console.error(`❌ NVIDIA key ${keyIdx} failed:`, err.message);
             if (keyIdx === nvidiaApiKeys.length - 1) throw err;
         }
     }
-    throw new Error("All NVIDIA keys failed");
+    throw new Error("All NVIDIA keys failed or timed out");
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -110,20 +108,18 @@ let mongoClient;
 let db = null;
 
 if (process.env.MONGODB_URI) {
-  mongoClient = new MongoClient(process.env.MONGODB_URI);
-  async function connectToMongoDB() {
-    try {
-      await mongoClient.connect();
-      console.log("✅ Connected to MongoDB");
-      db = mongoClient.db();
-    } catch (error) {
-      console.error("❌ MongoDB connection error:", error.message);
-      db = null;
-    }
-  }
-  connectToMongoDB();
+    console.log(`🔌 Attempting to connect to MongoDB with URI: ${process.env.MONGODB_URI.substring(0, 20)}...`);
+    mongoClient = new MongoClient(process.env.MONGODB_URI);
+    mongoClient.connect().then(() => {
+        console.log("✅ Live Server: Connected to MongoDB");
+        db = mongoClient.db();
+    }).catch(err => {
+        console.error("❌ Live Server: MongoDB connection error:", err.message);
+        console.error("Full error:", err);
+        db = null;
+    });
 } else {
-  console.warn("⚠️ MongoDB client not initialized because MONGODB_URI is missing.");
+    console.warn("⚠️ MONGODB_URI environment variable is not set. Database features will be disabled.");
 }
 
 // Global error handlers
