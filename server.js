@@ -49,18 +49,16 @@ const openaiAssistantClient = new OpenAI({ apiKey: process.env.OPENAI_VIDEO_API_
 // ========== NVIDIA FALLBACK FUNCTION ==========
 async function callNvidiaWithFallback(messages) {
     if (nvidiaClients.length === 0) throw new Error("No NVIDIA keys");
-
-    // Sirf system + last 2 message bhejo = super fast
     const shortMessages = [messages[0],...messages.slice(-2)];
 
     for (let keyIdx = 0; keyIdx < nvidiaClients.length; keyIdx++) {
         try {
             const response = await nvidiaClients[keyIdx].chat.completions.create({
-                model: "nvidia/llama-3.1-nemotron-51b-instruct", // FASTEST MODEL
+                model: "meta/llama-3.1-70b-instruct", // FIX: Sahi model naam
                 messages: shortMessages,
                 temperature: 0.5,
                 max_tokens: 100,
-                stream: false, // NO STREAMING = 3x fast
+                stream: false,
             });
             const fullReply = response.choices[0]?.message?.content || "";
             console.log(`✅ NVIDIA key ${keyIdx} success. Reply length: ${fullReply.length}`);
@@ -71,7 +69,6 @@ async function callNvidiaWithFallback(messages) {
         }
     }
 }
-
 const app = express();
 const upload = multer({ dest: 'uploads/' });
 
