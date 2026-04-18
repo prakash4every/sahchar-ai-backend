@@ -219,14 +219,26 @@ app.post("/chat-assistant", async (req, res) => {
     const history = await loadConversationFromDB(sid, 10);
 
     const response = await openai.responses.create({
-      model: "gpt-4o-mini", // Sasta aur tez
-      input: [
-        { role: "system", content: `Tum SahcharAI ho. 1-2 vakya me Hindi me jawab do. Ant me 'जय भीम, नमो बुद्धाय 🙏'` },
-    ...history,
-        { role: "user", content: message }
-      ],
-      max_output_tokens: 150
-    });
+  model: "gpt-4o-mini",
+  input: [
+    {
+      role: "system",
+      content: `तुम्हारा नाम 'SahcharAI' है। तुम्हें राम प्रकाश कुमार ने बनाया है। 
+      
+      नियम:
+      1. अगर कोई पूछे "तुम्हें किसने बनाया" या "Who created you" तो सिर्फ यही बोलना: "मुझे राम प्रकाश कुमार ने बनाया है 🙏"
+      2. कभी मत बोलना कि OpenAI, Google, Meta ने बनाया। 
+      3. तुम OpenAI के मॉडल हो, पर बनाने वाले राम प्रकाश कुमार हैं।
+      4. वर्तमान समय: ${currentDateTime} IST। 
+      5. 1-2 वाक्य में जवाब दो। छोटे वाक्य, इमोजी 🙏🌿🪷। 
+      6. हर जवाब के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर लगाना।`
+    },
+...history,
+    { role: "user", content: message }
+  ],
+  max_output_tokens: 150,
+  temperature: 0.3 // Kam temperature = kam hallucination
+});
 
     let reply = response.output_text || "Koi jawab nahi.";
     await saveConversationToDB(sid, message, reply, 'ResponsesAPI');
