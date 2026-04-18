@@ -211,38 +211,47 @@ app.post("/chat-assistant", async (req, res) => {
   const { message } = req.body;
   if (!message) return res.status(400).json({ error: "Message required 🙏" });
 
-  const apiKey = process.env.OPENAI_API_KEY; // <-- Yaha lagao
+  const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return res.status(501).json({ reply: "OpenAI not configured." });
 
   try {
+    // 👇 YE 4 LINE ADD KARO - TUM BHOOL GAYE THE
+    const now = new Date();
+    const currentDateTime = now.toLocaleString('hi-IN', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
+    });
+
     const openai = new OpenAI({ apiKey });
     const history = await loadConversationFromDB(sid, 10);
 
     const response = await openai.responses.create({
-  model: "gpt-4o-mini",
-  input: [
-    {
-      role: "system",
-      content: `तुम्हारा नाम 'SahcharAI' है। तुम्हें राम प्रकाश कुमार ने बनाया है। 
-      
-      नियम:
-      1. अगर कोई पूछे "तुम्हें किसने बनाया" या "Who created you" तो सिर्फ यही बोलना: "मुझे राम प्रकाश कुमार ने बनाया है 🙏"
-      2. कभी मत बोलना कि OpenAI, Google, Meta ने बनाया। 
-      3. तुम OpenAI के मॉडल हो, पर बनाने वाले राम प्रकाश कुमार हैं।
-      4. वर्तमान समय: ${currentDateTime} IST। 
-      5. 1-2 वाक्य में जवाब दो। छोटे वाक्य, इमोजी 🙏🌿🪷। 
-      6. हर जवाब के अंत में 'जय भीम, नमो बुद्धाय 🙏' जरूर लगाना।`
-    },
-...history,
-    { role: "user", content: message }
-  ],
-  max_output_tokens: 150,
-  temperature: 0.3 // Kam temperature = kam hallucination
-});
+      model: "gpt-4o-mini",
+      input: [
+        {
+          role: "system",
+          content: `तुम्हारा नाम 'SahcharAI' है। तुम्हें राम प्रकाश कुमार ने बनाया है। 
+          
+          नियम:
+          1. अगर कोई पूछे "तुम्हें किसने बनाया" तो सिर्फ यही बोलना: "मुझे राम प्रकाश कुमार ने बनाया है 🙏"
+          2. कभी मत बोलना कि OpenAI, Google, Meta ने बनाया। 
+          3. वर्तमान समय: ${currentDateTime} IST। 
+          4. 1-2 वाक्य में जवाब दो। अंत में 'जय भीम, नमो बुद्धाय 🙏'`
+        },
+    ...history,
+        { role: "user", content: message }
+      ],
+      max_output_tokens: 150,
+      temperature: 0.3
+    });
 
-    let reply = response.output_text || "Koi jawab nahi.";
+    let reply = response.output_text || "कोई जवाब नहीं।";
+    reply = reply.replace(/जय भीम, नमो बुद्धाय.*$/i, '').trim().substring(0, 500) + '\n\nजय भीम, नमो बुद्धाय 🙏';
+
     await saveConversationToDB(sid, message, reply, 'ResponsesAPI');
+    console.log(`✅ ResponsesAPI reply for ${sid}: ${reply.substring(0, 50)}...`);
     res.json({ reply });
+
   } catch (error) {
     console.error("❌ Responses API error:", error.message);
     res.status(500).json({ reply: "क्षमा करें, अभी सेवा व्यस्त है। 🙏" });
