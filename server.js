@@ -211,48 +211,26 @@ app.post("/chat-assistant", async (req, res) => {
   const { message } = req.body;
   if (!message) return res.status(400).json({ error: "Message required 🙏" });
 
-  const apiKey = process.env.OPENAI_VIDEO_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY; // <-- Yaha lagao
   if (!apiKey) return res.status(501).json({ reply: "OpenAI not configured." });
 
   try {
     const openai = new OpenAI({ apiKey });
-    const now = new Date();
-    const currentDateTime = now.toLocaleString('hi-IN', {
-      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-      hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
-    });
-
-    // 1. DB se pichli baatein load karo
     const history = await loadConversationFromDB(sid, 10);
-    
-    // 2. Responses API ko call karo - No threads, no runs, direct!
+
     const response = await openai.responses.create({
-      model: "gpt-4o-mini", // Tez model
+      model: "gpt-4o-mini", // Sasta aur tez
       input: [
-        {
-          role: "system",
-          content: `तुम 'SahcharAI' हो – राम प्रकाश कुमार द्वारा निर्मित AI सहायक। वर्तमान समय: ${currentDateTime} IST। 1-2 वाक्य में जवाब दो। छोटे वाक्य, इमोजी 🙏🌿🪷। अंत में 'जय भीम, नमो बुद्धाय 🙏'।`
-        },
-        ...history, // DB se loaded history
-        {
-          role: "user", 
-          content: message
-        }
+        { role: "system", content: `Tum SahcharAI ho. 1-2 vakya me Hindi me jawab do. Ant me 'जय भीम, नमो बुद्धाय 🙏'` },
+    ...history,
+        { role: "user", content: message }
       ],
-      max_output_tokens: 150,
-      temperature: 0.7
+      max_output_tokens: 150
     });
 
-    // 3. Reply nikalo
-    let reply = response.output_text || "कोई जवाब नहीं।";
-    reply = reply.replace(/जय भीम, नमो बुद्धाय.*$/i, '').trim().substring(0, 500) + '\n\nजय भीम, नमो बुद्धाय 🙏';
-
-    // 4. DB me save karo memory ke liye
+    let reply = response.output_text || "Koi jawab nahi.";
     await saveConversationToDB(sid, message, reply, 'ResponsesAPI');
-    
-    console.log(`✅ ResponsesAPI reply for ${sid}: ${reply.substring(0, 50)}...`);
     res.json({ reply });
-
   } catch (error) {
     console.error("❌ Responses API error:", error.message);
     res.status(500).json({ reply: "क्षमा करें, अभी सेवा व्यस्त है। 🙏" });
