@@ -205,15 +205,14 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ==================== 2. OPENAI ASSISTANT ====================
+// ==================== OPENAI RESPONSES API - NAYA & TEZ ====================
 app.post("/chat-assistant", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
   if (!message) return res.status(400).json({ error: "Message required 🙏" });
 
   const apiKey = process.env.OPENAI_VIDEO_API_KEY;
-  const assistantId = process.env.OPENAI_ASSISTANT_ID;
-  if (!apiKey ||!assistantId) return res.status(501).json({ reply: "Assistant not configured." });
+  if (!apiKey) return res.status(501).json({ reply: "OpenAI not configured." });
 
   try {
     const openai = new OpenAI({ apiKey });
@@ -223,52 +222,40 @@ app.post("/chat-assistant", async (req, res) => {
       hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
     });
 
-    let threadId = assistantThreads.get(sid);
-    if (!threadId) {
-      const thread = await openai.beta.threads.create();
-      threadId = thread.id;
-      assistantThreads.set(sid, threadId);
-      await saveThreadToDB(sid, threadId);
-      console.log(`✅ New thread ${threadId} for ${sid}`);
-
-      const history = await loadConversationFromDB(sid, 1);
-      for (const msg of history) {
-        await openai.beta.threads.messages.create(threadId, { role: msg.role, content: msg.content });
-      }
-    }
-
-    await openai.beta.threads.messages.create(threadId, { role: "user", content: message });
-
-    const run = await openai.beta.threads.runs.create(threadId, {
-      assistant_id: assistantId,
-      instructions: `वर्तमान समय: ${currentDateTime} IST। 1-2 वाक्य में जवाब दो। अंत में 'जय भीम, नमो बुद्धाय 🙏'`,
-      max_completion_tokens: 150
+    // 1. DB se pichli baatein load karo
+    const history = await loadConversationFromDB(sid, 10);
+    
+    // 2. Responses API ko call karo - No threads, no runs, direct!
+    const response = await openai.responses.create({
+      model: "gpt-4o-mini", // Tez model
+      input: [
+        {
+          role: "system",
+          content: `तुम 'SahcharAI' हो – राम प्रकाश कुमार द्वारा निर्मित AI सहायक। वर्तमान समय: ${currentDateTime} IST। 1-2 वाक्य में जवाब दो। छोटे वाक्य, इमोजी 🙏🌿🪷। अंत में 'जय भीम, नमो बुद्धाय 🙏'।`
+        },
+        ...history, // DB se loaded history
+        {
+          role: "user", 
+          content: message
+        }
+      ],
+      max_output_tokens: 150,
+      temperature: 0.7
     });
 
-    let runStatus = run;
-    let attempts = 0;
-    while (attempts < 30) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      runStatus = await openai.beta.threads.runs.retrieve(threadId, run.id);
-      if (runStatus.status === "completed") break;
-      if (["failed", "cancelled", "expired"].includes(runStatus.status)) {
-        throw new Error(`Assistant ${runStatus.status}: ${runStatus.last_error?.message || ''}`);
-      }
-      attempts++;
-    }
-
-    if (runStatus.status!== "completed") throw new Error(`Timeout after 30s`);
-
-    const messages = await openai.beta.threads.messages.list(threadId, { limit: 1 });
-    let reply = messages.data[0]?.content[0]?.text?.value || "कोई जवाब नहीं।";
+    // 3. Reply nikalo
+    let reply = response.output_text || "कोई जवाब नहीं।";
     reply = reply.replace(/जय भीम, नमो बुद्धाय.*$/i, '').trim().substring(0, 500) + '\n\nजय भीम, नमो बुद्धाय 🙏';
 
-    await saveConversationToDB(sid, message, reply, 'Assistant');
-    res.json({ reply, threadId });
+    // 4. DB me save karo memory ke liye
+    await saveConversationToDB(sid, message, reply, 'ResponsesAPI');
+    
+    console.log(`✅ ResponsesAPI reply for ${sid}: ${reply.substring(0, 50)}...`);
+    res.json({ reply });
 
   } catch (error) {
-    console.error("❌ Assistant API error:", error.message);
-    res.status(500).json({ reply: "क्षमा करें, सेवा उपलब्ध नहीं है। 🙏" });
+    console.error("❌ Responses API error:", error.message);
+    res.status(500).json({ reply: "क्षमा करें, अभी सेवा व्यस्त है। 🙏" });
   }
 });
 
