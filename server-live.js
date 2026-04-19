@@ -18,7 +18,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get('/', (req, res) => res.send('Live audio server - PCM 16kHz'));
+app.get('/', (req, res) => res.send('LiveAudio Server v2.1 - PCM 16kHz'));
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 10000;
@@ -27,27 +27,25 @@ const wss = new WebSocketServer({ server });
 console.log(`🎤 WebSocket server on ${PORT}`);
 
 // ==================== MongoDB Setup ====================
-let mongoClient;
 let db = null;
 if (process.env.MONGODB_URI) {
-    mongoClient = new MongoClient(process.env.MONGODB_URI);
+    const mongoClient = new MongoClient(process.env.MONGODB_URI);
     mongoClient.connect().then(() => {
         console.log("✅ Live Server: Connected to MongoDB");
         db = mongoClient.db();
     }).catch(err => {
         console.error("❌ Live Server: MongoDB connection error:", err.message);
-        db = null;
     });
 }
 
-async function loadConversationFromDB(deviceId, limit = 10) {
+async function loadConversationFromDB(deviceId, limit = 6) {
     if (!db ||!deviceId) return [];
     try {
         const convCollection = db.collection('conversations');
         const messages = await convCollection.find({ sessionId: deviceId })
-          .sort({ timestamp: -1 })
-          .limit(limit)
-          .toArray();
+         .sort({ timestamp: -1 })
+         .limit(limit)
+         .toArray();
         const history = [];
         messages.reverse().forEach(msg => {
             history.push({ role: "user", content: msg.userMessage });
@@ -61,112 +59,56 @@ async function loadConversationFromDB(deviceId, limit = 10) {
     }
 }
 
-// ==================== NVIDIA NIM + DEEPSEEK FALLBACK ====================
-const nvidiaApiKeys = [
-    process.env.NGC_API_KEY_1,
-    process.env.NGC_API_KEY_2,
-    process.env.NGC_API_KEY_3,
-    process.env.NGC_API_KEY
-].filter(key => key && key.trim()!== "");
-
-const deepseekClient = new OpenAI({
-    apiKey: process.env.DEEPSEEK_API_KEY,
-    baseURL: 'https://api.deepseek.com/v1',
-    timeout: 15000
-});
-
-async function callNvidiaWithFallback(messages) {
-    if (nvidiaApiKeys.length === 0) throw new Error("No NVIDIA keys");
-    for (let keyIdx = 0; keyIdx < nvidiaApiKeys.length; keyIdx++) {
-        const apiKey = nvidiaApiKeys[keyIdx];
-        try {
-            const nvidiaClient = new OpenAI({
-                apiKey: apiKey,
-                baseURL: 'https://integrate.api.nvidia.com/v1',
-                timeout: 30000
-            });
-            const stream = await nvidiaClient.chat.completions.create({
-                model: "meta/llama3-70b-instruct", // STABLE MODEL
-                messages: messages,
-                stream: true,
-                temperature: 0.7,
-                max_tokens: 100,
-            });
-            let fullReply = "";
-            for await (const chunk of stream) {
-                fullReply += chunk.choices[0]?.delta?.content || "";
-            }
-            fullReply = fullReply.trim();
-            if (fullReply.length > 800) fullReply = fullReply.substring(0, 800) + "...";
-            return fullReply;
-        } catch (err) {
-            console.error(`❌ NVIDIA key ${keyIdx} failed:`, err.message);
-            if (keyIdx === nvidiaApiKeys.length - 1) {
-                console.log("🔄 Falling back to DeepSeek...");
-                const deepseekResponse = await deepseekClient.chat.completions.create({
-                    model: "deepseek-chat",
-                    messages: messages,
-                    temperature: 0.7,
-                    max_tokens: 100
-                });
-                return deepseekResponse.choices[0]?.message?.content || "क्षमा करें।";
-            }
-        }
+async function saveConversationToDB(deviceId, userMessage, botReply) {
+    if (!db) return;
+    try {
+        await db.collection("conversations").insertOne({
+            sessionId: deviceId,
+            userMessage,
+            botReply,
+            timestamp: new Date()
+        });
+    } catch (e) {
+        console.error("MongoDB insert error:", e);
     }
-    throw new Error("All NVIDIA keys failed");
 }
 
-// ==================== ElevenLabs TTS ====================
+// ==================== OpenAI Whisper + TTS ====================
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// ==================== ElevenLabs TTS - Optional ====================
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const VOICE_ID_HINDI = process.env.ELEVENLABS_VOICE_ID || 'yoZ06aMxZJJ28mfd3POQ';
 
 async function ttsStream(text) {
-    if (!ELEVENLABS_API_KEY) throw new Error('Missing ELEVENLABS_API_KEY');
-    const response = await axios({
-        method: 'POST',
-        url: `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID_HINDI}/stream`,
-        headers: {
-            'Accept': 'audio/mpeg',
-            'Content-Type': 'application/json',
-            'xi-api-key': ELEVENLABS_API_KEY,
-        },
-        data: {
-            text: text,
-            model_id: 'eleven_multilingual_v2',
-            voice_settings: { stability: 0.6, similarity_boost: 0.8 },
-            output_format: 'mp3_44100_128',
-        },
-        responseType: 'stream',
-        timeout: 10000,
+    // OpenAI TTS - Zyada reliable hai
+    const speech = await openai.audio.speech.create({
+        model: "tts-1",
+        voice: "nova", // alloy, echo, fable, onyx, nova, shimmer
+        input: text,
+        response_format: "mp3"
     });
-    return response.data;
+    return speech.body; // Returns ReadableStream
 }
 
 function convertMp3StreamToPcm16k(mp3Stream) {
     return new Promise((resolve, reject) => {
         const chunks = [];
         ffmpeg(mp3Stream)
-          .audioCodec('pcm_s16le')
-          .format('s16le')
-          .audioChannels(1)
-          .audioFrequency(16000)
-          .outputOptions('-ar 16000')
-          .outputOptions('-ac 1')
-          .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
-          .on('end', () => resolve(Buffer.concat(chunks)))
-          .pipe()
-          .on('data', (chunk) => chunks.push(chunk));
+         .audioCodec('pcm_s16le')
+         .format('s16le')
+         .audioChannels(1)
+         .audioFrequency(16000)
+         .outputOptions('-ar 16000', '-ac 1')
+         .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
+         .on('end', () => resolve(Buffer.concat(chunks)))
+         .pipe()
+         .on('data', (chunk) => chunks.push(chunk));
     });
 }
 
-// ==================== Groq Whisper - HINDI FIX ====================
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const groqClient = new OpenAI({
-    apiKey: GROQ_API_KEY,
-    baseURL: 'https://api.groq.com/openai/v1',
-});
-
-function pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
+// ==================== PCM to WAV ====================
+function pcmToWav(pcmData, sampleRate = 16000, numChannels = 1, bitsPerSample = 16) {
     const blockAlign = numChannels * (bitsPerSample / 8);
     const byteRate = sampleRate * blockAlign;
     const dataSize = pcmData.length;
@@ -187,14 +129,10 @@ function pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
     return Buffer.concat([header, pcmData]);
 }
 
-async function bufferToReadableStream(buffer) {
+async function bufferToFile(buffer) {
     const tempPath = path.join('/tmp', `audio_${randomUUID()}.wav`);
     fs.writeFileSync(tempPath, buffer);
-    const stream = fs.createReadStream(tempPath);
-    stream.on('close', () => {
-        try { fs.unlinkSync(tempPath); } catch {}
-    });
-    return stream;
+    return tempPath;
 }
 
 function calculateRMS(buffer) {
@@ -226,7 +164,7 @@ wss.on('connection', async (ws, req) => {
     const pastMessages = await loadConversationFromDB(deviceId, 3);
     const history = [
         { role: 'system', content: '' },
-      ...pastMessages
+     ...pastMessages
     ];
     sessionHistories.set(sessionId, history);
 
@@ -236,15 +174,12 @@ wss.on('connection', async (ws, req) => {
     let botSpeakingEndTime = 0;
     let silenceTimer = null;
     let isClosed = false;
-    let lastBotText = "";
-    let accumulatedText = "";
 
     const SAMPLE_RATE = 16000;
     const BYTES_PER_SECOND = SAMPLE_RATE * 2;
-    const MAX_CHUNK_BYTES = BYTES_PER_SECOND * 2;
-    const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.5;
+    const MAX_CHUNK_BYTES = BYTES_PER_SECOND * 2; // 2 sec
+    const MIN_SPEECH_BYTES = BYTES_PER_SECOND * 0.4; // 0.4 sec
 
-    // FIX 2: Safe send function - Crash proof
     function safeSend(data) {
         if (!isClosed && ws && ws.readyState === ws.OPEN) {
             try {
@@ -268,107 +203,68 @@ wss.on('connection', async (ws, req) => {
         }, 800);
     }
 
-    function checkMaxDuration() {
-        const totalBytes = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
-        if (totalBytes >= MAX_CHUNK_BYTES &&!isProcessing && audioBuffer.length > 0 &&!isClosed) {
-            console.log('Max 2s reached, processing...');
-            processAudio();
-        }
-    }
-
     async function processAudio() {
         if (audioBuffer.length === 0 || isProcessing || isClosed) return;
 
         if (Date.now() < botSpeakingEndTime) {
-            console.log("⚠️ Dropping audio - bot speaking or echo window");
+            console.log("⚠️ Dropping audio - bot speaking");
             audioBuffer = [];
-            isProcessing = false;
             return;
         }
 
         isProcessing = true;
         if (silenceTimer) clearTimeout(silenceTimer);
 
-        let totalBytes = 0;
-        let chunksToSend = [];
-        for (const chunk of audioBuffer) {
-            if (totalBytes + chunk.length <= MAX_CHUNK_BYTES) {
-                chunksToSend.push(chunk);
-                totalBytes += chunk.length;
-            } else {
-                break;
-            }
-        }
-
+        const totalBytes = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
         if (totalBytes < MIN_SPEECH_BYTES) {
-            console.log(`⚠️ Audio too short: ${totalBytes} bytes, ignoring`);
+            console.log(`⚠️ Audio too short: ${totalBytes} bytes`);
             audioBuffer = [];
             isProcessing = false;
             return;
         }
 
-        const fullAudio = Buffer.concat(chunksToSend, totalBytes);
+        const fullAudio = Buffer.concat(audioBuffer);
         audioBuffer = [];
 
         const rms = calculateRMS(fullAudio);
         console.log(`🎤 Audio RMS: ${rms.toFixed(4)}, Bytes: ${totalBytes}`);
 
-        if (rms < 0.01) {
-            console.log(`⚠️ Audio too quiet RMS=${rms.toFixed(4)}, ignoring noise/echo`);
+        if (rms < 0.008) {
+            console.log(`⚠️ Audio too quiet RMS=${rms.toFixed(4)}`);
             isProcessing = false;
             return;
         }
 
-        const wavBuffer = pcmToWav(fullAudio, SAMPLE_RATE, 1, 16);
-        const audioStream = await bufferToReadableStream(wavBuffer);
+        const wavBuffer = pcmToWav(fullAudio);
+        const tempPath = await bufferToFile(wavBuffer);
 
         try {
-            // FIX 1: Better Hindi Whisper prompt
-            const response = await groqClient.audio.transcriptions.create({
-                file: audioStream,
-                model: 'whisper-large-v3',
-                language: 'hi', // Force Hindi
-                response_format: 'text',
-                temperature: 0.0, // 0.0 = most accurate
-                prompt: "यह हिंदी में बातचीत है। शब्द: नमस्ते, हेलो, गुड इवनिंग, शुभ संध्या, आज, दिन, कैसा, अच्छा, बुरा, तुम, मैं, क्या, क्यों, कैसे, कहाँ, कब, कौन, धन्यवाद, शुक्रिया, अलविदा, फिर मिलेंगे।"
+            // FIX 1: OpenAI Whisper - Zyada reliable Hindi ke liye
+            const transcription = await openai.audio.transcriptions.create({
+                file: fs.createReadStream(tempPath),
+                model: 'whisper-1',
+                language: 'hi',
+                temperature: 0.0,
+                prompt: "यह हिंदी में बातचीत है। नमस्ते, हेलो, आज, कैसा, अच्छा, धन्यवाद।"
             });
-            let transcript = response.trim();
 
-            // Improved noise filter - sirf bilkul bekar words hatao
-            const noiseWords = ['उम', 'अह', 'ओह', 'हम'];
-            let cleanTranscript = transcript;
-            for (const noise of noiseWords) {
-                cleanTranscript = cleanTranscript.replace(new RegExp(`\\b${noise}\\b`, 'gi'), '').trim();
-            }
+            let transcript = transcription.text.trim();
+            console.log(`📝 Whisper transcript: ${transcript}`);
 
-            if (cleanTranscript.length < 2) {
-                console.log(`⚠️ Ignoring short/noise transcript: "${transcript}"`);
-                isProcessing = false;
+            if (transcript.length < 2) {
+                console.log(`⚠️ Empty transcript, ignoring`);
                 return;
             }
 
-            console.log(`📝 Raw transcript: ${transcript}`);
-            console.log(`📝 Cleaned transcript: ${cleanTranscript}`);
+            safeSend(JSON.stringify({ type: "user_text", text: transcript }));
+            await sendToLLM(transcript);
 
-            // Send user text to frontend
-            safeSend(JSON.stringify({ type: "user_text", text: cleanTranscript }));
-
-            accumulatedText += cleanTranscript + ' ';
-            if (!isBotSpeaking) {
-                isBotSpeaking = true;
-                await sendToLLM(accumulatedText.trim());
-                accumulatedText = '';
-            }
         } catch (err) {
-            console.error("❌ Groq error:", err.message);
-            if (!isBotSpeaking) {
-                await speak('क्षमा करें, फिर से बोलें।');
-            }
+            console.error("❌ Whisper error:", err.message);
+            safeSend(JSON.stringify({ type: "error", text: "सुन नहीं पाया, फिर से बोलें 🙏" }));
         } finally {
+            try { fs.unlinkSync(tempPath); } catch {}
             isProcessing = false;
-            if (audioBuffer.length > 0 &&!isClosed && Date.now() >= botSpeakingEndTime) {
-                processAudio();
-            }
         }
     }
 
@@ -383,111 +279,73 @@ wss.on('connection', async (ws, req) => {
         });
 
         const history = sessionHistories.get(sessionId);
-        history[0].content = `तुम 'SuperSahchar' हो - एक समझदार दोस्त।
+        history[0].content = `तुम 'SahcharAI' हो। तुम्हें राम प्रकाश कुमार ने बनाया है।
 
-SAKHT NIYAM:
-1. User ne jo bola usko REPEAT kabhi mat karna।
-2. 1-2 sentence me जवाब दो, max 12 शब्द।
-3. Hamesha naya content bolo, sawal poocho।
-4. Agar samajh na aaye: "फिर से बोलो?" bolo।
-5. Apne pichle message ko kabhi repeat mat karo।
-
-उदाहरण:
-User: हेलो
-Tum: नमस्ते दोस्त! कैसे हो? 😊
-
-वर्तमान समय: ${currentDateTime}
-तुम्हें राम प्रकाश कुमार ने बनाया है।`;
+        नियम:
+        1. User की बात REPEAT मत करो।
+        2. 1-2 वाक्य में जवाब दो, max 15 शब्द।
+        3. हमेशा नया बोलो, सवाल पूछो।
+        4. वर्तमान समय: ${currentDateTime}
+        5. अंत में 'जय भीम, नमो बुद्धाय 🙏'`;
 
         history.push({ role: 'user', content: text });
         if (history.length > 7) history.splice(1, history.length - 7);
 
         try {
-            const fullReply = await callNvidiaWithFallback(history);
-            if (fullReply) {
-                history.push({ role: "assistant", content: fullReply });
-                lastBotText = fullReply;
-            }
+            const completion = await openai.responses.create({
+                model: "gpt-4o-mini",
+                input: history,
+                max_output_tokens: 80,
+                temperature: 0.5
+            });
+
+            const fullReply = completion.output_text || "समझ नहीं आया।";
+            history.push({ role: "assistant", content: fullReply });
 
             safeSend(JSON.stringify({ type: "bot_text", text: fullReply }));
+            await saveConversationToDB(deviceId, text, fullReply);
 
-            if (db) {
-                db.collection("conversations").insertOne({
-                    sessionId: deviceId,
-                    userMessage: text,
-                    botReply: fullReply,
-                    timestamp: new Date()
-                }).catch(e => console.error("MongoDB insert error:", e));
-            }
-
-            const estimatedDuration = (fullReply.length / 8) * 1000 + 1500;
+            const estimatedDuration = (fullReply.length / 7) * 1000 + 1000;
             botSpeakingEndTime = Date.now() + estimatedDuration;
             isBotSpeaking = true;
             console.log(`🔇 Mic muted for ${estimatedDuration}ms`);
 
-            const sentences = fullReply.match(/[^।!?]+[।!?]?/g) || [fullReply];
-            for (const sentence of sentences) {
-                if (isClosed) break;
-                await speak(sentence.trim());
-            }
-        } catch (err) {
-            console.error("❌ LLM error:", err.message);
-            if (!isClosed) await speak("फिर से बोलो?");
-        }
-    }
+            // TTS + Send Audio
+            const mp3Stream = await ttsStream(fullReply);
+            const pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
 
-    async function speak(sentence) {
-        if (!sentence.trim() || isClosed) return;
-        console.log(`🔊 TTS: ${sentence}`);
-        let pcmBuffer;
-        try {
-            const mp3Stream = await ttsStream(sentence);
-            pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
-        } catch (err) {
-            console.error('❌ TTS/FFmpeg error:', err.message);
-            return;
-        }
-
-        const CHUNK_SIZE = 640;
-        try {
+            const CHUNK_SIZE = 640;
             for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
-                if (isClosed ||!safeSend(pcmBuffer.slice(i, i + CHUNK_SIZE))) {
-                    console.log('🛑 WS closed during TTS, stopping stream');
-                    break;
-                }
+                if (isClosed ||!safeSend(pcmBuffer.slice(i, i + CHUNK_SIZE))) break;
                 await new Promise(r => setTimeout(r, 20));
             }
+
         } catch (err) {
-            console.error('❌ WS send error during TTS:', err.message);
+            console.error("❌ LLM/TTS error:", err.message);
+            safeSend(JSON.stringify({ type: "error", text: "जवाब नहीं दे पाया 🙏" }));
         } finally {
+            // FIX 3: Hamesha mic wapas on karo
             const delay = Math.max(0, botSpeakingEndTime - Date.now());
             setTimeout(() => {
                 if (!isClosed) {
                     isBotSpeaking = false;
-                    console.log("🎤 Mic unmuted after bot finished");
+                    console.log("🎤 Mic unmuted");
+                    safeSend(JSON.stringify({ type: "status", text: "सुनने के लिए तैयार" }));
                 }
             }, delay);
         }
     }
 
     ws.on('message', (data) => {
-        if (isClosed) return;
+        if (isClosed || isBotSpeaking || Date.now() < botSpeakingEndTime) return;
         const chunk = Buffer.isBuffer(data)? data : Buffer.from(data);
-
-        if (isBotSpeaking || Date.now() < botSpeakingEndTime) {
-            return;
-        }
-
         audioBuffer.push(chunk);
         resetSilenceTimer();
-        checkMaxDuration();
     });
 
-    ws.on('close', (code, reason) => {
-        console.log(`🔌 Client disconnected: ${sessionId}, code=${code}, reason=${reason?.toString() || 'none'}`);
+    ws.on('close', () => {
+        console.log(`🔌 Client disconnected: ${deviceId}`);
         isClosed = true;
-        isBotSpeaking = false;
-        botSpeakingEndTime = 0;
         if (silenceTimer) clearTimeout(silenceTimer);
         audioBuffer = [];
         activeSessions.delete(deviceId);
