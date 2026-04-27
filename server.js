@@ -50,13 +50,14 @@ const imageContexts = {};
 
 async function initMongoDB() {
   try {
+    console.log("🔄 Connecting to MongoDB...");
     const client = new MongoClient(process.env.MONGODB_URI, {
       maxPoolSize: 10,
       serverSelectionTimeoutMS: 5000
     });
     await client.connect();
     db = client.db();
-    console.log("✅ Connected to MongoDB");
+    console.log(`📊 Database Name: ${db.databaseName}`);
 
     const threads = await db.collection('assistant_threads').find({}).toArray();
     threads.forEach(t => assistantThreads.set(t.sessionId, t.threadId));
@@ -64,8 +65,9 @@ async function initMongoDB() {
 
     await db.collection('conversations').createIndex({ sessionId: 1, timestamp: -1 });
     await db.collection('assistant_threads').createIndex({ sessionId: 1 }, { unique: true });
+    console.log("✅ MongoDB Indexes Created"); 
   } catch (error) {
-    console.error("❌ MongoDB error:", error.message);
+    console.error("❌ MongoDB Connection FAILED:", error.message);
     process.exit(1);
   }
 }
@@ -147,6 +149,9 @@ app.get("/chat", (req, res) => res.send("सहचर चैट एंडपॉ�
 app.post("/chat", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
+
+  console.log(`📩 Chat Request [${sid}]: ${message?.substring(0, 50)}...`); // ← ये Add करो
+
   if (!message) return res.status(400).json({ reply: "Message required 🙏" });
 
   try {
@@ -165,7 +170,7 @@ app.post("/chat", async (req, res) => {
           role: "system",
           content: `तुम 'SahcharAI' हो – राम प्रकाश कुमार द्वारा निर्मित AI सहायक। वर्तमान समय: ${currentDateTime} IST। छोटे वाक्य, इमोजी 🙏🌿🪷। अंत में 'जय भीम, नमो बुद्धाय 🙏'।${imageContext}`
         },
-    ...history
+   ...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -198,13 +203,15 @@ app.post("/chat", async (req, res) => {
     }
 
     await saveConversationToDB(sid, message, botReply, 'DeepSeek');
+
+    console.log(`✅ Chat Reply [${sid}]: ${botReply.substring(0, 50)}...`); // ← ये Add करो
+
     res.json({ reply: botReply });
   } catch (error) {
     console.error("❌ /chat error:", error.message);
     res.status(500).json({ reply: "क्षमा करें, अभी सेवा व्यस्त है। 🙏" });
   }
 });
-
 // ==================== OPENAI RESPONSES API - NAYA & TEZ ====================
 app.post("/chat-assistant", async (req, res) => {
   const sid = getSessionId(req);
@@ -362,6 +369,9 @@ app.post("/chat-nvidia", async (req, res) => {
 // ==================== 5. IMAGE GENERATION ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
+
+  console.log(`🎨 Image Gen Request: ${prompt}`); // ← ये Add करो
+
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "API key not configured", imageUrl: "https://via.placeholder.com/1024x1024.png?text=Error" });
@@ -369,13 +379,15 @@ app.post("/api/image/generate", async (req, res) => {
     const response = await axios.post("https://api.openai.com/v1/images/generations", {
       model: "dall-e-3", prompt, n: 1, size: "1024x1024"
     }, { headers: { "Authorization": `Bearer ${apiKey}` } });
+
+    console.log(`✅ Image Generated: ${response.data.data[0].url}`); // ← ये Add करो
+
     res.json({ imageUrl: response.data.data[0].url });
   } catch (error) {
     console.error("OpenAI API error:", error.response?.data || error.message);
     res.status(500).json({ error: "इमेज जनरेशन फेल", imageUrl: "https://via.placeholder.com/1024x1024.png?text=Error" });
   }
 });
-
 // ==================== 6. IMAGE ANALYZE ====================
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "कोई इमेज अपलोड नहीं की गई है। 🙏" });
