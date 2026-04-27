@@ -425,214 +425,157 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   }
 });
 
-// ==================== 7. VIDEO GENERATION - RUNWAY ====================
+// ==================== UNIFIED VIDEO GENERATION - AUTO FALLBACK ====================
 app.post("/api/video/generate", async (req, res) => {
-  const { prompt, imageUrl, duration = 5 } = req.body;
-  if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
-  const apiKey = process.env.RUNWAYML_API_SECRET;
-  if (!apiKey) return res.status(500).json({ error: "API key error", videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4" });
-
-  try {
-    let finalImageUrl = imageUrl;
-    if (!finalImageUrl) {
-      const dalleApiKey = process.env.OPENAI_API_KEY;
-      if (!dalleApiKey) throw new Error("OpenAI API key missing");
-      const dalleResponse = await axios.post("https://api.openai.com/v1/images/generations", {
-        model: "dall-e-3", prompt: prompt + ", safe family-friendly", n: 1, size: "1024x1024"
-      }, { headers: { "Authorization": `Bearer ${dalleApiKey}` } });
-      finalImageUrl = dalleResponse.data.data[0].url;
-    }
-
-    const client = new RunwayML({ apiKey });
-    const task = await client.imageToVideo.create({
-      model: 'gen4_turbo', promptImage: finalImageUrl, promptText: prompt,
-      ratio: '1280:720', duration: Math.min(Math.max(parseInt(duration), 2), 10)
-    });
-
-    let status = 'PENDING', attempts = 0, taskStatus = null;
-    while (attempts < 90) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      taskStatus = await client.tasks.retrieve(task.id);
-      status = taskStatus.status;
-      if (status === 'SUCCEEDED') break;
-      if (status === 'FAILED') throw new Error(`Task failed: ${taskStatus.error?.message || 'Unknown'}`);
-      attempts++;
-    }
-    if (status!== 'SUCCEEDED') throw new Error('Timeout');
-
-    let videoUrl = taskStatus.output?.output?.[0] || taskStatus.output?.[0] || taskStatus.output?.videoUrl || taskStatus.videoUrl;
-    if (!videoUrl) throw new Error('No video URL found');
-    res.json({ videoUrl, status: "success" });
-  } catch (error) {
-    console.error("❌ Video Generation Error:", error.message);
-    res.status(500).json({ error: error.message, videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4", demo: true });
-  }
-});
-
-// ==================== 8. TEXT-TO-VIDEO FALLBACK ====================
-app.post("/api/video/generate-text", async (req, res) => {
   const { prompt, duration = 5 } = req.body;
-  if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
-  const demoVideoUrl = "https://www.w3schools.com/html/mov_bbb.mp4";
 
-  const runwayKey = process.env.RUNWAYML_API_SECRET;
-  if (runwayKey) {
-    try {
-      const client = new RunwayML({ apiKey: runwayKey });
-      const task = await client.textToVideo.create({
-        model: 'gen4.5', promptText: prompt, ratio: '1280:720',
-        duration: Math.min(Math.max(parseInt(duration), 2), 10)
-      });
-      let status = 'PENDING', attempts = 0, taskStatus = null;
-      while (attempts < 90) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        taskStatus = await client.tasks.retrieve(task.id);
-        status = taskStatus.status;
-        if (status === 'SUCCEEDED') break;
-        if (status === 'FAILED') throw new Error(`Runway failed`);
-        attempts++;
+  console.log(`🎬 Video Request: ${prompt}`);
+
+  if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
+
+  // Priority Order: Runway -> JSON2Video -> Sora -> Zeroscope -> Demo
+  const providers = [
+    {
+      name: "RunwayML",
+      envKey: "RUNWAYML_API_SECRET",
+      generate: () => generateRunwayVideo(prompt, duration)
+    },
+    {
+      name: "JSON2Video",
+      envKey: "JSON2VIDEO_API_KEY",
+      generate: () => generateJSON2Video(prompt, duration)
+    },
+    {
+      name: "Sora",
+      envKey: "OPENAI_VIDEO_API_KEY",
+      generate: () => generateSoraVideo(prompt, duration)
+    },
+    {
+      name: "Zeroscope",
+      envKey: "REPLICATE_API_KEY_ZEROSCOPE",
+      generate: () => generateZeroscopeVideo(prompt)
+    }
+  ];
+
+  // Try each provider - जिसके पास Key है और Credit है वो चलेगा
+  for (const provider of providers) {
+    if (process.env[provider.envKey]) {
+      try {
+        console.log(`🔄 Trying ${provider.name}...`);
+        const videoUrl = await provider.generate();
+        console.log(`✅ ${provider.name} Success`);
+        return res.json({
+          videoUrl,
+          status: "success",
+          provider: provider.name.toLowerCase()
+        });
+      } catch (err) {
+        console.warn(`⚠️ ${provider.name} Failed: ${err.message}`);
+        // Next provider try करो
       }
-      if (status!== 'SUCCEEDED') throw new Error('Runway timeout');
-      let videoUrl = taskStatus.output?.output?.[0] || taskStatus.output?.[0] || taskStatus.output?.videoUrl;
-      if (!videoUrl) throw new Error('No video URL from Runway');
-      return res.json({ videoUrl, status: "success", provider: "runway" });
-    } catch (e) {
-      console.warn(`⚠️ RunwayML failed: ${e.message}`);
+    } else {
+      console.log(`⏭️ ${provider.name} Skipped - API Key नहीं है`);
     }
   }
-  return res.json({ videoUrl: demoVideoUrl, status: "demo", provider: "demo" });
-});
 
-// ==================== 9. ZEROSCOPE ====================
-app.post("/api/video/generate-zeroscope", async (req, res) => {
-  const { prompt, fps = 24, width = 1024, height = 576, guidance_scale = 17.5, negative_prompt = "very blue, dust, noisy, ugly, distorted" } = req.body;
-  if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
-  const apiKey = process.env.REPLICATE_API_KEY_ZEROSCOPE;
-  if (!apiKey) return res.status(500).json({ error: "Zeroscope API key not configured", demoUrl: "https://www.w3schools.com/html/mov_bbb.mp4" });
-
-  try {
-    const Replicate = (await import('replicate')).default;
-    const replicate = new Replicate({ auth: apiKey });
-    const output = await replicate.run("anotherjesse/zeroscope-v2-xl:9f747673945c62801b13b84701c783929c0ee784e4748ec062204894dda1a351", {
-      input: { fps: parseInt(fps), width: parseInt(width), height: parseInt(height), prompt, guidance_scale: parseFloat(guidance_scale), negative_prompt }
-    });
-    let videoUrl = Array.isArray(output)? output[0]?.url?.() || output[0] : output?.url || output;
-    if (!videoUrl) throw new Error("No video URL found");
-    res.json({ videoUrl, status: "success", provider: "zeroscope" });
-  } catch (error) {
-    console.error("❌ Zeroscope Error:", error.message);
-    res.status(500).json({ error: error.message, demoUrl: "https://www.w3schools.com/html/mov_bbb.mp4", demo: true });
-  }
-});
-
-// ==================== 10. SORA ====================
-app.post("/api/video/generate-sora", async (req, res) => {
-  const { prompt, model = "sora-2-pro", seconds = 8, size = "1280x720" } = req.body;
-  if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
-  const apiKey = process.env.OPENAI_VIDEO_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: "Sora API key not configured", videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4", demo: true });
-
-  try {
-    const openai = new OpenAI({ apiKey });
-    if (!openai.videos?.create) throw new Error('Sora API not available');
-    const video = await openai.videos.create({ model, prompt, seconds: parseInt(seconds), size });
-    let videoStatus = video, attempts = 0;
-    while (videoStatus.status!== "completed" && videoStatus.status!== "failed" && attempts < 60) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      videoStatus = await openai.videos.retrieve(video.id);
-      attempts++;
-    }
-    if (videoStatus.status!== "completed") throw new Error("Sora timeout or failed");
-    res.json({ videoUrl: videoStatus.url, status: "success", provider: "sora", videoId: video.id });
-  } catch (error) {
-    console.error("❌ Sora API error:", error.message);
-    res.status(500).json({ error: error.message, videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4", demo: true });
-  }
-});
-// ==================== JSON2VIDEO API ====================
-app.post("/api/video/generate-json2video", async (req, res) => {
-  const { prompt, duration = 5 } = req.body;
-
-  console.log(`🎬 JSON2Video Request: ${prompt}`); // ← Log के लिए
-
-  if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
-
-  const apiKey = process.env.JSON2VIDEO_API_KEY; // ← Render में ये ENV डालना
-  if (!apiKey) return res.status(500).json({
-    error: "JSON2Video API key not configured",
+  // सब Fail - Demo Video भेज दो ताकि App Crash न हो
+  console.log("❌ All providers failed. Sending demo video.");
+  return res.json({
     videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
-    demo: true
+    status: "demo",
+    provider: "demo",
+    message: "सभी Video APIs में Problem है। Demo Video दिखा रहे हैं 🙏"
+  });
+});
+
+// ==================== PROVIDER FUNCTIONS ====================
+
+// 1. RUNWAY
+async function generateRunwayVideo(prompt, duration) {
+  const client = new RunwayML({ apiKey: process.env.RUNWAYML_API_SECRET });
+
+  // DALL-E से Image
+  const dalleResponse = await axios.post("https://api.openai.com/v1/images/generations", {
+    model: "dall-e-3", prompt: prompt + ", safe family-friendly", n: 1, size: "1024x1024"
+  }, { headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` } });
+  const imageUrl = dalleResponse.data.data[0].url;
+
+  const task = await client.imageToVideo.create({
+    model: 'gen4_turbo', promptImage: imageUrl, promptText: prompt,
+    ratio: '1280:720', duration: Math.min(Math.max(parseInt(duration), 2), 10)
   });
 
-  try {
-    // JSON2Video API Call
-    const response = await fetch("https://api.json2video.com/v2/movies", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey
-      },
-      body: JSON.stringify({
-        resolution: "hd",
-        scenes: [
-          {
-            duration: Math.min(Math.max(parseInt(duration), 3), 10),
-            elements: [
-              {
-                type: "text",
-                text: prompt,
-                style: "001", // Basic Style
-                duration: parseInt(duration)
-              }
-            ]
-          }
-        ]
-      })
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.message || "JSON2Video API error");
-    }
-
-    // Polling for Video URL
-    const movieId = data.project;
-    let videoUrl = null;
-    let attempts = 0;
-
-    while (attempts < 60) {
-      await new Promise(resolve => setTimeout(resolve, 3000)); // 3 sec wait
-
-      const statusResponse = await fetch(`https://api.json2video.com/v2/movies?project=${movieId}`, {
-        headers: { "x-api-key": apiKey }
-      });
-      const statusData = await statusResponse.json();
-
-      if (statusData.movie?.status === "done") {
-        videoUrl = statusData.movie.url;
-        break;
-      }
-      if (statusData.movie?.status === "error") {
-        throw new Error("Video generation failed");
-      }
-      attempts++;
-    }
-
-    if (!videoUrl) throw new Error("Video generation timeout");
-
-    console.log(`✅ JSON2Video Success: ${videoUrl}`);
-    res.json({ videoUrl, status: "success", provider: "json2video" });
-
-  } catch (error) {
-    console.error("❌ JSON2Video Error:", error.message);
-    res.status(500).json({
-      error: error.message,
-      videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
-      demo: true
-    });
+  let attempts = 0, taskStatus = null;
+  while (attempts < 90) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    taskStatus = await client.tasks.retrieve(task.id);
+    if (taskStatus.status === 'SUCCEEDED') break;
+    if (taskStatus.status === 'FAILED') throw new Error(`Runway failed: ${taskStatus.error?.message}`);
+    attempts++;
   }
-});
+  if (taskStatus.status!== 'SUCCEEDED') throw new Error('Runway timeout');
+  return taskStatus.output?.output?.[0] || taskStatus.output?.[0] || taskStatus.videoUrl;
+}
+
+// 2. JSON2VIDEO
+async function generateJSON2Video(prompt, duration) {
+  const response = await fetch("https://api.json2video.com/v2/movies", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": process.env.JSON2VIDEO_API_KEY },
+    body: JSON.stringify({
+      resolution: "hd",
+      scenes: [{
+        duration: Math.min(Math.max(parseInt(duration), 3), 10),
+        elements: [{ type: "text", text: prompt, style: "001", duration: parseInt(duration) }]
+      }]
+    })
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message || "JSON2Video API error");
+
+  const movieId = data.project;
+  let attempts = 0;
+  while (attempts < 60) {
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    const statusResponse = await fetch(`https://api.json2video.com/v2/movies?project=${movieId}`, {
+      headers: { "x-api-key": process.env.JSON2VIDEO_API_KEY }
+    });
+    const statusData = await statusResponse.json();
+    if (statusData.movie?.status === "done") return statusData.movie.url;
+    if (statusData.movie?.status === "error") throw new Error("JSON2Video failed");
+    attempts++;
+  }
+  throw new Error("JSON2Video timeout");
+}
+
+// 3. SORA
+async function generateSoraVideo(prompt, duration) {
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_VIDEO_API_KEY });
+  if (!openai.videos?.create) throw new Error('Sora API not available');
+  const video = await openai.videos.create({
+    model: "sora-2-pro", prompt, seconds: Math.min(Math.max(parseInt(duration), 4), 10), size: "1280x720"
+  });
+  let videoStatus = video, attempts = 0;
+  while (videoStatus.status!== "completed" && videoStatus.status!== "failed" && attempts < 60) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    videoStatus = await openai.videos.retrieve(video.id);
+    attempts++;
+  }
+  if (videoStatus.status!== "completed") throw new Error("Sora timeout or failed");
+  return videoStatus.url;
+}
+
+// 4. ZEROSCOPE
+async function generateZeroscopeVideo(prompt) {
+  const Replicate = (await import('replicate')).default;
+  const replicate = new Replicate({ auth: process.env.REPLICATE_API_KEY_ZEROSCOPE });
+  const output = await replicate.run("anotherjesse/zeroscope-v2-xl:9f747673945c62801b13b84701c783929c0ee784e4748ec062204894dda1a351", {
+    input: { fps: 24, width: 1024, height: 576, prompt, guidance_scale: 17.5 }
+  });
+  let videoUrl = Array.isArray(output)? output[0]?.url?.() || output[0] : output?.url || output;
+  if (!videoUrl) throw new Error("No video URL from Zeroscope");
+  return videoUrl;
+}
 
 // ==================== 11. AUDIO TRANSCRIBE ====================
 app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
