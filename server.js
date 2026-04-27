@@ -549,6 +549,90 @@ app.post("/api/video/generate-sora", async (req, res) => {
     res.status(500).json({ error: error.message, videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4", demo: true });
   }
 });
+// ==================== JSON2VIDEO API ====================
+app.post("/api/video/generate-json2video", async (req, res) => {
+  const { prompt, duration = 5 } = req.body;
+
+  console.log(`🎬 JSON2Video Request: ${prompt}`); // ← Log के लिए
+
+  if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
+
+  const apiKey = process.env.JSON2VIDEO_API_KEY; // ← Render में ये ENV डालना
+  if (!apiKey) return res.status(500).json({
+    error: "JSON2Video API key not configured",
+    videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
+    demo: true
+  });
+
+  try {
+    // JSON2Video API Call
+    const response = await fetch("https://api.json2video.com/v2/movies", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey
+      },
+      body: JSON.stringify({
+        resolution: "hd",
+        scenes: [
+          {
+            duration: Math.min(Math.max(parseInt(duration), 3), 10),
+            elements: [
+              {
+                type: "text",
+                text: prompt,
+                style: "001", // Basic Style
+                duration: parseInt(duration)
+              }
+            ]
+          }
+        ]
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || "JSON2Video API error");
+    }
+
+    // Polling for Video URL
+    const movieId = data.project;
+    let videoUrl = null;
+    let attempts = 0;
+
+    while (attempts < 60) {
+      await new Promise(resolve => setTimeout(resolve, 3000)); // 3 sec wait
+
+      const statusResponse = await fetch(`https://api.json2video.com/v2/movies?project=${movieId}`, {
+        headers: { "x-api-key": apiKey }
+      });
+      const statusData = await statusResponse.json();
+
+      if (statusData.movie?.status === "done") {
+        videoUrl = statusData.movie.url;
+        break;
+      }
+      if (statusData.movie?.status === "error") {
+        throw new Error("Video generation failed");
+      }
+      attempts++;
+    }
+
+    if (!videoUrl) throw new Error("Video generation timeout");
+
+    console.log(`✅ JSON2Video Success: ${videoUrl}`);
+    res.json({ videoUrl, status: "success", provider: "json2video" });
+
+  } catch (error) {
+    console.error("❌ JSON2Video Error:", error.message);
+    res.status(500).json({
+      error: error.message,
+      videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
+      demo: true
+    });
+  }
+});
 
 // ==================== 11. AUDIO TRANSCRIBE ====================
 app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
