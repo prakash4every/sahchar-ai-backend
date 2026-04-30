@@ -426,56 +426,21 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   }
 });
 
-// ==================== UNIFIED VIDEO GENERATION - FIXED ====================
+// ==================== UNIFIED VIDEO GENERATION - DEMO MODE ====================
 app.post("/api/video/generate", async (req, res) => {
-  const { prompt, duration = 5 } = req.body;
-
-  console.log(`🎬 Video Request: ${prompt}`);
+  const { prompt } = req.body;
+  console.log(`🎬 Video Request (DEMO MODE): ${prompt?.substring(0,50)}...`);
 
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
 
-  // PRIORITY: HF -> JSON2Video (Image) -> Others
-  const providers = [
-    {
-      name: "HuggingFace (FREE)",
-      envKey: "HF_TOKEN",
-      generate: () => generateHuggingFaceVideo(prompt)
-    },
-    {
-      name: "JSON2Video (Image-to-Video)",
-      envKey: "JSON2VIDEO_API_KEY",
-      generate: () => generateJSON2Video(prompt, duration)
-    }
-  ];
-
-  for (const provider of providers) {
-    if (process.env[provider.envKey]) {
-      try {
-        console.log(`🔄 Trying ${provider.name}...`);
-        const videoUrl = await provider.generate();
-        console.log(`✅ ${provider.name} Success`);
-        return res.json({
-          videoUrl,
-          status: "success",
-          provider: provider.name.toLowerCase()
-        });
-      } catch (err) {
-        console.warn(`⚠️ ${provider.name} Failed: ${err.message}`);
-      }
-    } else {
-      console.log(`⏭️ ${provider.name} Skipped - API Key नहीं है`);
-    }
-  }
-
-  console.log("❌ All providers failed. Sending demo video.");
+  // Testing Track के लिए Demo Video - 100% Stable
   return res.json({
     videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
     status: "demo",
     provider: "demo",
-    message: "Video service busy. Please try again 🙏"
+    message: "Video generation testing mode - coming soon 🙏"
   });
 });
-
 // ==================== VIDEO PROVIDER FUNCTIONS ====================
 
 // 1. HUGGINGFACE - Improved
