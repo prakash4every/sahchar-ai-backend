@@ -65,7 +65,7 @@ async function initMongoDB() {
 
     await db.collection('conversations').createIndex({ sessionId: 1, timestamp: -1 });
     await db.collection('assistant_threads').createIndex({ sessionId: 1 }, { unique: true });
-    console.log("✅ MongoDB Indexes Created"); 
+    console.log("✅ MongoDB Indexes Created");
   } catch (error) {
     console.error("❌ MongoDB Connection FAILED:", error.message);
     process.exit(1);
@@ -90,10 +90,10 @@ async function loadConversationFromDB(sid, limit = 6) {
   if (!db) return [];
   try {
     const messages = await db.collection('conversations')
-   .find({ sessionId: sid })
-   .sort({ timestamp: -1 })
-   .limit(limit)
-   .toArray();
+  .find({ sessionId: sid })
+  .sort({ timestamp: -1 })
+  .limit(limit)
+  .toArray();
 
     const history = [];
     messages.reverse().forEach(msg => {
@@ -142,7 +142,7 @@ process.on('uncaughtException', (error) => {
 });
 
 // ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 सहचर AI बैकएंड v3.1 चालू है ✅"));
+app.get("/", (req, res) => res.send("🌿 सहचर AI बैकएंड v3.2 FREE VIDEO चालू है ✅"));
 app.get("/chat", (req, res) => res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅"));
 
 // ==================== 1. DEEPSEEK CHAT ====================
@@ -150,7 +150,7 @@ app.post("/chat", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
 
-  console.log(`📩 Chat Request [${sid}]: ${message?.substring(0, 50)}...`); // ← ये Add करो
+  console.log(`📩 Chat Request [${sid}]: ${message?.substring(0, 50)}...`);
 
   if (!message) return res.status(400).json({ reply: "Message required 🙏" });
 
@@ -170,7 +170,7 @@ app.post("/chat", async (req, res) => {
           role: "system",
           content: `तुम 'SahcharAI' हो – राम प्रकाश कुमार द्वारा निर्मित AI सहायक। वर्तमान समय: ${currentDateTime} IST। छोटे वाक्य, इमोजी 🙏🌿🪷। अंत में 'जय भीम, नमो बुद्धाय 🙏'।${imageContext}`
         },
-   ...history
+  ...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -204,7 +204,7 @@ app.post("/chat", async (req, res) => {
 
     await saveConversationToDB(sid, message, botReply, 'DeepSeek');
 
-    console.log(`✅ Chat Reply [${sid}]: ${botReply.substring(0, 50)}...`); // ← ये Add करो
+    console.log(`✅ Chat Reply [${sid}]: ${botReply.substring(0, 50)}...`);
 
     res.json({ reply: botReply });
   } catch (error) {
@@ -212,7 +212,8 @@ app.post("/chat", async (req, res) => {
     res.status(500).json({ reply: "क्षमा करें, अभी सेवा व्यस्त है। 🙏" });
   }
 });
-// ==================== OPENAI RESPONSES API - NAYA & TEZ ====================
+
+// ==================== OPENAI RESPONSES API ====================
 app.post("/chat-assistant", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
@@ -222,7 +223,6 @@ app.post("/chat-assistant", async (req, res) => {
   if (!apiKey) return res.status(501).json({ reply: "OpenAI not configured." });
 
   try {
-    // 👇 YE 4 LINE ADD KARO - TUM BHOOL GAYE THE
     const now = new Date();
     const currentDateTime = now.toLocaleString('hi-IN', {
       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
@@ -237,15 +237,15 @@ app.post("/chat-assistant", async (req, res) => {
       input: [
         {
           role: "system",
-          content: `तुम्हारा नाम 'SahcharAI' है। तुम्हें राम प्रकाश कुमार ने बनाया है। 
-          
+          content: `तुम्हारा नाम 'SahcharAI' है। तुम्हें राम प्रकाश कुमार ने बनाया है।
+
           नियम:
           1. अगर कोई पूछे "तुम्हें किसने बनाया" तो सिर्फ यही बोलना: "मुझे राम प्रकाश कुमार ने बनाया है 🙏"
-          2. कभी मत बोलना कि OpenAI, Google, Meta ने बनाया। 
-          3. वर्तमान समय: ${currentDateTime} IST। 
+          2. कभी मत बोलना कि OpenAI, Google, Meta ने बनाया।
+          3. वर्तमान समय: ${currentDateTime} IST।
           4. 1-2 वाक्य में जवाब दो। अंत में 'जय भीम, नमो बुद्धाय 🙏'`
         },
-    ...history,
+   ...history,
         { role: "user", content: message }
       ],
       max_output_tokens: 150,
@@ -288,7 +288,7 @@ app.post("/chat-sambanova", async (req, res) => {
       const history = await loadConversationFromDB(sid, 6);
       conversations[sid] = [
         { role: "system", content: `तुम राम प्रकाश कुमार द्वारा निर्मित AI हो। वर्तमान समय: ${currentDateTime} IST। अंत में 'जय भीम, नमो बुद्धाय 🙏'${imageContext}` },
-    ...history
+   ...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -335,7 +335,7 @@ app.post("/chat-nvidia", async (req, res) => {
       const history = await loadConversationFromDB(sid, 6);
       conversations[sid] = [
         { role: "system", content: `तुम 'SuperSahchar' हो – राम प्रकाश कुमार द्वारा निर्मित इंसानी दोस्त। छोटे वाक्य, सवाल पूछो, इमोजी 😊🙏। वर्तमान समय: ${currentDateTime} IST।${imageContext}` },
-    ...history
+   ...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -370,7 +370,7 @@ app.post("/chat-nvidia", async (req, res) => {
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
 
-  console.log(`🎨 Image Gen Request: ${prompt}`); // ← ये Add करो
+  console.log(`🎨 Image Gen Request: ${prompt}`);
 
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
   const apiKey = process.env.OPENAI_API_KEY;
@@ -380,7 +380,7 @@ app.post("/api/image/generate", async (req, res) => {
       model: "dall-e-3", prompt, n: 1, size: "1024x1024"
     }, { headers: { "Authorization": `Bearer ${apiKey}` } });
 
-    console.log(`✅ Image Generated: ${response.data.data[0].url}`); // ← ये Add करो
+    console.log(`✅ Image Generated: ${response.data.data[0].url}`);
 
     res.json({ imageUrl: response.data.data[0].url });
   } catch (error) {
@@ -388,6 +388,7 @@ app.post("/api/image/generate", async (req, res) => {
     res.status(500).json({ error: "इमेज जनरेशन फेल", imageUrl: "https://via.placeholder.com/1024x1024.png?text=Error" });
   }
 });
+
 // ==================== 6. IMAGE ANALYZE ====================
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "कोई इमेज अपलोड नहीं की गई है। 🙏" });
@@ -425,7 +426,7 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   }
 });
 
-// ==================== UNIFIED VIDEO GENERATION - AUTO FALLBACK ====================
+// ==================== UNIFIED VIDEO GENERATION - FREE FIRST ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, duration = 5 } = req.body;
 
@@ -433,8 +434,18 @@ app.post("/api/video/generate", async (req, res) => {
 
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
 
-  // Priority Order: Runway -> JSON2Video -> Sora -> Zeroscope -> Demo
+  // FREE FIRST: Luma -> HuggingFace -> Paid Fallbacks
   const providers = [
+    {
+      name: "Luma Dream Machine (FREE)",
+      envKey: "LUMA_API_KEY",
+      generate: () => generateLumaVideo(prompt, duration)
+    },
+    {
+      name: "HuggingFace (FREE)",
+      envKey: "HF_TOKEN",
+      generate: () => generateHuggingFaceVideo(prompt)
+    },
     {
       name: "RunwayML",
       envKey: "RUNWAYML_API_SECRET",
@@ -444,20 +455,9 @@ app.post("/api/video/generate", async (req, res) => {
       name: "JSON2Video",
       envKey: "JSON2VIDEO_API_KEY",
       generate: () => generateJSON2Video(prompt, duration)
-    },
-    {
-      name: "Sora",
-      envKey: "OPENAI_VIDEO_API_KEY",
-      generate: () => generateSoraVideo(prompt, duration)
-    },
-    {
-      name: "Zeroscope",
-      envKey: "REPLICATE_API_KEY_ZEROSCOPE",
-      generate: () => generateZeroscopeVideo(prompt)
     }
   ];
 
-  // Try each provider - जिसके पास Key है और Credit है वो चलेगा
   for (const provider of providers) {
     if (process.env[provider.envKey]) {
       try {
@@ -471,30 +471,87 @@ app.post("/api/video/generate", async (req, res) => {
         });
       } catch (err) {
         console.warn(`⚠️ ${provider.name} Failed: ${err.message}`);
-        // Next provider try करो
       }
     } else {
       console.log(`⏭️ ${provider.name} Skipped - API Key नहीं है`);
     }
   }
 
-  // सब Fail - Demo Video भेज दो ताकि App Crash न हो
   console.log("❌ All providers failed. Sending demo video.");
   return res.json({
     videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
     status: "demo",
     provider: "demo",
-    message: "सभी Video APIs में Problem है। Demo Video दिखा रहे हैं 🙏"
+    message: "Free Video APIs में Problem है। LUMA_API_KEY या HF_TOKEN add करें 🙏"
   });
 });
 
-// ==================== PROVIDER FUNCTIONS ====================
+// ==================== FREE PROVIDER FUNCTIONS ====================
 
-// 1. RUNWAY
+// 1. LUMA DREAM MACHINE - 30 FREE/month
+async function generateLumaVideo(prompt, duration) {
+  const response = await fetch("https://api.lumalabs.ai/dream-machine/v1/generations", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.LUMA_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      prompt: prompt,
+      aspect_ratio: "16:9",
+      loop: false
+    })
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || "Luma API error");
+
+  const id = data.id;
+  let attempts = 0;
+  while (attempts < 60) {
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    const statusRes = await fetch(`https://api.lumalabs.ai/dream-machine/v1/generations/${id}`, {
+      headers: { "Authorization": `Bearer ${process.env.LUMA_API_KEY}` }
+    });
+    const status = await statusRes.json();
+    if (status.state === "completed") return status.assets.video;
+    if (status.state === "failed") throw new Error("Luma generation failed");
+    attempts++;
+  }
+  throw new Error("Luma timeout");
+}
+
+// 2. HUGGINGFACE - 100% FREE
+async function generateHuggingFaceVideo(prompt) {
+  const response = await fetch(
+    "https://api-inference.huggingface.co/models/damo-vilab/text-to-video-ms-1.7b",
+    {
+      headers: {
+        "Authorization": `Bearer ${process.env.HF_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      method: "POST",
+      body: JSON.stringify({ inputs: prompt }),
+    }
+  );
+  if (!response.ok) throw new Error("HuggingFace failed");
+
+  // HF returns video bytes - upload to free host (tmpfiles.org)
+  const buffer = await response.arrayBuffer();
+  const uploadRes = await fetch("https://tmpfiles.org/api/v1/upload", {
+    method: "POST",
+    body: (() => {
+      const form = new FormData();
+      form.append("file", new Blob([buffer]), "video.mp4");
+      return form;
+    })()
+  });
+  const uploadData = await uploadRes.json();
+  return uploadData.data.url.replace("tmpfiles.org/", "tmpfiles.org/dl/");
+}
+
+// ==================== PAID PROVIDER FUNCTIONS (Existing) ====================
 async function generateRunwayVideo(prompt, duration) {
   const client = new RunwayML({ apiKey: process.env.RUNWAYML_API_SECRET });
-
-  // DALL-E से Image
   const dalleResponse = await axios.post("https://api.openai.com/v1/images/generations", {
     model: "dall-e-3", prompt: prompt + ", safe family-friendly", n: 1, size: "1024x1024"
   }, { headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` } });
@@ -517,7 +574,6 @@ async function generateRunwayVideo(prompt, duration) {
   return taskStatus.output?.output?.[0] || taskStatus.output?.[0] || taskStatus.videoUrl;
 }
 
-// 2. JSON2VIDEO
 async function generateJSON2Video(prompt, duration) {
   const response = await fetch("https://api.json2video.com/v2/movies", {
     method: "POST",
@@ -548,36 +604,7 @@ async function generateJSON2Video(prompt, duration) {
   throw new Error("JSON2Video timeout");
 }
 
-// 3. SORA
-async function generateSoraVideo(prompt, duration) {
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_VIDEO_API_KEY });
-  if (!openai.videos?.create) throw new Error('Sora API not available');
-  const video = await openai.videos.create({
-    model: "sora-2-pro", prompt, seconds: Math.min(Math.max(parseInt(duration), 4), 10), size: "1280x720"
-  });
-  let videoStatus = video, attempts = 0;
-  while (videoStatus.status!== "completed" && videoStatus.status!== "failed" && attempts < 60) {
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    videoStatus = await openai.videos.retrieve(video.id);
-    attempts++;
-  }
-  if (videoStatus.status!== "completed") throw new Error("Sora timeout or failed");
-  return videoStatus.url;
-}
-
-// 4. ZEROSCOPE
-async function generateZeroscopeVideo(prompt) {
-  const Replicate = (await import('replicate')).default;
-  const replicate = new Replicate({ auth: process.env.REPLICATE_API_KEY_ZEROSCOPE });
-  const output = await replicate.run("anotherjesse/zeroscope-v2-xl:9f747673945c62801b13b84701c783929c0ee784e4748ec062204894dda1a351", {
-    input: { fps: 24, width: 1024, height: 576, prompt, guidance_scale: 17.5 }
-  });
-  let videoUrl = Array.isArray(output)? output[0]?.url?.() || output[0] : output?.url || output;
-  if (!videoUrl) throw new Error("No video URL from Zeroscope");
-  return videoUrl;
-}
-
-// ==================== 11. AUDIO TRANSCRIBE ====================
+// ==================== AUDIO TRANSCRIBE ====================
 app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "ऑडियो फाइल जरूरी है" });
   try {
@@ -591,7 +618,7 @@ app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ==================== WEBSOCKET LIVE AUDIO - WITH MEMORY ====================
+// ==================== WEBSOCKET LIVE AUDIO ====================
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const deviceId = url.searchParams.get('deviceId') || 'default';
@@ -606,7 +633,6 @@ wss.on('connection', (ws, req) => {
   ws.on('message', async (data) => {
     try {
       if (openai && data instanceof Buffer) {
-        // 1. Speech to Text
         const transcription = await openai.audio.transcriptions.create({
           file: new File([data], "audio.wav", { type: "audio/wav" }),
           model: "whisper-1",
@@ -616,15 +642,13 @@ wss.on('connection', (ws, req) => {
         console.log(`👤 User [${sessionId}]: ${userText}`);
         ws.send(JSON.stringify({ type: 'user_transcript', text: userText }));
 
-        // 2. Load history from DB
         const history = await loadConversationFromDB(sessionId, 6);
         const messages = [
           { role: "system", content: `You are SahcharAI. Reply in Hindi, 1-2 sentences.` },
-       ...history,
+      ...history,
           { role: "user", content: userText }
         ];
 
-        // 3. Get LLM reply
         const completion = await openai.chat.completions.create({
           model: "gpt-4o-mini",
           messages,
@@ -633,10 +657,7 @@ wss.on('connection', (ws, req) => {
         const botReply = completion.choices[0].message.content;
         console.log(`🤖 Bot [${sessionId}]: ${botReply}`);
 
-        // 4. Save to DB - YE IMPORTANT HAI
         await saveConversationToDB(sessionId, userText, botReply, 'LiveAudio');
-
-        // 5. Send to client
         ws.send(JSON.stringify({ type: 'bot_transcript', text: botReply }));
       }
     } catch (err) {
@@ -651,5 +672,5 @@ wss.on('connection', (ws, req) => {
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 Server v3.1 running on port ${PORT} with MongoDB + LiveAudio Memory`);
+  console.log(`🚀 Server v3.2 running on port ${PORT} with FREE VIDEO (Luma+HF)`);
 });
