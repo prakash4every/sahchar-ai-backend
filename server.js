@@ -481,7 +481,7 @@ app.post("/api/video/generate", async (req, res) => {
 // 1. HUGGINGFACE - Improved
 async function generateHuggingFaceVideo(prompt) {
   const response = await fetch(
-    "https://api-inference.huggingface.co/models/damo-vilab/text-to-video-ms-1.7b",
+    "https://api-inference.huggingface.co/models/ali-vilab/text-to-video-ms-1.7b",
     {
       headers: {
         "Authorization": `Bearer ${process.env.HF_TOKEN}`,
