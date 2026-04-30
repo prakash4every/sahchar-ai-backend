@@ -90,10 +90,10 @@ async function loadConversationFromDB(sid, limit = 6) {
   if (!db) return [];
   try {
     const messages = await db.collection('conversations')
-  .find({ sessionId: sid })
-  .sort({ timestamp: -1 })
-  .limit(limit)
-  .toArray();
+ .find({ sessionId: sid })
+ .sort({ timestamp: -1 })
+ .limit(limit)
+ .toArray();
 
     const history = [];
     messages.reverse().forEach(msg => {
@@ -142,7 +142,7 @@ process.on('uncaughtException', (error) => {
 });
 
 // ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 सहचर AI बैकएंड v3.2 FREE VIDEO चालू है ✅"));
+app.get("/", (req, res) => res.send("🌿 सहचर AI बैकएंड v3.3 STABLE चालू है ✅"));
 app.get("/chat", (req, res) => res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅"));
 
 // ==================== 1. DEEPSEEK CHAT ====================
@@ -170,7 +170,7 @@ app.post("/chat", async (req, res) => {
           role: "system",
           content: `तुम 'SahcharAI' हो – राम प्रकाश कुमार द्वारा निर्मित AI सहायक। वर्तमान समय: ${currentDateTime} IST। छोटे वाक्य, इमोजी 🙏🌿🪷। अंत में 'जय भीम, नमो बुद्धाय 🙏'।${imageContext}`
         },
-  ...history
+ ...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -245,7 +245,7 @@ app.post("/chat-assistant", async (req, res) => {
           3. वर्तमान समय: ${currentDateTime} IST।
           4. 1-2 वाक्य में जवाब दो। अंत में 'जय भीम, नमो बुद्धाय 🙏'`
         },
-   ...history,
+  ...history,
         { role: "user", content: message }
       ],
       max_output_tokens: 150,
@@ -288,7 +288,7 @@ app.post("/chat-sambanova", async (req, res) => {
       const history = await loadConversationFromDB(sid, 6);
       conversations[sid] = [
         { role: "system", content: `तुम राम प्रकाश कुमार द्वारा निर्मित AI हो। वर्तमान समय: ${currentDateTime} IST। अंत में 'जय भीम, नमो बुद्धाय 🙏'${imageContext}` },
-   ...history
+  ...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -335,7 +335,7 @@ app.post("/chat-nvidia", async (req, res) => {
       const history = await loadConversationFromDB(sid, 6);
       conversations[sid] = [
         { role: "system", content: `तुम 'SuperSahchar' हो – राम प्रकाश कुमार द्वारा निर्मित इंसानी दोस्त। छोटे वाक्य, सवाल पूछो, इमोजी 😊🙏। वर्तमान समय: ${currentDateTime} IST।${imageContext}` },
-   ...history
+  ...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -426,7 +426,7 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   }
 });
 
-// ==================== UNIFIED VIDEO GENERATION - FREE FIRST ====================
+// ==================== UNIFIED VIDEO GENERATION - FIXED ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt, duration = 5 } = req.body;
 
@@ -434,25 +434,15 @@ app.post("/api/video/generate", async (req, res) => {
 
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
 
-  // FREE FIRST: Luma -> HuggingFace -> Paid Fallbacks
+  // PRIORITY: HF -> JSON2Video (Image) -> Others
   const providers = [
-    {
-      name: "Luma Dream Machine (FREE)",
-      envKey: "LUMA_API_KEY",
-      generate: () => generateLumaVideo(prompt, duration)
-    },
     {
       name: "HuggingFace (FREE)",
       envKey: "HF_TOKEN",
       generate: () => generateHuggingFaceVideo(prompt)
     },
     {
-      name: "RunwayML",
-      envKey: "RUNWAYML_API_SECRET",
-      generate: () => generateRunwayVideo(prompt, duration)
-    },
-    {
-      name: "JSON2Video",
+      name: "JSON2Video (Image-to-Video)",
       envKey: "JSON2VIDEO_API_KEY",
       generate: () => generateJSON2Video(prompt, duration)
     }
@@ -482,45 +472,13 @@ app.post("/api/video/generate", async (req, res) => {
     videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
     status: "demo",
     provider: "demo",
-    message: "Free Video APIs में Problem है। LUMA_API_KEY या HF_TOKEN add करें 🙏"
+    message: "Video service busy. Please try again 🙏"
   });
 });
 
-// ==================== FREE PROVIDER FUNCTIONS ====================
+// ==================== VIDEO PROVIDER FUNCTIONS ====================
 
-// 1. LUMA DREAM MACHINE - 30 FREE/month
-async function generateLumaVideo(prompt, duration) {
-  const response = await fetch("https://api.lumalabs.ai/dream-machine/v1/generations", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.LUMA_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      prompt: prompt,
-      aspect_ratio: "16:9",
-      loop: false
-    })
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.detail || "Luma API error");
-
-  const id = data.id;
-  let attempts = 0;
-  while (attempts < 60) {
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    const statusRes = await fetch(`https://api.lumalabs.ai/dream-machine/v1/generations/${id}`, {
-      headers: { "Authorization": `Bearer ${process.env.LUMA_API_KEY}` }
-    });
-    const status = await statusRes.json();
-    if (status.state === "completed") return status.assets.video;
-    if (status.state === "failed") throw new Error("Luma generation failed");
-    attempts++;
-  }
-  throw new Error("Luma timeout");
-}
-
-// 2. HUGGINGFACE - 100% FREE
+// 1. HUGGINGFACE - Improved
 async function generateHuggingFaceVideo(prompt) {
   const response = await fetch(
     "https://api-inference.huggingface.co/models/damo-vilab/text-to-video-ms-1.7b",
@@ -533,59 +491,67 @@ async function generateHuggingFaceVideo(prompt) {
       body: JSON.stringify({ inputs: prompt }),
     }
   );
-  if (!response.ok) throw new Error("HuggingFace failed");
 
-  // HF returns video bytes - upload to free host (tmpfiles.org)
-  const buffer = await response.arrayBuffer();
-  const uploadRes = await fetch("https://tmpfiles.org/api/v1/upload", {
-    method: "POST",
-    body: (() => {
-      const form = new FormData();
-      form.append("file", new Blob([buffer]), "video.mp4");
-      return form;
-    })()
-  });
-  const uploadData = await uploadRes.json();
-  return uploadData.data.url.replace("tmpfiles.org/", "tmpfiles.org/dl/");
-}
-
-// ==================== PAID PROVIDER FUNCTIONS (Existing) ====================
-async function generateRunwayVideo(prompt, duration) {
-  const client = new RunwayML({ apiKey: process.env.RUNWAYML_API_SECRET });
-  const dalleResponse = await axios.post("https://api.openai.com/v1/images/generations", {
-    model: "dall-e-3", prompt: prompt + ", safe family-friendly", n: 1, size: "1024x1024"
-  }, { headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` } });
-  const imageUrl = dalleResponse.data.data[0].url;
-
-  const task = await client.imageToVideo.create({
-    model: 'gen4_turbo', promptImage: imageUrl, promptText: prompt,
-    ratio: '1280:720', duration: Math.min(Math.max(parseInt(duration), 2), 10)
-  });
-
-  let attempts = 0, taskStatus = null;
-  while (attempts < 90) {
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    taskStatus = await client.tasks.retrieve(task.id);
-    if (taskStatus.status === 'SUCCEEDED') break;
-    if (taskStatus.status === 'FAILED') throw new Error(`Runway failed: ${taskStatus.error?.message}`);
-    attempts++;
+  if (response.status === 503) {
+    throw new Error("Model loading, wait 20s");
   }
-  if (taskStatus.status!== 'SUCCEEDED') throw new Error('Runway timeout');
-  return taskStatus.output?.output?.[0] || taskStatus.output?.[0] || taskStatus.videoUrl;
+  if (!response.ok) {
+    const text = await response.text();
+    console.error("HF Error:", text);
+    throw new Error("HuggingFace failed");
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+
+  // Upload to 0x0.st (free, reliable)
+  const formData = new FormData();
+  formData.append('file', new Blob([buffer]), 'video.mp4');
+
+  const uploadRes = await fetch("https://0x0.st", {
+    method: "POST",
+    body: formData
+  });
+
+  const videoUrl = await uploadRes.text();
+  if (!videoUrl.startsWith('http')) throw new Error("Upload failed");
+
+  return videoUrl.trim();
 }
 
+// 2. JSON2VIDEO - FIXED: Image to Video (No Text)
 async function generateJSON2Video(prompt, duration) {
+  console.log(`🎨 Step 1: Creating image for video...`);
+
+  // Create image first
+  const dalleResponse = await axios.post("https://api.openai.com/v1/images/generations", {
+    model: "dall-e-3",
+    prompt: prompt + ", cinematic, high quality, no text, no watermark",
+    n: 1,
+    size: "1024x1024"
+  }, { headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` } });
+
+  const imageUrl = dalleResponse.data.data[0].url;
+  console.log(`✅ Image created`);
+
+  // Animate image
   const response = await fetch("https://api.json2video.com/v2/movies", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": process.env.JSON2VIDEO_API_KEY },
     body: JSON.stringify({
       resolution: "hd",
       scenes: [{
-        duration: Math.min(Math.max(parseInt(duration), 3), 10),
-        elements: [{ type: "text", text: prompt, style: "001", duration: parseInt(duration) }]
+        duration: Math.min(Math.max(parseInt(duration), 5), 10),
+        elements: [{
+          type: "image",
+          src: imageUrl,
+          duration: parseInt(duration),
+          zoom: 1.2,
+          pan: "random"
+        }]
       }]
     })
   });
+
   const data = await response.json();
   if (!response.ok) throw new Error(data.message || "JSON2Video API error");
 
@@ -597,11 +563,14 @@ async function generateJSON2Video(prompt, duration) {
       headers: { "x-api-key": process.env.JSON2VIDEO_API_KEY }
     });
     const statusData = await statusResponse.json();
-    if (statusData.movie?.status === "done") return statusData.movie.url;
-    if (statusData.movie?.status === "error") throw new Error("JSON2Video failed");
+    if (statusData.movie?.status === "done") {
+      console.log(`✅ Video ready`);
+      return statusData.movie.url;
+    }
+    if (statusData.movie?.status === "error") throw new Error("Video generation failed");
     attempts++;
   }
-  throw new Error("JSON2Video timeout");
+  throw new Error("Video timeout");
 }
 
 // ==================== AUDIO TRANSCRIBE ====================
@@ -626,8 +595,8 @@ wss.on('connection', (ws, req) => {
   console.log(`🔌 WebSocket connected: ${sessionId}`);
 
   let openai;
-  if (process.env.OPENAI_VIDEO_API_KEY) {
-    openai = new OpenAI({ apiKey: process.env.OPENAI_VIDEO_API_KEY });
+  if (process.env.OPENAI_API_KEY) {
+    openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   }
 
   ws.on('message', async (data) => {
@@ -645,7 +614,7 @@ wss.on('connection', (ws, req) => {
         const history = await loadConversationFromDB(sessionId, 6);
         const messages = [
           { role: "system", content: `You are SahcharAI. Reply in Hindi, 1-2 sentences.` },
-      ...history,
+     ...history,
           { role: "user", content: userText }
         ];
 
@@ -672,5 +641,5 @@ wss.on('connection', (ws, req) => {
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 Server v3.2 running on port ${PORT} with FREE VIDEO (Luma+HF)`);
+  console.log(`🚀 Server v3.3 STABLE running on port ${PORT}`);
 });
