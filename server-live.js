@@ -156,7 +156,7 @@ wss.on('connection', async (ws, req) => {
                 console.log(`🔊 Sending ${pcmBuffer.length} bytes PCM`);
 
                 // 24kHz = 48000 bytes/sec
-                botSpeakingEndTime = Date.now() + (pcmBuffer.length / 48);
+               botSpeakingEndTime = Date.now() + (pcmBuffer.length / 48) + 1500;
 
                 const CHUNK_SIZE = 960; // 20ms at 24kHz
                 for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
