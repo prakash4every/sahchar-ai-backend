@@ -180,15 +180,19 @@ wss.on('connection', async (ws, req) => {
             isProcessing = false;
         }
     }
-
+    }
+    const pingInterval = setInterval(() => {
+        if (ws.readyState === 1) ws.ping();
+    }, 25000);
     ws.on('message', (data) => {
         if (isClosed || isBotSpeaking || Date.now() < botSpeakingEndTime) return;
         audioBuffer.push(Buffer.from(data));
         resetSilenceTimer();
     });
 
-    ws.on('close', () => { 
-        isClosed = true; 
-        console.log('🔌 Disconnected'); 
-    });
+   ws.on('close', () => {
+    isClosed = true;
+    clearInterval(pingInterval); 
+    console.log('🔌 Disconnected');
+});
 });
