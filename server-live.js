@@ -6,18 +6,15 @@ import OpenAI from 'openai';
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
-import ffmpeg from 'fluent-ffmpeg';
-import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import { MongoClient } from 'mongodb';
 
 dotenv.config();
-ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get('/', (req, res) => res.send('LiveAudio Server v2.2 - Fixed FFmpeg'));
+app.get('/', (req, res) => res.send('LiveAudio Server v2.3 - No FFmpeg'));
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 10000;
@@ -36,26 +33,32 @@ if (process.env.MONGODB_URI) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ==================== FIXED TTS ====================
-async function ttsStream(text) {
-    // Direct PCM 24kHz - NO FFmpeg needed
+// ==================== TTS - Direct PCM 24kHz ====================
+async function ttsToPcm(text) {
     const speech = await openai.audio.speech.create({
         model: "tts-1",
         voice: "nova",
         input: text,
-        response_format: "pcm"
+        response_format: "pcm"  // 24kHz PCM
     });
-    const buffer = Buffer.from(await speech.arrayBuffer());
-    return buffer; 
+    return Buffer.from(await speech.arrayBuffer());
 }
+
 function pcmToWav(pcmData, sampleRate = 16000) {
     const header = Buffer.alloc(44);
-    header.write('RIFF', 0); header.writeUInt32LE(36 + pcmData.length, 4);
-    header.write('WAVE', 8); header.write('fmt ', 12); header.writeUInt32LE(16, 16);
-    header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
-    header.writeUInt32LE(sampleRate, 24); header.writeUInt32LE(sampleRate * 2, 28);
-    header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34);
-    header.write('data', 36); header.writeUInt32LE(pcmData.length, 40);
+    header.write('RIFF', 0); 
+    header.writeUInt32LE(36 + pcmData.length, 4);
+    header.write('WAVE', 8); 
+    header.write('fmt ', 12); 
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20); 
+    header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(sampleRate, 24); 
+    header.writeUInt32LE(sampleRate * 2, 28);
+    header.writeUInt16LE(2, 32); 
+    header.writeUInt16LE(16, 34);
+    header.write('data', 36); 
+    header.writeUInt32LE(pcmData.length, 40);
     return Buffer.concat([header, pcmData]);
 }
 
@@ -93,7 +96,7 @@ wss.on('connection', async (ws, req) => {
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
         silenceTimer = setTimeout(() => {
-            if (audioBuffer.length > 0 &&!isProcessing) processAudio();
+            if (audioBuffer.length > 0 && !isProcessing) processAudio();
         }, 700);
     }
 
@@ -108,14 +111,13 @@ wss.on('connection', async (ws, req) => {
 
         console.log(`🎤 RMS: ${rms.toFixed(4)}, Bytes: ${fullAudio.length}`);
 
-        // 🔥 FIX 2: RMS threshold बढ़ाया (0.008 → 0.015)
         if (rms < 0.015 || fullAudio.length < 12000) {
             console.log('⚠️ Too quiet/short');
             isProcessing = false;
             return;
         }
 
-        const wavBuffer = pcmToWav(fullAudio);
+        const wavBuffer = pcmToWav(fullAudio, 16000);
         const tempPath = path.join('/tmp', `audio_${randomUUID()}.wav`);
         fs.writeFileSync(tempPath, wavBuffer);
 
@@ -130,7 +132,7 @@ wss.on('connection', async (ws, req) => {
             const transcript = transcription.text.trim();
             console.log(`📝 Transcript: ${transcript}`);
 
-            if (transcript.length > 1 &&!transcript.includes('प्रस्तुत्र')) {
+            if (transcript.length > 1 && !transcript.includes('प्रस्तुत्र')) {
                 safeSend(JSON.stringify({ type: "user_text", text: transcript }));
 
                 history.push({ role: 'user', content: transcript });
@@ -146,27 +148,30 @@ wss.on('connection', async (ws, req) => {
 
                 safeSend(JSON.stringify({ type: "bot_text", text: reply }));
 
-                // TTS
+                // 🔥 FIXED: Direct PCM, no FFmpeg
                 isBotSpeaking = true;
-                const mp3Stream = await ttsStream(reply);
-                const pcmBuffer = await convertMp3StreamToPcm16k(mp3Stream);
+                const pcmBuffer = await ttsToPcm(reply);
+                console.log(`🔊 Sending ${pcmBuffer.length} bytes PCM`);
 
-                // 🔥 FIX 3: Mic mute time कम
-                botSpeakingEndTime = Date.now() + (pcmBuffer.length / 32);
+                // 24kHz = 48000 bytes/sec
+                botSpeakingEndTime = Date.now() + (pcmBuffer.length / 48);
 
-                for (let i = 0; i < pcmBuffer.length; i += 640) {
+                const CHUNK_SIZE = 960; // 20ms at 24kHz
+                for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
                     if (isClosed) break;
-                    safeSend(pcmBuffer.slice(i, i + 640));
+                    safeSend(pcmBuffer.slice(i, i + CHUNK_SIZE));
                     await new Promise(r => setTimeout(r, 18));
                 }
 
                 setTimeout(() => {
                     isBotSpeaking = false;
                     safeSend(JSON.stringify({ type: "status", text: "सुनने के लिए तैयार" }));
-                }, 500);
+                    console.log('🎤 Mic unmuted');
+                }, 300);
             }
         } catch (err) {
             console.error("❌ Error:", err.message);
+            safeSend(JSON.stringify({ type: "error", text: "Error हो गया" }));
         } finally {
             try { fs.unlinkSync(tempPath); } catch {}
             isProcessing = false;
@@ -179,5 +184,8 @@ wss.on('connection', async (ws, req) => {
         resetSilenceTimer();
     });
 
-    ws.on('close', () => { isClosed = true; console.log('🔌 Disconnected'); });
+    ws.on('close', () => { 
+        isClosed = true; 
+        console.log('🔌 Disconnected'); 
+    });
 });
