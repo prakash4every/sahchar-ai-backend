@@ -114,7 +114,7 @@ wss.on('connection', async (ws, req) => {
 
         console.log(`🎤 RMS: ${rms.toFixed(4)}, Bytes: ${fullAudio.length}`);
 
-        if (rms < 0.025 || fullAudio.length < 20000) {
+        if (rms < 0.022 || fullAudio.length < 18000) {
             console.log('⚠️ Too quiet/short');
             isProcessing = false;
             return;
