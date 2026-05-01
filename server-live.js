@@ -180,7 +180,6 @@ wss.on('connection', async (ws, req) => {
             isProcessing = false;
         }
     }
-    }
     const pingInterval = setInterval(() => {
         if (ws.readyState === 1) ws.ping();
     }, 25000);
