@@ -111,7 +111,7 @@ wss.on('connection', async (ws, req) => {
 
         console.log(`🎤 RMS: ${rms.toFixed(4)}, Bytes: ${fullAudio.length}`);
 
-        if (rms < 0.015 || fullAudio.length < 12000) {
+        if (rms < 0.025 || fullAudio.length < 20000) {
             console.log('⚠️ Too quiet/short');
             isProcessing = false;
             return;
@@ -123,11 +123,12 @@ wss.on('connection', async (ws, req) => {
 
         try {
             const transcription = await openai.audio.transcriptions.create({
-                file: fs.createReadStream(tempPath),
-                model: 'whisper-1',
-                language: 'hi',
-                temperature: 0
-            });
+    file: fs.createReadStream(tempPath),
+    model: 'gpt-4o-transcribe',
+    language: 'hi',
+    prompt: 'यह हिंदी में सामान्य बातचीत है',
+    temperature: 0.2
+});
 
             const transcript = transcription.text.trim();
             console.log(`📝 Transcript: ${transcript}`);
