@@ -85,7 +85,7 @@ wss.on('connection', async (ws, req) => {
 
     const history = [{ 
     role: 'system', 
-    content: 'तुम SuperSahchar हो। तुम्हें Ram Prakash ने बनाया है। कभी OpenAI मत बोलना। तुम हिंदी में दोस्त जैसा बात करते हो।'
+    content: 'तुम SuperSahchar हो। तुम्हें Ram Prakash ने बनाया है। कभी OpenAI मत बोलना। तुम हिंदी में दोस्त जैसा बात करते हो।  जब भी कोई सवाल पूछे, पूरा और विस्तृत जवाब दो।' 
 }];
 
     function safeSend(data) {
@@ -141,7 +141,7 @@ wss.on('connection', async (ws, req) => {
                 const completion = await openai.chat.completions.create({
                     model: "gpt-4o-mini",
                     messages: history,
-                    max_tokens: 60
+                    max_tokens: 500
                 });
 
                 const reply = completion.choices[0].message.content;
