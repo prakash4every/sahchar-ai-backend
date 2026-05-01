@@ -97,7 +97,7 @@ wss.on('connection', async (ws, req) => {
         if (silenceTimer) clearTimeout(silenceTimer);
         silenceTimer = setTimeout(() => {
             if (audioBuffer.length > 0 && !isProcessing) processAudio();
-        }, 700);
+        }, 1200);
     }
 
     async function processAudio() {
