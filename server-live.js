@@ -48,22 +48,6 @@ async function ttsStream(text) {
     const buffer = Buffer.from(await speech.arrayBuffer());
     return buffer; 
 }
-function convertMp3StreamToPcm16k(mp3Stream) {
-    return new Promise((resolve, reject) => {
-        const chunks = [];
-        ffmpeg(mp3Stream)
-           .inputFormat('mp3')
-           .audioCodec('pcm_s16le')
-           .audioFrequency(16000) //.outputOptions हटाया
-           .audioChannels(1)
-           .format('s16le')
-           .on('error', (err) => reject(new Error(`FFmpeg: ${err.message}`)))
-           .on('end', () => resolve(Buffer.concat(chunks)))
-           .pipe()
-           .on('data', (chunk) => chunks.push(chunk));
-    });
-}
-
 function pcmToWav(pcmData, sampleRate = 16000) {
     const header = Buffer.alloc(44);
     header.write('RIFF', 0); header.writeUInt32LE(36 + pcmData.length, 4);
