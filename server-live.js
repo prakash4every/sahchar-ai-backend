@@ -84,7 +84,10 @@ wss.on('connection', async (ws, req) => {
     let silenceTimer = null;
     let isClosed = false;
 
-    const history = [{ role: 'system', content: 'तुम SahcharAI हो। छोटा, दोस्ताना जवाब दो।' }];
+    const history = [{ 
+    role: 'system', 
+    content: 'तुम SuperSahchar हो। तुम्हें Ram Prakash ने बनाया है। कभी OpenAI मत बोलना। तुम हिंदी में दोस्त जैसा बात करते हो।'
+}];
 
     function safeSend(data) {
         if (!isClosed && ws.readyState === 1) {
@@ -126,7 +129,6 @@ wss.on('connection', async (ws, req) => {
     file: fs.createReadStream(tempPath),
     model: 'gpt-4o-transcribe',
     language: 'hi',
-    prompt: 'यह हिंदी में सामान्य बातचीत है',
     temperature: 0.2
 });
 
