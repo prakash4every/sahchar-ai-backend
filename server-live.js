@@ -38,16 +38,16 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // ==================== FIXED TTS ====================
 async function ttsStream(text) {
+    // Direct PCM 24kHz - NO FFmpeg needed
     const speech = await openai.audio.speech.create({
         model: "tts-1",
         voice: "nova",
         input: text,
-        response_format: "mp3"
+        response_format: "pcm"
     });
-    return speech.body;
+    const buffer = Buffer.from(await speech.arrayBuffer());
+    return buffer; 
 }
-
-// 🔥 FIX 1: FFmpeg options सही किए
 function convertMp3StreamToPcm16k(mp3Stream) {
     return new Promise((resolve, reject) => {
         const chunks = [];
