@@ -213,14 +213,14 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ==================== OPENAI RESPONSES API ====================
+// ==================== 2. SAHCHAR ASSISTANT - NOW KIMI ====================
 app.post("/chat-assistant", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
   if (!message) return res.status(400).json({ error: "Message required 🙏" });
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return res.status(501).json({ reply: "OpenAI not configured." });
+  const apiKey = process.env.KIMI_API_KEY;
+  if (!apiKey) return res.status(501).json({ reply: "Kimi not configured." });
 
   try {
     const now = new Date();
@@ -229,15 +229,19 @@ app.post("/chat-assistant", async (req, res) => {
       hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
     });
 
-    const openai = new OpenAI({ apiKey });
+    const kimi = new OpenAI({
+      apiKey,
+      baseURL: 'https://api.moonshot.cn/v1'
+    });
+
     const history = await loadConversationFromDB(sid, 10);
 
-    const response = await openai.responses.create({
-      model: "gpt-4o-mini",
-      input: [
+    const response = await kimi.chat.completions.create({
+      model: "moonshot-v1-8k",
+      messages: [
         {
           role: "system",
-          content: `तुम्हारा नाम 'SahcharAI' है। तुम्हें राम प्रकाश कुमार ने बनाया है।
+          content: `तुम्हारा नाम 'SahcharAssistant' है। तुम्हें राम प्रकाश कुमार ने बनाया है।
 
           नियम:
           1. अगर कोई पूछे "तुम्हें किसने बनाया" तो सिर्फ यही बोलना: "मुझे राम प्रकाश कुमार ने बनाया है 🙏"
@@ -245,22 +249,22 @@ app.post("/chat-assistant", async (req, res) => {
           3. वर्तमान समय: ${currentDateTime} IST।
           4. 1-2 वाक्य में जवाब दो। अंत में 'जय भीम, नमो बुद्धाय 🙏'`
         },
- ...history,
+...history,
         { role: "user", content: message }
       ],
-      max_output_tokens: 150,
-      temperature: 0.3
+      temperature: 0.3,
+      max_tokens: 150
     });
 
-    let reply = response.output_text || "कोई जवाब नहीं।";
+    let reply = response.choices[0]?.message?.content || "कोई जवाब नहीं।";
     reply = reply.replace(/जय भीम, नमो बुद्धाय.*$/i, '').trim().substring(0, 500) + '\n\nजय भीम, नमो बुद्धाय 🙏';
 
-    await saveConversationToDB(sid, message, reply, 'ResponsesAPI');
-    console.log(`✅ ResponsesAPI reply for ${sid}: ${reply.substring(0, 50)}...`);
+    await saveConversationToDB(sid, message, reply, 'SahcharAssistant');
+    console.log(`✅ Kimi Assistant reply for ${sid}: ${reply.substring(0, 50)}...`);
     res.json({ reply });
 
   } catch (error) {
-    console.error("❌ Responses API error:", error.message);
+    console.error("❌ Kimi Assistant error:", error.message);
     res.status(500).json({ reply: "क्षमा करें, अभी सेवा व्यस्त है। 🙏" });
   }
 });
@@ -288,7 +292,7 @@ app.post("/chat-sambanova", async (req, res) => {
       const history = await loadConversationFromDB(sid, 6);
       conversations[sid] = [
         { role: "system", content: `तुम राम प्रकाश कुमार द्वारा निर्मित AI हो। वर्तमान समय: ${currentDateTime} IST। अंत में 'जय भीम, नमो बुद्धाय 🙏'${imageContext}` },
- ...history
+...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -335,7 +339,7 @@ app.post("/chat-nvidia", async (req, res) => {
       const history = await loadConversationFromDB(sid, 6);
       conversations[sid] = [
         { role: "system", content: `तुम 'SuperSahchar' हो – राम प्रकाश कुमार द्वारा निर्मित इंसानी दोस्त। छोटे वाक्य, सवाल पूछो, इमोजी 😊🙏। वर्तमान समय: ${currentDateTime} IST।${imageContext}` },
- ...history
+...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -366,7 +370,7 @@ app.post("/chat-nvidia", async (req, res) => {
   }
 });
 
-// ==================== 4.5 KIMI CHAT (NEW - Moonshot AI) ====================
+// ==================== 4.5 KIMI CHAT (Extra endpoint - untouched) ====================
 app.post("/chat-kimi", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
@@ -383,7 +387,6 @@ app.post("/chat-kimi", async (req, res) => {
     });
     const imageContext = getImageContextText(sid);
 
-    // Kimi uses OpenAI-compatible API
     const kimi = new OpenAI({
       apiKey,
       baseURL: 'https://api.moonshot.cn/v1'
@@ -393,7 +396,7 @@ app.post("/chat-kimi", async (req, res) => {
       const history = await loadConversationFromDB(sid, 6);
       conversations[sid] = [
         { role: "system", content: `तुम 'SahcharAI' हो – राम प्रकाश कुमार द्वारा निर्मित। वर्तमान समय: ${currentDateTime} IST। छोटे जवाब, इमोजी 🙏। अंत में 'जय भीम, नमो बुद्धाय 🙏'${imageContext}` },
-       ...history
+      ...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -525,7 +528,6 @@ async function generateHuggingFaceVideo(prompt) {
 
   const buffer = Buffer.from(await response.arrayBuffer());
 
-  // Upload to 0x0.st (free, reliable)
   const formData = new FormData();
   formData.append('file', new Blob([buffer]), 'video.mp4');
 
@@ -544,7 +546,6 @@ async function generateHuggingFaceVideo(prompt) {
 async function generateJSON2Video(prompt, duration) {
   console.log(`🎨 Step 1: Creating image for video...`);
 
-  // Create image first
   const dalleResponse = await axios.post("https://api.openai.com/v1/images/generations", {
     model: "dall-e-3",
     prompt: prompt + ", cinematic, high quality, no text, no watermark",
@@ -555,7 +556,6 @@ async function generateJSON2Video(prompt, duration) {
   const imageUrl = dalleResponse.data.data[0].url;
   console.log(`✅ Image created`);
 
-  // Animate image
   const response = await fetch("https://api.json2video.com/v2/movies", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": process.env.JSON2VIDEO_API_KEY },
@@ -636,7 +636,7 @@ wss.on('connection', (ws, req) => {
         const history = await loadConversationFromDB(sessionId, 6);
         const messages = [
           { role: "system", content: `You are SahcharAI. Reply in Hindi, 1-2 sentences.` },
-    ...history,
+   ...history,
           { role: "user", content: userText }
         ];
 
