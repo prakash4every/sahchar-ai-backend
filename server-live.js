@@ -59,7 +59,7 @@ function calculateRMS(buf) {
 // 🔥 2. स्पीच डिटेक्शन
 function detectSpeech(buffer) {
     const rms = calculateRMS(buffer);
-    return rms > 0.02;
+    return rms > 0.08;
 }
 
 wss.on('connection', async (ws) => {
