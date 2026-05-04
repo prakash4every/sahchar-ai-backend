@@ -161,7 +161,12 @@ wss.on('connection', async (ws, req) => {
     const pingInterval = setInterval(() => { if (ws.readyState === 1) ws.ping(); }, 25000);
 
     ws.on('message', (data) => {
-        if (isClosed) return;
+    if (isClosed) return;
+    if (Buffer.isBuffer(data)) {
+        console.log(`📦 Audio chunk: ${data.length} bytes`);
+    }
+    if (typeof data === 'string' || data[0] === 123) {
+    }
 
         // JSON = barge-in signal from Android
         if (typeof data === 'string' || data[0] === 123) {
