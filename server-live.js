@@ -101,7 +101,7 @@ wss.on('connection', async (ws, req) => {
         audioBuffer = [];
         const rms = calculateRMS(fullAudio);
 
-        if (rms < 0.02 || fullAudio.length < 16000) {
+        if (rms < 0.012 || fullAudio.length < 16000) {
             isProcessing = false;
             return;
         }
