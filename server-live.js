@@ -13,14 +13,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get('/', (req, res) => res.send('LiveAudio Server v2.3 - No FFmpeg'));
+app.get('/', (req, res) => res.send('LiveAudio Server v3.0 - Full Duplex'));
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 10000;
 const server = app.listen(PORT, () => console.log(`✅ HTTP server on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
-// ==================== MongoDB ====================
 let db = null;
 if (process.env.MONGODB_URI) {
     const mongoClient = new MongoClient(process.env.MONGODB_URI);
@@ -32,32 +31,24 @@ if (process.env.MONGODB_URI) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ==================== TTS - Direct PCM 24kHz ====================
 async function ttsToPcm(text) {
     const speech = await openai.audio.speech.create({
         model: "tts-1",
         voice: "nova",
         input: text,
-        response_format: "pcm"  // 24kHz PCM
+        response_format: "pcm"
     });
     return Buffer.from(await speech.arrayBuffer());
 }
 
 function pcmToWav(pcmData, sampleRate = 16000) {
     const header = Buffer.alloc(44);
-    header.write('RIFF', 0); 
-    header.writeUInt32LE(36 + pcmData.length, 4);
-    header.write('WAVE', 8); 
-    header.write('fmt ', 12); 
-    header.writeUInt32LE(16, 16);
-    header.writeUInt16LE(1, 20); 
-    header.writeUInt16LE(1, 22);
-    header.writeUInt32LE(sampleRate, 24); 
-    header.writeUInt32LE(sampleRate * 2, 28);
-    header.writeUInt16LE(2, 32); 
-    header.writeUInt16LE(16, 34);
-    header.write('data', 36); 
-    header.writeUInt32LE(pcmData.length, 40);
+    header.write('RIFF', 0); header.writeUInt32LE(36 + pcmData.length, 4);
+    header.write('WAVE', 8); header.write('fmt ', 12); header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(sampleRate, 24); header.writeUInt32LE(sampleRate * 2, 28);
+    header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34);
+    header.write('data', 36); header.writeUInt32LE(pcmData.length, 40);
     return Buffer.concat([header, pcmData]);
 }
 
@@ -70,7 +61,6 @@ function calculateRMS(buffer) {
     return Math.sqrt(sum / (buffer.length / 2)) / 32768.0;
 }
 
-// ==================== WebSocket ====================
 wss.on('connection', async (ws, req) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const deviceId = url.searchParams.get('deviceId') || 'default';
@@ -79,14 +69,14 @@ wss.on('connection', async (ws, req) => {
     let audioBuffer = [];
     let isProcessing = false;
     let isBotSpeaking = false;
-    let botSpeakingEndTime = 0;
+    let stopTTS = false;
     let silenceTimer = null;
     let isClosed = false;
 
-    const history = [{ 
-    role: 'system', 
-    content: 'तुम SuperSahchar हो। तुम्हें Ram Prakash ने बनाया है। कभी OpenAI मत बोलना। तुम हिंदी में दोस्त जैसा बात करते हो।  जब भी कोई सवाल पूछे, पूरा और विस्तृत जवाब दो।' 
-}];
+    const history = [{
+        role: 'system',
+        content: 'तुम SuperSahchar हो। तुम्हें Ram Prakash ने बनाया है। कभी OpenAI मत बोलना। हिंदी में दोस्त जैसा बात करो।'
+    }];
 
     function safeSend(data) {
         if (!isClosed && ws.readyState === 1) {
@@ -98,8 +88,8 @@ wss.on('connection', async (ws, req) => {
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
         silenceTimer = setTimeout(() => {
-            if (audioBuffer.length > 0 && !isProcessing) processAudio();
-        }, 1200);
+            if (audioBuffer.length > 0 &&!isProcessing) processAudio();
+        }, 900);
     }
 
     async function processAudio() {
@@ -111,10 +101,7 @@ wss.on('connection', async (ws, req) => {
         audioBuffer = [];
         const rms = calculateRMS(fullAudio);
 
-        console.log(`🎤 RMS: ${rms.toFixed(4)}, Bytes: ${fullAudio.length}`);
-
-        if (rms < 0.022 || fullAudio.length < 18000) {
-            console.log('⚠️ Too quiet/short');
+        if (rms < 0.02 || fullAudio.length < 16000) {
             isProcessing = false;
             return;
         }
@@ -125,72 +112,93 @@ wss.on('connection', async (ws, req) => {
 
         try {
             const transcription = await openai.audio.transcriptions.create({
-    file: fs.createReadStream(tempPath),
-    model: 'gpt-4o-transcribe',
-    language: 'hi',
-    temperature: 0.2
-});
+                file: fs.createReadStream(tempPath),
+                model: 'gpt-4o-transcribe',
+                language: 'hi',
+                temperature: 0.2
+            });
 
             const transcript = transcription.text.trim();
-            console.log(`📝 Transcript: ${transcript}`);
-
-            if (transcript.length > 1 && !transcript.includes('प्रस्तुत्र')) {
+            if (transcript.length > 1) {
                 safeSend(JSON.stringify({ type: "user_text", text: transcript }));
-
                 history.push({ role: 'user', content: transcript });
+
                 const completion = await openai.chat.completions.create({
                     model: "gpt-4o-mini",
                     messages: history,
-                    max_tokens: 500
+                    max_tokens: 300
                 });
 
                 const reply = completion.choices[0].message.content;
-                console.log(`🤖 Reply: ${reply}`);
                 history.push({ role: 'assistant', content: reply });
-
                 safeSend(JSON.stringify({ type: "bot_text", text: reply }));
 
-                // 🔥 FIXED: Direct PCM, no FFmpeg
+                // TTS streaming with barge-in support
                 isBotSpeaking = true;
+                stopTTS = false;
                 const pcmBuffer = await ttsToPcm(reply);
-                console.log(`🔊 Sending ${pcmBuffer.length} bytes PCM`);
 
-                // 24kHz = 48000 bytes/sec
-               botSpeakingEndTime = Date.now() + (pcmBuffer.length / 48) + 1500;
-
-                const CHUNK_SIZE = 960; // 20ms at 24kHz
+                const CHUNK_SIZE = 960;
                 for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
-                    if (isClosed) break;
+                    if (isClosed || stopTTS) break;
                     safeSend(pcmBuffer.slice(i, i + CHUNK_SIZE));
                     await new Promise(r => setTimeout(r, 18));
                 }
 
-                setTimeout(() => {
-                    isBotSpeaking = false;
-                    safeSend(JSON.stringify({ type: "status", text: "सुनने के लिए तैयार" }));
-                    console.log('🎤 Mic unmuted');
-                }, 300);
+                isBotSpeaking = false;
+                if (!stopTTS) {
+                    safeSend(JSON.stringify({ type: "status", text: "तैयार" }));
+                }
             }
         } catch (err) {
             console.error("❌ Error:", err.message);
-            safeSend(JSON.stringify({ type: "error", text: "Error हो गया" }));
         } finally {
             try { fs.unlinkSync(tempPath); } catch {}
             isProcessing = false;
         }
     }
-    const pingInterval = setInterval(() => {
-        if (ws.readyState === 1) ws.ping();
-    }, 25000);
+
+    const pingInterval = setInterval(() => { if (ws.readyState === 1) ws.ping(); }, 25000);
+
     ws.on('message', (data) => {
-        if (isClosed || isBotSpeaking || Date.now() < botSpeakingEndTime) return;
-        audioBuffer.push(Buffer.from(data));
+        if (isClosed) return;
+
+        // JSON = barge-in signal from Android
+        if (typeof data === 'string' || data[0] === 123) {
+            try {
+                const msg = JSON.parse(data.toString());
+                if (msg.type === 'barge-in') {
+                    console.log('🔴 Barge-in from client');
+                    stopTTS = true;
+                    isBotSpeaking = false;
+                    audioBuffer = [];
+                    return;
+                }
+            } catch {}
+            return;
+        }
+
+        const buf = Buffer.from(data);
+
+        // 🔥 Barge-in detection on server also
+        if (isBotSpeaking) {
+            const rms = calculateRMS(buf);
+            if (rms > 0.035) {
+                console.log('🔴 Barge-in detected RMS:', rms.toFixed(3));
+                stopTTS = true;
+                isBotSpeaking = false;
+                audioBuffer = [];
+                safeSend(JSON.stringify({ type: "barge-in-ack" }));
+            }
+        }
+
+        audioBuffer.push(buf);
         resetSilenceTimer();
     });
 
-   ws.on('close', () => {
-    isClosed = true;
-    clearInterval(pingInterval); 
-    console.log('🔌 Disconnected');
-});
+    ws.on('close', () => {
+        isClosed = true;
+        clearInterval(pingInterval);
+        console.log('🔌 Disconnected');
+    });
 });
