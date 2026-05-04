@@ -90,10 +90,10 @@ async function loadConversationFromDB(sid, limit = 6) {
   if (!db) return [];
   try {
     const messages = await db.collection('conversations')
- .find({ sessionId: sid })
- .sort({ timestamp: -1 })
- .limit(limit)
- .toArray();
+.find({ sessionId: sid })
+.sort({ timestamp: -1 })
+.limit(limit)
+.toArray();
 
     const history = [];
     messages.reverse().forEach(msg => {
@@ -170,7 +170,7 @@ app.post("/chat", async (req, res) => {
           role: "system",
           content: `तुम 'SahcharAI' हो – राम प्रकाश कुमार द्वारा निर्मित AI सहायक। वर्तमान समय: ${currentDateTime} IST। छोटे वाक्य, इमोजी 🙏🌿🪷। अंत में 'जय भीम, नमो बुद्धाय 🙏'।${imageContext}`
         },
- ...history
+...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -245,7 +245,7 @@ app.post("/chat-assistant", async (req, res) => {
           3. वर्तमान समय: ${currentDateTime} IST।
           4. 1-2 वाक्य में जवाब दो। अंत में 'जय भीम, नमो बुद्धाय 🙏'`
         },
-  ...history,
+ ...history,
         { role: "user", content: message }
       ],
       max_output_tokens: 150,
@@ -288,7 +288,7 @@ app.post("/chat-sambanova", async (req, res) => {
       const history = await loadConversationFromDB(sid, 6);
       conversations[sid] = [
         { role: "system", content: `तुम राम प्रकाश कुमार द्वारा निर्मित AI हो। वर्तमान समय: ${currentDateTime} IST। अंत में 'जय भीम, नमो बुद्धाय 🙏'${imageContext}` },
-  ...history
+ ...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -335,7 +335,7 @@ app.post("/chat-nvidia", async (req, res) => {
       const history = await loadConversationFromDB(sid, 6);
       conversations[sid] = [
         { role: "system", content: `तुम 'SuperSahchar' हो – राम प्रकाश कुमार द्वारा निर्मित इंसानी दोस्त। छोटे वाक्य, सवाल पूछो, इमोजी 😊🙏। वर्तमान समय: ${currentDateTime} IST।${imageContext}` },
-  ...history
+ ...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -363,6 +363,63 @@ app.post("/chat-nvidia", async (req, res) => {
   } catch (error) {
     console.error("❌ NVIDIA NIM error:", error.message);
     res.status(500).json({ reply: "क्षमा करें, अभी थोड़ी देर में बात करते हैं? 😅" });
+  }
+});
+
+// ==================== 4.5 KIMI CHAT (NEW - Moonshot AI) ====================
+app.post("/chat-kimi", async (req, res) => {
+  const sid = getSessionId(req);
+  const { message } = req.body;
+  if (!message) return res.status(400).json({ error: "Message required 🙏" });
+
+  const apiKey = process.env.KIMI_API_KEY;
+  if (!apiKey) return res.status(501).json({ reply: "Kimi not configured." });
+
+  try {
+    const now = new Date();
+    const currentDateTime = now.toLocaleString('hi-IN', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
+    });
+    const imageContext = getImageContextText(sid);
+
+    // Kimi uses OpenAI-compatible API
+    const kimi = new OpenAI({
+      apiKey,
+      baseURL: 'https://api.moonshot.cn/v1'
+    });
+
+    if (!conversations[sid]) {
+      const history = await loadConversationFromDB(sid, 6);
+      conversations[sid] = [
+        { role: "system", content: `तुम 'SahcharAI' हो – राम प्रकाश कुमार द्वारा निर्मित। वर्तमान समय: ${currentDateTime} IST। छोटे जवाब, इमोजी 🙏। अंत में 'जय भीम, नमो बुद्धाय 🙏'${imageContext}` },
+       ...history
+      ];
+    } else {
+      conversations[sid][0].content = conversations[sid][0].content.replace(
+        /वर्तमान समय:.*?(?=IST)/, `वर्तमान समय: ${currentDateTime}`
+      ) + imageContext;
+    }
+
+    conversations[sid].push({ role: "user", content: message });
+
+    const response = await kimi.chat.completions.create({
+      model: "moonshot-v1-8k",
+      messages: conversations[sid],
+      temperature: 0.7,
+      max_tokens: 500
+    });
+
+    const botReply = response.choices[0]?.message?.content || "कोई जवाब नहीं।";
+    conversations[sid].push({ role: "assistant", content: botReply });
+    if (conversations[sid].length > 20) conversations[sid] = [conversations[sid][0],...conversations[sid].slice(-10)];
+
+    await saveConversationToDB(sid, message, botReply, 'Kimi');
+    console.log(`✅ Kimi reply for ${sid}: ${botReply.substring(0, 50)}...`);
+    res.json({ reply: botReply });
+  } catch (error) {
+    console.error("❌ Kimi error:", error.message);
+    res.status(500).json({ reply: "क्षमा करें, Kimi सेवा व्यस्त है। 🙏" });
   }
 });
 
@@ -579,7 +636,7 @@ wss.on('connection', (ws, req) => {
         const history = await loadConversationFromDB(sessionId, 6);
         const messages = [
           { role: "system", content: `You are SahcharAI. Reply in Hindi, 1-2 sentences.` },
-     ...history,
+    ...history,
           { role: "user", content: userText }
         ];
 
