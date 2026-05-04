@@ -13,7 +13,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get('/', (req, res) => res.send('LiveAudio Server v3.0 - Full Duplex'));
+app.get('/', (req, res) => res.send('LiveAudio Server v3.1 - Barge-in Fixed'));
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 10000;
@@ -22,188 +22,146 @@ const wss = new WebSocketServer({ server });
 
 let db = null;
 if (process.env.MONGODB_URI) {
-    const mongoClient = new MongoClient(process.env.MONGODB_URI);
-    mongoClient.connect().then(() => {
-        console.log("✅ Connected to MongoDB");
-        db = mongoClient.db();
-    }).catch(err => console.error("MongoDB error:", err.message));
+    new MongoClient(process.env.MONGODB_URI).connect().then(c => {
+        db = c.db();
+        console.log("✅ MongoDB connected");
+    });
 }
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 async function ttsToPcm(text) {
     const speech = await openai.audio.speech.create({
-        model: "tts-1",
-        voice: "nova",
-        input: text,
-        response_format: "pcm"
+        model: "tts-1", voice: "nova", input: text, response_format: "pcm"
     });
     return Buffer.from(await speech.arrayBuffer());
 }
 
-function pcmToWav(pcmData, sampleRate = 16000) {
-    const header = Buffer.alloc(44);
-    header.write('RIFF', 0); header.writeUInt32LE(36 + pcmData.length, 4);
-    header.write('WAVE', 8); header.write('fmt ', 12); header.writeUInt32LE(16, 16);
-    header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
-    header.writeUInt32LE(sampleRate, 24); header.writeUInt32LE(sampleRate * 2, 28);
-    header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34);
-    header.write('data', 36); header.writeUInt32LE(pcmData.length, 40);
-    return Buffer.concat([header, pcmData]);
+function pcmToWav(pcm, rate = 16000) {
+    const h = Buffer.alloc(44);
+    h.write('RIFF',0); h.writeUInt32LE(36+pcm.length,4); h.write('WAVE',8);
+    h.write('fmt ',12); h.writeUInt32LE(16,16); h.writeUInt16LE(1,20);
+    h.writeUInt16LE(1,22); h.writeUInt32LE(rate,24); h.writeUInt32LE(rate*2,28);
+    h.writeUInt16LE(2,32); h.writeUInt16LE(16,34); h.write('data',36);
+    h.writeUInt32LE(pcm.length,40);
+    return Buffer.concat([h, pcm]);
 }
 
-function calculateRMS(buffer) {
+function calculateRMS(buf) {
     let sum = 0;
-    for (let i = 0; i < buffer.length; i += 2) {
-        const sample = buffer.readInt16LE(i);
-        sum += sample * sample;
+    for (let i=0; i<buf.length; i+=2) {
+        const s = buf.readInt16LE(i);
+        sum += s*s;
     }
-    return Math.sqrt(sum / (buffer.length / 2)) / 32768.0;
+    return Math.sqrt(sum/(buf.length/2))/32768;
 }
 
-wss.on('connection', async (ws, req) => {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const deviceId = url.searchParams.get('deviceId') || 'default';
-    console.log(`🔌 Connected: ${deviceId}`);
+// 🔥 2. स्पीच डिटेक्शन
+function detectSpeech(buffer) {
+    const rms = calculateRMS(buffer);
+    return rms > 0.02;
+}
 
+wss.on('connection', async (ws) => {
+    console.log('🔌 Connected');
     let audioBuffer = [];
     let isProcessing = false;
     let isBotSpeaking = false;
     let stopTTS = false;
     let silenceTimer = null;
-    let isClosed = false;
+    let botSpeakingTimeout = null;
 
-    const history = [{
-        role: 'system',
-        content: 'तुम SuperSahchar हो। तुम्हें Ram Prakash ने बनाया है। कभी OpenAI मत बोलना। हिंदी में दोस्त जैसा बात करो।'
-    }];
+    const history = [{role:'system',content:'तुम SuperSahchar हो। तुम्हें Ram Prakash ने बनाया। हिंदी में बात करो।'}];
 
-    function safeSend(data) {
-        if (!isClosed && ws.readyState === 1) {
-            try { ws.send(data); return true; } catch { return false; }
-        }
-        return false;
-    }
+    const safeSend = (d) => { try { ws.readyState===1 && ws.send(d); } catch{} };
 
     function resetSilenceTimer() {
         if (silenceTimer) clearTimeout(silenceTimer);
         silenceTimer = setTimeout(() => {
-            if (audioBuffer.length > 0 &&!isProcessing) processAudio();
-        }, 900);
+            if (audioBuffer.length > 0) processAudio();
+        }, 1200);
     }
 
+    // 🔥 3. प्रोसेस ऑडियो में इंटर्रप्शन
     async function processAudio() {
-        if (audioBuffer.length === 0 || isProcessing) return;
+        if (isProcessing) return;
         isProcessing = true;
-        if (silenceTimer) clearTimeout(silenceTimer);
 
         const fullAudio = Buffer.concat(audioBuffer);
         audioBuffer = [];
-        const rms = calculateRMS(fullAudio);
 
-        if (rms < 0.012 || fullAudio.length < 16000) {
+        console.log(`🎤 Audio: ${fullAudio.length} bytes`);
+
+        if (!detectSpeech(fullAudio)) {
+            console.log("⚠️ कोई आवाज़ नहीं मिली");
             isProcessing = false;
             return;
         }
 
-        const wavBuffer = pcmToWav(fullAudio, 16000);
-        const tempPath = path.join('/tmp', `audio_${randomUUID()}.wav`);
-        fs.writeFileSync(tempPath, wavBuffer);
+        // अगर बॉट बोल रहा है, तो रोकें
+        if (isBotSpeaking) {
+            console.log('🔴 INTERRUPT - stopping bot');
+            stopTTS = true;
+            isBotSpeaking = false;
+            if (botSpeakingTimeout) clearTimeout(botSpeakingTimeout);
+            safeSend(JSON.stringify({ type: "status", text: "सुन रहा हूं..." }));
+        }
+
+        const wav = pcmToWav(fullAudio);
+        const tmp = path.join('/tmp', `a_${randomUUID()}.wav`);
+        fs.writeFileSync(tmp, wav);
 
         try {
-            const transcription = await openai.audio.transcriptions.create({
-                file: fs.createReadStream(tempPath),
-                model: 'gpt-4o-transcribe',
-                language: 'hi',
-                temperature: 0.2
+            const tr = await openai.audio.transcriptions.create({
+                file: fs.createReadStream(tmp),
+                model: 'whisper-1', // gpt-4o-transcribe से ज्यादा stable
+                language: 'hi'
             });
+            const text = tr.text.trim();
+            if (!text) { isProcessing=false; return; }
 
-            const transcript = transcription.text.trim();
-            if (transcript.length > 1) {
-                safeSend(JSON.stringify({ type: "user_text", text: transcript }));
-                history.push({ role: 'user', content: transcript });
+            console.log(`📝 ${text}`);
+            safeSend(JSON.stringify({type:"user_text", text}));
 
-                const completion = await openai.chat.completions.create({
-                    model: "gpt-4o-mini",
-                    messages: history,
-                    max_tokens: 300
-                });
+            history.push({role:'user', content:text});
+            const comp = await openai.chat.completions.create({
+                model:"gpt-4o-mini", messages:history, max_tokens:300
+            });
+            const reply = comp.choices[0].message.content;
+            history.push({role:'assistant', content:reply});
+            safeSend(JSON.stringify({type:"bot_text", text:reply}));
 
-                const reply = completion.choices[0].message.content;
-                history.push({ role: 'assistant', content: reply });
-                safeSend(JSON.stringify({ type: "bot_text", text: reply }));
-
-                // TTS streaming with barge-in support
-                isBotSpeaking = true;
-                stopTTS = false;
-                const pcmBuffer = await ttsToPcm(reply);
-
-                const CHUNK_SIZE = 960;
-                for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
-                    if (isClosed || stopTTS) break;
-                    safeSend(pcmBuffer.slice(i, i + CHUNK_SIZE));
-                    await new Promise(r => setTimeout(r, 18));
-                }
-
-                isBotSpeaking = false;
-                if (!stopTTS) {
-                    safeSend(JSON.stringify({ type: "status", text: "तैयार" }));
-                }
+            // TTS
+            isBotSpeaking = true;
+            stopTTS = false;
+            const pcm = await ttsToPcm(reply);
+            const CHUNK = 960;
+            for (let i=0; i<pcm.length; i+=CHUNK) {
+                if (stopTTS) break;
+                safeSend(pcm.slice(i, i+CHUNK));
+                await new Promise(r=>setTimeout(r,18));
             }
-        } catch (err) {
-            console.error("❌ Error:", err.message);
+            isBotSpeaking = false;
+            safeSend(JSON.stringify({type:"status", text:"तैयार"}));
+
+        } catch(e) {
+            console.error('❌', e.message);
         } finally {
-            try { fs.unlinkSync(tempPath); } catch {}
+            try{fs.unlinkSync(tmp)}catch{}
             isProcessing = false;
         }
     }
 
-    const pingInterval = setInterval(() => { if (ws.readyState === 1) ws.ping(); }, 25000);
-
+    // 🔥 1. हमेशा ऑडियो लो
     ws.on('message', (data) => {
-    if (isClosed) return;
-    if (Buffer.isBuffer(data)) {
-        console.log(`📦 Audio chunk: ${data.length} bytes`);
-    }
-    if (typeof data === 'string' || data[0] === 123) {
-    }
-
-        // JSON = barge-in signal from Android
-        if (typeof data === 'string' || data[0] === 123) {
-            try {
-                const msg = JSON.parse(data.toString());
-                if (msg.type === 'barge-in') {
-                    console.log('🔴 Barge-in from client');
-                    stopTTS = true;
-                    isBotSpeaking = false;
-                    audioBuffer = [];
-                    return;
-                }
-            } catch {}
+        // JSON barge-in
+        if (data[0] === 123) {
+            try { const j=JSON.parse(data.toString()); if(j.type==='barge-in'){ stopTTS=true; isBotSpeaking=false; } } catch{}
             return;
         }
-
-        const buf = Buffer.from(data);
-
-        // 🔥 Barge-in detection on server also
-        if (isBotSpeaking) {
-            const rms = calculateRMS(buf);
-            if (rms > 0.035) {
-                console.log('🔴 Barge-in detected RMS:', rms.toFixed(3));
-                stopTTS = true;
-                isBotSpeaking = false;
-                audioBuffer = [];
-                safeSend(JSON.stringify({ type: "barge-in-ack" }));
-            }
-        }
-
-        audioBuffer.push(buf);
+        audioBuffer.push(Buffer.from(data));
         resetSilenceTimer();
     });
 
-    ws.on('close', () => {
-        isClosed = true;
-        clearInterval(pingInterval);
-        console.log('🔌 Disconnected');
-    });
+    ws.on('close', ()=> console.log('🔌 Disconnected'));
 });
