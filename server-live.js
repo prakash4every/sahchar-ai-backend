@@ -65,7 +65,7 @@ wss.on('connection', (ws)=>{
     console.log(`🎤 Audio: ${full.length} bytes, RMS=${rms.toFixed(4)}`);
 
     // Adjusted RMS threshold to be slightly higher to avoid processing very quiet noise
-    if(rms<0.005 || full.length<3200){ // threshold increased from 0.003 to 0.005
+    if(rms<0.001 || full.length<6400){ // threshold increased from 0.003 to 0.005
       console.log('⚠️ Too quiet, skip');
       isProcessing=false; return;
     }
