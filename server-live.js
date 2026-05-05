@@ -64,7 +64,8 @@ wss.on('connection', (ws)=>{
     const rms=calculateRMS(full);
     console.log(`🎤 Audio: ${full.length} bytes, RMS=${rms.toFixed(4)}`);
 
-    if(rms<0.003 || full.length<3200){ // threshold कम
+    // Adjusted RMS threshold to be slightly higher to avoid processing very quiet noise
+    if(rms<0.005 || full.length<3200){ // threshold increased from 0.003 to 0.005
       console.log('⚠️ Too quiet, skip');
       isProcessing=false; return;
     }
@@ -78,7 +79,6 @@ wss.on('connection', (ws)=>{
       const tr=await openai.audio.transcriptions.create({
         file: fs.createReadStream(tmp),
         model: 'whisper-1',
-        // language हटाया - auto detect
         prompt: 'User speaks Hindi or English. Common: good morning, hello, कैसे हो'
       });
       const text=(tr.text||'').trim();
@@ -97,14 +97,16 @@ wss.on('connection', (ws)=>{
       safeSend(JSON.stringify({type:'bot_text',text:reply}));
       await new Promise(r=>setTimeout(r,100)); // UI update
 
-      // TTS stream - slower for Render
+      // TTS stream - crucial for smooth playback
       isBotSpeaking=true; stopTTS=false;
       const pcm=await ttsToPcm(reply);
       const CHUNK=480; // 10ms @24k
+      // Reduced delay to improve audio fluidity. Aim for near real-time sending.
+      const delayBetweenChunks = 10; // Send 10ms audio chunk every 10ms (or slightly more for buffer)
       for(let i=0;i<pcm.length;i+=CHUNK){
         if(stopTTS || ws.readyState!==1) break;
         safeSend(pcm.subarray(i,i+CHUNK));
-        await new Promise(r=>setTimeout(r,35));
+        await new Promise(r=>setTimeout(r,delayBetweenChunks));
       }
       console.log(`🔊 Sent ${pcm.length} bytes TTS`);
       isBotSpeaking=false;
