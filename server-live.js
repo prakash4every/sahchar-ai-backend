@@ -16,7 +16,7 @@ const wss = new WebSocketServer({ server });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req,res)=> res.send('Sahchar Live v4'));
+app.get('/', (req,res)=> res.send('Sahchar Live v5'));
 
 // --- helpers ---
 function pcmToWav(pcm, rate=16000){
@@ -49,12 +49,12 @@ wss.on('connection', (ws)=>{
   let audioBuffer=[]; let isProcessing=false; let isBotSpeaking=false;
   let stopTTS=false; let silenceTimer=null;
 
-  const history=[{role:'system',content:'तुम SuperSahchar हो। हिंदी में छोटे जवाब दो।'}];
+  const history=[{role:'system',content:'तुम SuperSahchar हो। यूज़र हिंदी या English बोलेगा, उसी भाषा में छोटा जवाब दो।'}];
   const safeSend=(d)=>{try{ws.readyState===1&&ws.send(d)}catch{}};
 
   function resetSilence(){
     if(silenceTimer) clearTimeout(silenceTimer);
-    silenceTimer=setTimeout(()=>{ if(audioBuffer.length>0) processAudio(); }, 1200);
+    silenceTimer=setTimeout(()=>{ if(audioBuffer.length>0) processAudio(); }, 800); // 0.8s
   }
 
   async function processAudio(){
@@ -64,7 +64,7 @@ wss.on('connection', (ws)=>{
     const rms=calculateRMS(full);
     console.log(`🎤 Audio: ${full.length} bytes, RMS=${rms.toFixed(4)}`);
 
-    if(rms<0.005 || full.length<4000){
+    if(rms<0.003 || full.length<3200){ // threshold कम
       console.log('⚠️ Too quiet, skip');
       isProcessing=false; return;
     }
@@ -76,7 +76,10 @@ wss.on('connection', (ws)=>{
 
     try{
       const tr=await openai.audio.transcriptions.create({
-        file:fs.createReadStream(tmp), model:'whisper-1', language:'hi'
+        file: fs.createReadStream(tmp),
+        model: 'whisper-1',
+        // language हटाया - auto detect
+        prompt: 'User speaks Hindi or English. Common: good morning, hello, कैसे हो'
       });
       const text=(tr.text||'').trim();
       if(!text){ isProcessing=false; return; }
@@ -86,22 +89,24 @@ wss.on('connection', (ws)=>{
       history.push({role:'user',content:text});
       if(history.length>11) history.splice(1,2);
       const comp=await openai.chat.completions.create({
-        model:'gpt-4o-mini', messages:history, max_tokens:200, temperature:0.7
+        model:'gpt-4o-mini', messages:history, max_tokens:150, temperature:0.7
       });
       const reply=comp.choices[0].message.content;
       console.log(`🤖 ${reply}`);
       history.push({role:'assistant',content:reply});
       safeSend(JSON.stringify({type:'bot_text',text:reply}));
+      await new Promise(r=>setTimeout(r,100)); // UI update
 
-      // TTS stream
+      // TTS stream - slower for Render
       isBotSpeaking=true; stopTTS=false;
       const pcm=await ttsToPcm(reply);
-      const CHUNK=960; // 20ms @24k
+      const CHUNK=480; // 10ms @24k
       for(let i=0;i<pcm.length;i+=CHUNK){
         if(stopTTS || ws.readyState!==1) break;
         safeSend(pcm.subarray(i,i+CHUNK));
-        await new Promise(r=>setTimeout(r,18));
+        await new Promise(r=>setTimeout(r,35));
       }
+      console.log(`🔊 Sent ${pcm.length} bytes TTS`);
       isBotSpeaking=false;
       safeSend(JSON.stringify({type:'status',text:'ready'}));
     }catch(e){
@@ -112,9 +117,16 @@ wss.on('connection', (ws)=>{
     }
   }
 
-  ws.on('message', (data)=>{
-    if(data[0]===123){ // JSON
-      try{ const j=JSON.parse(data.toString()); if(j.type==='barge-in'){ stopTTS=true; isBotSpeaking=false; console.log('🔴 Barge-in'); } }catch{}
+  ws.on('message', (data, isBinary)=>{
+    if(!isBinary){
+      try{
+        const j=JSON.parse(data.toString());
+        if(j.type==='barge-in'){
+          stopTTS=true; isBotSpeaking=false;
+          console.log('🔴 Barge-in');
+          safeSend(JSON.stringify({type:'barge-in-ack'}));
+        }
+      }catch{}
       return;
     }
     audioBuffer.push(Buffer.from(data));
