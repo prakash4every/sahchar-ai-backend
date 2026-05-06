@@ -39,7 +39,7 @@ async function ttsToPcm(text){
 wss.on('connection', (ws)=>{
   console.log('🔌 Connected');
   let audioBuffer=[], isProcessing=false, isBotSpeaking=false, stopTTS=false, silenceTimer=null;
-  const history=[{role:'system',content:'तुम SuperSahchar हो। यूज़र जिस भाषा में बोले, उसी में छोटा जवाब दो।'}];
+  const history=[{role:'system',content:'तुम SuperSahchar हो। तुम्हें Sahchar टीम ने बनाया है। यूज़र जिस भाषा में बोले, उसी में छोटा जवाब दो।'}];
   const safeSend=(d)=>{try{ws.readyState===1&&ws.send(d)}catch{}};
 
   const resetSilence=()=>{ if(silenceTimer) clearTimeout(silenceTimer); silenceTimer=setTimeout(()=>processAudio(),800); };
