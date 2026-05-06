@@ -67,7 +67,7 @@ wss.on('connection', (ws)=>{
     console.log(`🎤 Audio: ${full.length} bytes, RMS=${rms.toFixed(4)}`);
 
     // Optimized Threshold: Filter out noise but keep voice
-    if(rms < 0.005 || full.length < 3200){ 
+    if(rms < 0.003 || full.length < 3200){ 
       isProcessing=false; return;
     }
 
@@ -104,20 +104,20 @@ wss.on('connection', (ws)=>{
       console.log(`🤖 ${reply}`);
       history.push({role:'assistant',content:reply});
       safeSend(JSON.stringify({type:'bot_text',text:reply}));
-
-      // TTS Stream Speed Optimization
       isBotSpeaking=true; stopTTS=false;
       const pcm=await ttsToPcm(reply);
-      const CHUNK=960; // 20ms audio chunk @24kHz
-      
-      // Speed Fix: 20ms chunk needs ~18-20ms delay for natural playback
-      const delayBetweenChunks = 18; 
+      const CHUNK=1920; 
+      const delayBetweenChunks = 38; 
       
       for(let i=0;i<pcm.length;i+=CHUNK){
         if(stopTTS || ws.readyState!==1) break;
         safeSend(pcm.subarray(i,i+CHUNK));
         await new Promise(r=>setTimeout(r, delayBetweenChunks));
       }
+    
+    isBotSpeaking=false;
+    safeSend(JSON.stringify({type:'status',text:'ready'}));
+  }
       
       console.log(`🔊 Sent ${pcm.length} bytes TTS`);
       isBotSpeaking=false;
