@@ -57,19 +57,19 @@ wss.on('connection', (ws)=>{
     silenceTimer=setTimeout(()=>{ if(audioBuffer.length>0) processAudio(); }, 800); // 0.8s
   }
 
-  async function processAudio(){
+ async function processAudio(){
     if(isProcessing) return;
     isProcessing=true;
     const full=Buffer.concat(audioBuffer); audioBuffer=[];
     const rms=calculateRMS(full);
     console.log(`🎤 Audio: ${full.length} bytes, RMS=${rms.toFixed(4)}`);
-
-    // Adjusted RMS threshold to be slightly higher to avoid processing very quiet noise
-    if(rms<0.001 || full.length<6400){ // threshold increased from 0.003 to 0.005
-      console.log('⚠️ Too quiet, skip');
+    if(rms < 0.006 || full.length < 3200){ 
       isProcessing=false; return;
     }
-    if(isBotSpeaking){ stopTTS=true; isBotSpeaking=false; }
+    if(isBotSpeaking) {
+        console.log("🚫 Bot is speaking, ignoring input to prevent echo");
+        isProcessing=false; return;
+    }
 
     const wav=pcmToWav(full,16000);
     const tmp=path.join('/tmp',`a_${randomUUID()}.wav`);
@@ -102,12 +102,12 @@ wss.on('connection', (ws)=>{
       const pcm=await ttsToPcm(reply);
       const CHUNK=480; // 10ms @24k
       // Reduced delay to improve audio fluidity. Aim for near real-time sending.
-      const delayBetweenChunks = 10; // Send 10ms audio chunk every 10ms (or slightly more for buffer)
-      for(let i=0;i<pcm.length;i+=CHUNK){
+      const delayBetweenChunks = 20; 
+    for(let i=0;i<pcm.length;i+=CHUNK){
         if(stopTTS || ws.readyState!==1) break;
         safeSend(pcm.subarray(i,i+CHUNK));
-        await new Promise(r=>setTimeout(r,delayBetweenChunks));
-      }
+        await new Promise(r=>setTimeout(r, delayBetweenChunks));
+    }
       console.log(`🔊 Sent ${pcm.length} bytes TTS`);
       isBotSpeaking=false;
       safeSend(JSON.stringify({type:'status',text:'ready'}));
