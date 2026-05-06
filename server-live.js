@@ -71,13 +71,16 @@ wss.on('connection', (ws)=>{
       history.push({role:'assistant',content:reply});
       safeSend(JSON.stringify({type:'bot_text',text:reply}));
 
-      isBotSpeaking=true; stopTTS=false;
-      const pcm=await ttsToPcm(reply);
-      for(let i=0;i<pcm.length;i+=960){
-        if(stopTTS || ws.readyState!==1) break;
-        safeSend(pcm.subarray(i,i+960)); await new Promise(r=>setTimeout(r,40));
-      }
-      console.log(`🔊 Sent ${pcm.length} bytes`);
+     isBotSpeaking = true; 
+stopTTS = false;
+const pcm = await ttsToPcm(reply);
+const CHUNK = 1920; // 40ms @24kHz, बड़ा chunk = कम crackle
+for (let i = 0; i < pcm.length; i += CHUNK) {
+  if (stopTTS || ws.readyState !== 1) break;
+  safeSend(pcm.subarray(i, i + CHUNK));
+  await new Promise(r => setTimeout(r, 38)); // real-time
+}
+console.log(`🔊 Sent ${pcm.length} bytes`);
     }catch(e){ console.error('❌',e.message);
     }finally{ try{fs.unlinkSync(tmp)}catch{}; isBotSpeaking=false; safeSend(JSON.stringify({type:'status',text:'ready'})); isProcessing=false; }
   }
