@@ -32,7 +32,7 @@ function calculateRMS(buf){
   return Math.sqrt(sum/(buf.length/2))/32768;
 }
 async function ttsToPcm(text){
-  const r=await openai.audio.speech.create({model:"tts-1",voice:"nova",input:text,response_format:"pcm"});
+  const r=await openai.audio.speech.create({model:"tts-1",voice:"alloy",input:text,response_format:"pcm"});
   return Buffer.from(await r.arrayBuffer());
 }
 
