@@ -16,7 +16,7 @@ const wss = new WebSocketServer({ server });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req,res)=> res.send('Sahchar Live v5'));
+app.get('/', (req,res)=> res.send('Sahchar Live v5 Fixed'));
 
 // --- helpers ---
 function pcmToWav(pcm, rate=16000){
@@ -28,6 +28,7 @@ function pcmToWav(pcm, rate=16000){
   h.writeUInt32LE(pcm.length,40);
   return Buffer.concat([h,pcm]);
 }
+
 function calculateRMS(buf){
   let sum=0;
   for(let i=0;i<buf.length;i+=2){
@@ -36,6 +37,7 @@ function calculateRMS(buf){
   }
   return Math.sqrt(sum/(buf.length/2))/32768;
 }
+
 async function ttsToPcm(text){
   const r=await openai.audio.speech.create({
     model:"tts-1", voice:"nova", input:text, response_format:"pcm"
@@ -54,20 +56,24 @@ wss.on('connection', (ws)=>{
 
   function resetSilence(){
     if(silenceTimer) clearTimeout(silenceTimer);
-    silenceTimer=setTimeout(()=>{ if(audioBuffer.length>0) processAudio(); }, 800); // 0.8s
+    silenceTimer=setTimeout(()=>{ if(audioBuffer.length>0) processAudio(); }, 800); // 0.8s silence detection
   }
 
- async function processAudio(){
+  async function processAudio(){
     if(isProcessing) return;
     isProcessing=true;
     const full=Buffer.concat(audioBuffer); audioBuffer=[];
     const rms=calculateRMS(full);
     console.log(`🎤 Audio: ${full.length} bytes, RMS=${rms.toFixed(4)}`);
-    if(rms < 0.006 || full.length < 3200){ 
+
+    // Optimized Threshold: Filter out noise but keep voice
+    if(rms < 0.005 || full.length < 3200){ 
       isProcessing=false; return;
     }
+
+    // Echo Prevention: Ignore input if bot is currently speaking
     if(isBotSpeaking) {
-        console.log("🚫 Bot is speaking, ignoring input to prevent echo");
+        console.log("🚫 Echo Blocked");
         isProcessing=false; return;
     }
 
@@ -79,40 +85,46 @@ wss.on('connection', (ws)=>{
       const tr=await openai.audio.transcriptions.create({
         file: fs.createReadStream(tmp),
         model: 'whisper-1',
-        prompt: 'User speaks Hindi or English. Common: good morning, hello, कैसे हो'
+        prompt: 'User speaks Hindi or English.'
       });
       const text=(tr.text||'').trim();
-      if(!text){ isProcessing=false; return; }
+      if(!text || text.length < 2){ isProcessing=false; return; }
+      
       console.log(`📝 ${text}`);
       safeSend(JSON.stringify({type:'user_text',text}));
 
       history.push({role:'user',content:text});
       if(history.length>11) history.splice(1,2);
+      
       const comp=await openai.chat.completions.create({
-        model:'gpt-4o-mini', messages:history, max_tokens:150, temperature:0.7
+        model:'gpt-4o-mini', messages:history, max_tokens:100, temperature:0.7
       });
+      
       const reply=comp.choices[0].message.content;
       console.log(`🤖 ${reply}`);
       history.push({role:'assistant',content:reply});
       safeSend(JSON.stringify({type:'bot_text',text:reply}));
-      await new Promise(r=>setTimeout(r,100)); // UI update
 
-      // TTS stream - crucial for smooth playback
+      // TTS Stream Speed Optimization
       isBotSpeaking=true; stopTTS=false;
       const pcm=await ttsToPcm(reply);
-      const CHUNK=480; // 10ms @24k
-      // Reduced delay to improve audio fluidity. Aim for near real-time sending.
-      const delayBetweenChunks = 20; 
-    for(let i=0;i<pcm.length;i+=CHUNK){
+      const CHUNK=960; // 20ms audio chunk @24kHz
+      
+      // Speed Fix: 20ms chunk needs ~18-20ms delay for natural playback
+      const delayBetweenChunks = 18; 
+      
+      for(let i=0;i<pcm.length;i+=CHUNK){
         if(stopTTS || ws.readyState!==1) break;
         safeSend(pcm.subarray(i,i+CHUNK));
         await new Promise(r=>setTimeout(r, delayBetweenChunks));
-    }
+      }
+      
       console.log(`🔊 Sent ${pcm.length} bytes TTS`);
       isBotSpeaking=false;
       safeSend(JSON.stringify({type:'status',text:'ready'}));
     }catch(e){
       console.error('❌',e.message);
+      isBotSpeaking=false;
     }finally{
       try{fs.unlinkSync(tmp)}catch{}
       isProcessing=false;
