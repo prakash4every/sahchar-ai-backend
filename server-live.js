@@ -74,6 +74,7 @@ wss.on('connection', (ws)=>{
      isBotSpeaking = true; 
 stopTTS = false;
 const pcm = await ttsToPcm(reply);
+      if (ws.readyState !== 1) return;
 const CHUNK = 1920; // 40ms @24kHz, बड़ा chunk = कम crackle
 for (let i = 0; i < pcm.length; i += CHUNK) {
   if (stopTTS || ws.readyState !== 1) break;
