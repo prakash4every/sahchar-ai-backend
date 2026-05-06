@@ -117,12 +117,11 @@ wss.on('connection', (ws)=>{
     
     isBotSpeaking=false;
     safeSend(JSON.stringify({type:'status',text:'ready'}));
-  }
-      
       console.log(`🔊 Sent ${pcm.length} bytes TTS`);
       isBotSpeaking=false;
       safeSend(JSON.stringify({type:'status',text:'ready'}));
-    }catch(e){
+    }
+  catch(e){
       console.error('❌',e.message);
       isBotSpeaking=false;
     }finally{
