@@ -60,7 +60,11 @@ wss.on('connection', (ws) => {
     const rms = calculateRMS(full);
     console.log(`🎤 Audio: ${full.length} bytes, RMS=${rms.toFixed(4)}`);
 
-    if (rms < 0.003 || full.length < 3200 || isBotSpeaking) { isProcessing = false; return; }
+   const timeSinceBot = Date.now() - lastBotEndTime;
+if (rms < 0.015 || full.length < 3200 || isBotSpeaking || timeSinceBot < 700 || ws.readyState !== 1) {
+  isProcessing = false;
+  return;
+}
 
     const wav = pcmToWav(full, 16000);
     const tmp = path.join('/tmp', `a_${randomUUID()}.wav`); fs.writeFileSync(tmp, wav);
