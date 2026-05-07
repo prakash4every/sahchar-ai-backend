@@ -11,12 +11,12 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Sahchar Live v8 Half-Duplex on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Sahchar Live v8.1 Full Sensitivity on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req, res) => res.send('Sahchar Live - Half Duplex Stable'));
+app.get('/', (req, res) => res.send('Sahchar Live - Full Version'));
 
 function pcmToWav(pcm, rate = 16000) {
   const h = Buffer.alloc(44);
@@ -44,26 +44,27 @@ wss.on('connection', (ws) => {
 
   const history = [{
     role: 'system',
-    content: 'तुम सहचर हो। दोस्त जैसे छोटे जवाब दो, हिंदी में। 1-2 लाइन।'
+    content: 'तुम सहचर हो। दोस्त जैसे छोटे जवाब दो, हिंदी में।'
   }];
 
   const safeSend = (d) => { try { ws.readyState === 1 && ws.send(d); } catch {} };
 
   const resetSilence = () => {
     if (silenceTimer) clearTimeout(silenceTimer);
-    silenceTimer = setTimeout(processAudio, 700);
+    silenceTimer = setTimeout(processAudio, 600); // पहले जैसा 600ms
   };
 
   async function processAudio() {
     if (isProcessing || audioBuffer.length === 0 || isBotSpeaking) return;
-    if (Date.now() - lastBotTime < 1500) return; // 1.5s cooldown
+    if (Date.now() - lastBotTime < 1200) return; // 1.2s cooldown
 
     isProcessing = true;
     const full = Buffer.concat(audioBuffer);
     audioBuffer = [];
 
     const rms = calculateRMS(full);
-    if (rms < 0.008 || full.length < 6400) { // कम आवाज़ ignore
+    // --- SENSITIVITY FIX ---
+    if (rms < 0.004 || full.length < 4000) { // पहले 0.008 था, अब 0.004
       isProcessing = false;
       return;
     }
@@ -98,7 +99,6 @@ wss.on('connection', (ws) => {
       history.push({ role: 'assistant', content: reply });
       safeSend(JSON.stringify({ type: 'bot_text', text: reply }));
 
-      // --- HALF DUPLEX START ---
       isBotSpeaking = true;
 
       const tts = await openai.audio.speech.create({
@@ -109,7 +109,6 @@ wss.on('connection', (ws) => {
       });
       const pcm = Buffer.from(await tts.arrayBuffer());
 
-      // 24kHz PCM, 2400 bytes = 50ms
       for (let i = 0; i < pcm.length; i += 2400) {
         if (ws.readyState!== 1) break;
         safeSend(pcm.subarray(i, i + 2400));
@@ -119,7 +118,6 @@ wss.on('connection', (ws) => {
       isBotSpeaking = false;
       lastBotTime = Date.now();
       safeSend(JSON.stringify({ type: 'status', text: 'ready' }));
-      // --- HALF DUPLEX END ---
 
     } catch (e) {
       console.error('❌', e.message);
@@ -132,8 +130,7 @@ wss.on('connection', (ws) => {
 
   ws.on('message', (data, isBinary) => {
     if (!isBinary) return;
-    // HALF DUPLEX: bot बोल रहा है तो सुनो मत
-    if (isBotSpeaking) return;
+    if (isBotSpeaking) return; // half-duplex
 
     audioBuffer.push(Buffer.from(data));
     resetSilence();
