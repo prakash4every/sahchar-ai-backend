@@ -128,7 +128,8 @@ if (rms < 0.015 || full.length < 3200 || isBotSpeaking || timeSinceBot < 700 || 
     if (!isBinary) {
       try {
         const j = JSON.parse(data.toString());
-        if (j.type === 'barge-in') { stopTTS = true; isBotSpeaking = false; }
+        if (j.type === 'barge-in') { stopTTS = true; isBotSpeaking = false;
+                                   lastBotEndTime = Date.now();}
       } catch {}
       return;
     }
