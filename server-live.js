@@ -49,7 +49,7 @@ async function ttsToPcm(text) {
     body: JSON.stringify({
       text,
       model_id: 'eleven_multilingual_v2',
-      output_format: 'pcm_24000',
+      output_format: 'pcm_16000',
       voice_settings: { stability: 0.6, similarity_boost: 0.9, style: 0.3, use_speaker_boost: true }
     })
   });
@@ -62,7 +62,7 @@ async function getGroqReply(history) {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'llama-3.1-70b-versatile',
+        model: 'llama-3.3-70b-versatile',
         messages: history,
         max_tokens: 70,
         temperature: 0.95
@@ -146,7 +146,7 @@ wss.on('connection', (ws) => {
       for (let i = 0; i < pcm.length; i += 1920) {
         if (stopTTS || ws.readyState !== 1) break;
         safeSend(pcm.subarray(i, i + 1920));
-        await new Promise(r => setTimeout(r, 38));
+        await new Promise(r => setTimeout(r, 60));
       }
     } catch (e) { console.error('❌', e.message);
     } finally {
