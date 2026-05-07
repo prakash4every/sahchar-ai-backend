@@ -93,13 +93,13 @@ wss.on('connection', (ws) => {
   let lastBotEndTime = Date.now();
 
   const history = [{
-    role: 'system',
-    content: `तू SuperSahchar है, दोस्त जैसा। 
-- बिल्कुल आम बोलचाल की Hindi बोल: "अरे", "हां", "बताओ", "क्या हुआ", "समझ गया"
-- "कृपया", "क्षमा करें", "आपकी सहायता" मत बोलना
-- 1-2 लाइन, 15 शब्द से कम
-- यूजर Urdu बोले तो Urdu में, English बोले तो English में`
-  }];
+  role: 'system',
+  content: `तू SuperSahchar है - बिल्कुल असली इंसान जैसा दोस्त।
+- ठेठ Hindi: "अरे हां", "बता ना", "क्या बात है", "समझ गया भाई"
+- कभी "कृपया/क्षमा" मत बोल
+- जवाब 8-12 शब्द, छोटे-छोटे
+- हंसी मजाक चलेगा, इमोशन दिखा`
+}];
 
   const safeSend = (d) => { try { ws.readyState === 1 && ws.send(d); } catch {} };
   const resetSilence = () => { if (silenceTimer) clearTimeout(silenceTimer); silenceTimer = setTimeout(() => processAudio(), 800); };
