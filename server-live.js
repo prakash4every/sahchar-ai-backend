@@ -103,8 +103,7 @@ wss.on('connection', (ws, req)=>{
       }catch{}; 
       return; 
     }
-    // HALF duplex: bot बोल रहा है तो audio ignore करो
-    // FULL duplex: हमेशा भेजो (barge-in के लिए)
+    
     if(!isBotSpeaking || isFullDuplex){ 
       audioBuffer.push(Buffer.from(data)); 
       resetSilence(); 
