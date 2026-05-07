@@ -184,8 +184,8 @@ wss.on('connection', (ws) => {
       if (ws.readyState !== ws.OPEN) return;
 
       // Send PCM chunks to client
-      const chunkSize = 1920; // 120ms of 16kHz 16-bit mono audio
-      const delayMs = 120; // Match chunk duration
+      const chunkSize = 3200;
+      const delayMs = 100;
 
       for (let i = 0; i < pcm.length; i += chunkSize) {
         if (stopTTS || ws.readyState !== ws.OPEN) break;
