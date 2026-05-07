@@ -44,7 +44,7 @@ wss.on('connection', (ws) => {
 
   const history = [{
     role: 'system',
-    content: 'तुम सहचर हो। दोस्त जैसे छोटे जवाब दो, हिंदी में।'
+    content: 'तुम सहचर हो। दोस्त जैसे छोटे जवाब दो, हिंदी में, तुम्हें राम प्रकाश कुमार ने बनाया है।  भूलकरभी openai मत बोलना,  हमेशा दोस्ताना जवाब देना'
   }];
 
   const safeSend = (d) => { try { ws.readyState === 1 && ws.send(d); } catch {} };
