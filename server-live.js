@@ -57,19 +57,34 @@ async function ttsToPcm(text) {
 }
 
 async function getGroqReply(history) {
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'llama-3.1-70b-versatile',
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'llama-3.1-70b-versatile',
+        messages: history,
+        max_tokens: 70,
+        temperature: 0.95
+      })
+    });
+    const data = await res.json();
+    if (!data.choices ||!data.choices[0]) {
+      console.error('Groq error:', data);
+      throw new Error('Groq no choices');
+    }
+    return data.choices[0].message.content;
+  } catch (e) {
+    console.error('Groq fail, using OpenAI:', e.message);
+    // fallback to OpenAI
+    const comp = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
       messages: history,
       max_tokens: 70,
-      temperature: 0.95,
-      top_p: 0.9
-    })
-  });
-  const data = await res.json();
-  return data.choices[0].message.content;
+      temperature: 0.9
+    });
+    return comp.choices[0].message.content;
+  }
 }
 
 wss.on('connection', (ws) => {
