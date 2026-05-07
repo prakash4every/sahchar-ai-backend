@@ -19,7 +19,7 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const ELEVEN_KEY = process.env.ELEVENLABS_API_KEY;
 const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
 
-app.get('/', (req, res) => res.send('Sahchar Live v9'));
+app.get('/', (req, res) => res.send('Sahchar Live v9.1'));
 
 function pcmToWav(pcm, rate = 16000) {
   const h = Buffer.alloc(44);
@@ -45,18 +45,16 @@ async function ttsToPcm(text) {
   try {
     const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream`, {
       method: 'POST',
-      headers: { 'xi-api-key': ELEVEN_KEY, 'Content-Type': 'application/json', 'Accept': 'audio/wav' },
+      headers: { 'xi-api-key': ELEVEN_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         text,
         model_id: 'eleven_multilingual_v2',
         output_format: 'pcm_24000',
-        voice_settings: { stability: 0.7, similarity_boost: 0.8, style: 0.0, use_speaker_boost: true }
+        voice_settings: { stability: 0.7, similarity_boost: 0.8, style: 0, use_speaker_boost: true }
       })
     });
-    if (!response.ok) throw new Error(`ElevenLabs ${response.status}`);
     return Buffer.from(await response.arrayBuffer());
-  } catch (e) {
-    console.error('ElevenLabs fail:', e.message);
+  } catch {
     const r = await openai.audio.speech.create({ model: 'tts-1', voice: 'alloy', input: text, response_format: 'pcm' });
     return Buffer.from(await r.arrayBuffer());
   }
@@ -64,23 +62,19 @@ async function ttsToPcm(text) {
 
 wss.on('connection', (ws) => {
   console.log('🔌 Connected');
-  let audioBuffer = [];
-  let isProcessing = false;
-  let isBotSpeaking = false;
-  let stopTTS = false;
-  let silenceTimer = null;
-  let lastBotEndTime = 0; 
+  let audioBuffer = [], isProcessing = false, isBotSpeaking = false, stopTTS = false, silenceTimer = null;
+  let lastBotEndTime = Date.now();
 
   const history = [{
     role: 'system',
-    content: 'तुम SuperSahchar हो। तुम्हें Sahchar टीम ने बनाया है। हमेशा 1-2 लाइन में जवाब दो, जिस भाषा में user बोले उसी में।'
+    content: 'तुम SuperSahchar हो, Sahchar टीम का AI। यूज़र की भाषा में (Hindi/Urdu/English) 1-2 लाइन में मदद करो। छोटा, clear जवाब दो।'
   }];
 
   const safeSend = (d) => { try { ws.readyState === 1 && ws.send(d); } catch {} };
   const resetSilence = () => { if (silenceTimer) clearTimeout(silenceTimer); silenceTimer = setTimeout(() => processAudio(), 800); };
 
   async function processAudio() {
-    if (isProcessing || audioBuffer.length === 0 || ws.readyState!== 1) return;
+    if (isProcessing || audioBuffer.length === 0 || ws.readyState !== 1) return;
     isProcessing = true;
     const full = Buffer.concat(audioBuffer); audioBuffer = [];
     const rms = calculateRMS(full);
@@ -88,9 +82,8 @@ wss.on('connection', (ws) => {
 
     console.log(`🎤 Audio: ${full.length} bytes, RMS=${rms.toFixed(4)}, sinceBot=${timeSinceBot}ms`);
 
-    if (rms < 0.015 || full.length < 3200 || isBotSpeaking || timeSinceBot < 700) {
-      isProcessing = false;
-      return;
+    if (rms < 0.025 || full.length < 5000 || isBotSpeaking || timeSinceBot < 1200) {
+      isProcessing = false; return;
     }
 
     const wav = pcmToWav(full, 16000);
@@ -101,42 +94,43 @@ wss.on('connection', (ws) => {
         file: fs.createReadStream(tmp),
         model: 'whisper-1',
         language: 'hi',
-       prompt: 'नमस्ते, अस्सलाम वालेकुम, हेलो, how are you, क्या हाल है, कैसे हो, good morning, good evening, शुक्रिया, धन्यवाद, please, मदद, बताइए, सुनिए'
+        prompt: 'नमस्ते, अस्सलाम वालेकुम, hello, क्या हाल है, good evening'
       });
-      const text = (tr.text || '').trim(); if (!text || text.length < 2) return;
+      if (ws.readyState !== 1) return;
+      
+      const text = (tr.text || '').trim(); if (!text) return;
       console.log(`📝 ${text}`); safeSend(JSON.stringify({ type: 'user_text', text }));
 
       history.push({ role: 'user', content: text }); if (history.length > 11) history.splice(1, 2);
       const comp = await openai.chat.completions.create({ model: 'gpt-4o-mini', messages: history, max_tokens: 60, temperature: 0.7 });
+      if (ws.readyState !== 1) return;
+      
       const reply = comp.choices[0].message.content; console.log(`🤖 ${reply}`);
       history.push({ role: 'assistant', content: reply });
       safeSend(JSON.stringify({ type: 'bot_text', text: reply }));
 
       isBotSpeaking = true; stopTTS = false;
       const pcm = await ttsToPcm(reply);
-      if (ws.readyState!== 1) return;
+      if (ws.readyState !== 1) return;
 
-      const CHUNK = 1920;
-      for (let i = 0; i < pcm.length; i += CHUNK) {
-        if (stopTTS || ws.readyState!== 1) break;
-        safeSend(pcm.subarray(i, i + CHUNK));
+      for (let i = 0; i < pcm.length; i += 1920) {
+        if (stopTTS || ws.readyState !== 1) break;
+        safeSend(pcm.subarray(i, i + 1920));
         await new Promise(r => setTimeout(r, 38));
       }
-      console.log(`🔊 Sent ${pcm.length} bytes`);
     } catch (e) { console.error('❌', e.message);
     } finally {
       try { fs.unlinkSync(tmp); } catch {};
-      isBotSpeaking = false;
-      lastBotEndTime = Date.now(); // <-- यहाँ set किया
-      safeSend(JSON.stringify({ type: 'status', text: 'ready' }));
+      isBotSpeaking = false; lastBotEndTime = Date.now();
+      if (ws.readyState === 1) safeSend(JSON.stringify({ type: 'status', text: 'ready' }));
       isProcessing = false;
     }
   }
 
   ws.on('message', (data, isBinary) => {
-    if (!isBinary) { try { const j = JSON.parse(data.toString()); if (j.type === 'barge-in') { stopTTS = true; isBotSpeaking = false; } } catch {}; return; }
+    if (!isBinary) return;
     if (!isBotSpeaking) { audioBuffer.push(Buffer.from(data)); resetSilence(); }
   });
 
-  ws.on('close', () => { console.log('🔌 Disconnected'); if (silenceTimer) clearTimeout(silenceTimer); });
+  ws.on('close', () => { if (silenceTimer) clearTimeout(silenceTimer); });
 });
