@@ -61,6 +61,7 @@ wss.on('connection', (ws) => {
   let isBotSpeaking = false;
   let stopTTS = false;
   let silenceTimer = null;
+  let lastBotEndTime = Date.now();
 
   const history = [{
     role: 'system',
@@ -83,13 +84,14 @@ wss.on('connection', (ws) => {
     const full = Buffer.concat(audioBuffer);
     audioBuffer = [];
     const rms = calculateRMS(full);
+    const timeSinceBot = Date.now() - lastBotEndTime;
     
     console.log(`🎤 Audio: ${full.length} bytes, RMS=${rms.toFixed(4)}`);
 
-    if (rms < 0.003 || full.length < 3200 || isBotSpeaking) {
-      isProcessing = false;
-      return;
-    }
+   if (rms < 0.008 || full.length < 5000 || isBotSpeaking || timeSinceBot < 1800) {
+  isProcessing = false;
+  return;
+}
 
     const wav = pcmToWav(full, 16000);
     const tmp = path.join('/tmp', `a_${randomUUID()}.wav`);
@@ -144,6 +146,7 @@ wss.on('connection', (ws) => {
     } finally {
       try { fs.unlinkSync(tmp); } catch {}
       isBotSpeaking = false;
+      lastBotEndTime = Date.now();
       if (ws.readyState === 1) {
         safeSend(JSON.stringify({ type: 'status', text: 'ready' }));
       }
