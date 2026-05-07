@@ -99,7 +99,8 @@ wss.on('connection', (ws) => {
 
     try {
       const tr = await openai.audio.transcriptions.create({
-        file: fs.createReadStream(tmp),
+        file: fs.createReadStream(tmp)
+        if (ws.readyState !==1) return,
         model: 'whisper-1',
         prompt: 'Hindi or English conversation'
       });
