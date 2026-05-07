@@ -70,12 +70,10 @@ if (rms < 0.015 || full.length < 3200 || isBotSpeaking || timeSinceBot < 700 || 
     const tmp = path.join('/tmp', `a_${randomUUID()}.wav`); fs.writeFileSync(tmp, wav);
 
     try {
-      // --- FIXED: proper syntax ---
       const tr = await openai.audio.transcriptions.create({
         file: fs.createReadStream(tmp),
         model: 'whisper-1',
-        prompt: 'Good evening, क्या हाल है, नमस्ते, अस्सलाम वालेकुम, how are you',
-        language: 'hi' // Hindi/Urdu hint
+        language: 'hi'
       });
       
       // disconnect check AFTER transcription
