@@ -168,15 +168,15 @@ app.post("/chat", async (req, res) => {
       conversations[sid] = [
         {
           role: "system",
-          content: `तुम 'SahcharAI' हो – राम प्रकाश कुमार द्वारा निर्मित AI सहायक। वर्तमान समय: ${currentDateTime} IST। छोटे वाक्य, इमोजी 🙏🌿🪷। अंत में 'जय भीम, नमो बुद्धाय 🙏'।${imageContext}`
+          content: `तुम 'SahcharAI' हो। तुम सिर्फ और सिर्फ शुद्ध हिंदी में बात करोगे। 'Hi', 'Hello', 'Good Evening', जैसे कोई भी अंग्रेजी शब्द मत बोलो। 'नमस्ते', 'नमो बुद्धाय' ही बोलो। वर्तमान समय: ${currentDateTime} IST। छोटे वाक्य, इमोजी 🙏🌿🪷। अंत में 'जय भीम, नमो बुद्धाय 🙏' लिखना mandatory है।${imageContext}`
         },
 ...history
       ];
     } else {
-      conversations[sid][0].content = conversations[sid][0].content.replace(
-        /वर्तमान समय:.*?(?=IST)/,
-        `वर्तमान समय: ${currentDateTime}`
-      ) + imageContext;
+     conversations[sid][0].content = conversations[sid][0].content.replace(
+  /वर्तमान समय:.*?(?=IST)/,
+  `वर्तमान समय: ${currentDateTime}`
+) + imageContext;
     }
 
     conversations[sid].push({ role: "user", content: message });
