@@ -448,22 +448,46 @@ app.post("/api/image/generate", async (req, res) => {
   console.log(`🎨 Image Gen Request: ${prompt}`);
 
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
+  
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: "API key not configured", imageUrl: "https://via.placeholder.com/1024x1024.png?text=Error" });
+  if (!apiKey) {
+    console.error("❌ OPENAI_API_KEY not configured");
+    return res.status(500).json({ 
+      error: "API key not configured", 
+      imageUrl: "https://via.placeholder.com/1024x1024.png?text=Error" 
+    });
+  }
+  
   try {
-    const response = await axios.post("https://api.openai.com/v1/images/generations", {
-      model: "dall-e-3", prompt, n: 1, size: "1024x1024"
-    }, { headers: { "Authorization": `Bearer ${apiKey}` } });
+    let response;
+    try {
+      response = await axios.post("https://api.openai.com/v1/images/generations", {
+        model: "dall-e-3",
+        prompt: prompt,
+        n: 1,
+        size: "1024x1024"
+      }, { headers: { "Authorization": `Bearer ${apiKey}` } });
+    } catch (firstError) {
+      console.log("dall-e-3 failed, trying dall-e-2...");
+      response = await axios.post("https://api.openai.com/v1/images/generations", {
+        model: "dall-e-2",
+        prompt: prompt,
+        n: 1,
+        size: "1024x1024"
+      }, { headers: { "Authorization": `Bearer ${apiKey}` } });
+    }
 
     console.log(`✅ Image Generated: ${response.data.data[0].url}`);
-
     res.json({ imageUrl: response.data.data[0].url });
+    
   } catch (error) {
     console.error("OpenAI API error:", error.response?.data || error.message);
-    res.status(500).json({ error: "इमेज जनरेशन फेल", imageUrl: "https://via.placeholder.com/1024x1024.png?text=Error" });
+    res.status(500).json({ 
+      error: "इमेज जनरेशन फेल", 
+      imageUrl: "https://via.placeholder.com/1024x1024.png?text=Image+Generation+Failed" 
+    });
   }
 });
-
 // ==================== 6. IMAGE ANALYZE ====================
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "कोई इमेज अपलोड नहीं की गई है। 🙏" });
