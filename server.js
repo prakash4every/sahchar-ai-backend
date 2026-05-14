@@ -480,7 +480,7 @@ app.post("/chat-kimi", async (req, res) => {
   }
 });
 
-// ==================== 5. IMAGE GENERATION - POLLINATIONS (FREE, NO API KEY) ====================
+// ==================== 5. IMAGE GENERATION - HUGGINGFACE FLUX ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
 
@@ -490,27 +490,58 @@ app.post("/api/image/generate", async (req, res) => {
     return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
   }
   
-  try {
-    // ✅ Pollinations.ai - Free, no API key required
+  const hfToken = process.env.HF_TOKEN;
+  
+  if (!hfToken) {
+    console.log("⚠️ No HF_TOKEN, using fallback");
     const encodedPrompt = encodeURIComponent(prompt);
-    
-    // Multiple options for better results
-    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${Date.now()}`;
-    
-    console.log(`✅ Image generated via Pollinations.ai`);
-    res.json({ imageUrl: imageUrl, provider: "pollinations" });
-    
-  } catch (error) {
-    console.error("❌ Image generation error:", error.message);
-    
-    // Fallback placeholder
-    const encodedPrompt = encodeURIComponent(prompt.substring(0, 50));
-    res.json({ 
-      imageUrl: `https://placehold.co/1024x1024/4CAF50/white?text=${encodedPrompt}`,
-      error: error.message
+    return res.json({ 
+      imageUrl: `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&seed=${Date.now()}`,
+      provider: "pollinations"
     });
   }
-});// ==================== 6. IMAGE ANALYZE ====================
+  
+  try {
+    // Try FLUX (best quality)
+    const response = await fetch(
+      "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-dev",
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${hfToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          inputs: prompt,
+          parameters: {
+            negative_prompt: "ugly, blurry, low quality, bad anatomy",
+            num_inference_steps: 28,
+            guidance_scale: 7
+          }
+        })
+      }
+    );
+    
+    if (response.ok) {
+      const buffer = await response.arrayBuffer();
+      const base64 = Buffer.from(buffer).toString('base64');
+      console.log(`✅ Image generated with FLUX`);
+      return res.json({ 
+        imageUrl: `data:image/png;base64,${base64}`,
+        provider: "flux-hf"
+      });
+    }
+  } catch (error) {
+    console.log("FLUX failed:", error.message);
+  }
+  
+  // Fallback to Pollinations
+  const encodedPrompt = encodeURIComponent(prompt);
+  res.json({ 
+    imageUrl: `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&model=flux&seed=${Date.now()}`,
+    provider: "pollinations"
+  });
+// ==================== 6. IMAGE ANALYZE ====================
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "कोई इमेज अपलोड नहीं की गई है। 🙏" });
   const { message } = req.body;
