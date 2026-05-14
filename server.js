@@ -480,7 +480,7 @@ app.post("/chat-kimi", async (req, res) => {
   }
 });
 
-// ==================== 5. IMAGE GENERATION - FIXED ====================
+// ==================== 5. IMAGE GENERATION - NEW API FIXED ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
 
@@ -493,7 +493,6 @@ app.post("/api/image/generate", async (req, res) => {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     console.error("❌ OPENAI_API_KEY not configured");
-    // ✅ Return a placeholder image instead of error
     return res.json({ 
       imageUrl: `https://placehold.co/1024x1024/2196F3/white?text=${encodeURIComponent(prompt)}`,
       error: "API key not configured"
@@ -501,70 +500,97 @@ app.post("/api/image/generate", async (req, res) => {
   }
   
   try {
-    // ✅ Try with dall-e-3 first
-    let response;
+    // ✅ Initialize OpenAI with new API key
+    const openai = new OpenAI({ apiKey });
+    
+    let imageUrl = null;
+    let usedModel = null;
+    
+    // Method 1: Try new images API with dall-e-3
     try {
-      response = await axios.post(
-        "https://api.openai.com/v1/images/generations",
-        {
-          model: "dall-e-3",
+      const response = await openai.images.generate({
+        model: "dall-e-3",
+        prompt: prompt,
+        n: 1,
+        size: "1024x1024",
+        quality: "standard"
+      });
+      
+      if (response.data && response.data[0] && response.data[0].url) {
+        imageUrl = response.data[0].url;
+        usedModel = "dall-e-3";
+        console.log(`✅ Image generated with dall-e-3`);
+      }
+    } catch (dalle3Error) {
+      console.log("dall-e-3 failed:", dalle3Error.message);
+      
+      // Method 2: Try dall-e-2
+      try {
+        const response = await openai.images.generate({
+          model: "dall-e-2",
           prompt: prompt,
           n: 1,
-          size: "1024x1024",
-          quality: "standard"
-        },
-        { 
-          headers: { 
-            "Authorization": `Bearer ${apiKey}`,
-            "Content-Type": "application/json"
-          } 
+          size: "1024x1024"
+        });
+        
+        if (response.data && response.data[0] && response.data[0].url) {
+          imageUrl = response.data[0].url;
+          usedModel = "dall-e-2";
+          console.log(`✅ Image generated with dall-e-2`);
         }
-      );
-      console.log(`✅ Image Generated with dall-e-3`);
-    } catch (dalle3Error) {
-      console.log("dall-e-3 failed, trying dall-e-2...");
-      try {
-        response = await axios.post(
-          "https://api.openai.com/v1/images/generations",
-          {
-            model: "dall-e-2",
-            prompt: prompt,
-            n: 1,
-            size: "1024x1024"
-          },
-          { 
-            headers: { 
-              "Authorization": `Bearer ${apiKey}`,
-              "Content-Type": "application/json"
-            } 
-          }
-        );
-        console.log(`✅ Image Generated with dall-e-2`);
       } catch (dalle2Error) {
-        // ✅ If both fail, try with a different approach
-        console.log("Both dall-e models failed, trying alternative...");
-        throw new Error("No DALL-E model available");
+        console.log("dall-e-2 failed:", dalle2Error.message);
       }
     }
-
-    if (response && response.data && response.data.data && response.data.data[0]) {
-      const imageUrl = response.data.data[0].url;
-      console.log(`✅ Image Generated: ${imageUrl}`);
-      return res.json({ imageUrl: imageUrl });
-    } else {
-      throw new Error("No image URL in response");
+    
+    // Method 3: If both DALL-E fail, try responses API
+    if (!imageUrl) {
+      try {
+        console.log("🔄 Trying responses API...");
+        const response = await openai.responses.create({
+          model: "gpt-4o-mini",
+          input: `Generate an image of: ${prompt}`,
+          store: false
+        });
+        
+        // Responses API might return image in different format
+        if (response.output && response.output[0] && response.output[0].content) {
+          // Extract image URL if present
+          const content = response.output[0].content;
+          if (typeof content === 'string' && content.startsWith('http')) {
+            imageUrl = content;
+            usedModel = "responses-api";
+            console.log(`✅ Image from responses API`);
+          }
+        }
+      } catch (responsesError) {
+        console.log("Responses API failed:", responsesError.message);
+      }
     }
     
-  } catch (error) {
-    console.error("OpenAI API error:", error.response?.data || error.message);
+    // Method 4: Fallback to Pollinations.ai (free, no API key needed)
+    if (!imageUrl) {
+      console.log("🔄 Falling back to Pollinations.ai...");
+      const encodedPrompt = encodeURIComponent(prompt);
+      imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true`;
+      usedModel = "pollinations";
+      console.log(`✅ Using Pollinations.ai fallback`);
+    }
     
-    // ✅ Return a nice placeholder image with the prompt text
+    console.log(`🎉 Image ready - Model: ${usedModel}`);
+    res.json({ imageUrl: imageUrl, model: usedModel });
+    
+  } catch (error) {
+    console.error("❌ Image generation error:", error.message);
+    
+    // Final fallback - placeholder
     const encodedPrompt = encodeURIComponent(prompt.substring(0, 50));
     const placeholderUrl = `https://placehold.co/1024x1024/4CAF50/white?text=${encodedPrompt}`;
     
     res.json({ 
       imageUrl: placeholderUrl,
-      error: "Using placeholder - API limit reached"
+      error: error.message,
+      model: "placeholder"
     });
   }
 });
