@@ -228,7 +228,7 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ==================== SAHCHAR ASSISTANT (KIMI) ====================
+// ==================== SAHCHAR ASSISTANT (KIMI - FIXED) ====================
 app.post("/chat-assistant", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
@@ -249,37 +249,40 @@ app.post("/chat-assistant", async (req, res) => {
       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
       hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
     });
+    const response = await fetch("https://api.moonshot.cn/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: "moonshot-v1-8k",
+        messages: [
+          {
+            role: "system",
+            content: `तुम 'SahcharAssistant' हो – राम प्रकाश कुमार द्वारा निर्मित AI सहायक।
+            
+🌐 भाषा: हिंदी, अंग्रेजी, हिंग्लिश – जैसा user बोले वैसा जवाब दो
+📝 1-2 वाक्यों में उत्तर दो
+😊 इमोजी का इस्तेमाल करो 🙏
 
-    const kimi = new OpenAI({
-      apiKey: apiKey,
-      baseURL: 'https://api.moonshot.cn/v1'
+⏰ वर्तमान समय: ${currentDateTime} IST`
+          },
+          { role: "user", content: message }
+        ],
+        temperature: 0.7,
+        max_tokens: 250
+      })
     });
 
-    const history = await loadConversationFromDB(sid, 10);
-
-    const response = await kimi.chat.completions.create({
-      model: "moonshot-v1-8k",
-      messages: [
-        {
-          role: "system",
-          content: `तुम 'SahcharAssistant' हो – राम प्रकाश कुमार द्वारा निर्मित AI सहायक।
-          
-          🌐 भाषा: हिंदी, अंग्रेजी, हिंग्लिश – जैसा user बोले वैसा जवाब दो
-          📝 1-2 वाक्यों में उत्तर दो
-          😊 इमोजी का इस्तेमाल करो 🙏
-          
-          ⏰ वर्तमान समय: ${currentDateTime} IST`
-        },
-        ...history,
-        { role: "user", content: message }
-      ],
-      temperature: 0.7,
-      max_tokens: 250
-    });
-
-    let reply = response.choices[0]?.message?.content || "क्षमा करें, मैं उत्तर नहीं दे पा रहा हूँ। 🙏";
+    const data = await response.json();
     
-    // Clean up and ensure proper formatting
+    if (!response.ok) {
+      console.error("Moonshot API error:", data);
+      throw new Error(data.error?.message || "API request failed");
+    }
+
+    let reply = data.choices[0]?.message?.content || "क्षमा करें, मैं उत्तर नहीं दे पा रहा हूँ। 🙏";
     reply = reply.replace(/\*\*/g, '').trim();
     
     console.log(`✅ Assistant Reply [${sid}]: ${reply.substring(0, 50)}...`);
@@ -289,14 +292,35 @@ app.post("/chat-assistant", async (req, res) => {
 
   } catch (error) {
     console.error("❌ Assistant error:", error.message);
-    if (error.response) {
-      console.error("Response data:", error.response.data);
-      console.error("Response status:", error.response.status);
+    try {
+      console.log("🔄 Falling back to DeepSeek for Assistant...");
+      const deepseekResponse = await fetch("https://api.deepseek.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: "deepseek-chat",
+          messages: [
+            {
+              role: "system",
+              content: `तुम 'SahcharAssistant' हो – राम प्रकाश कुमार द्वारा निर्मित AI सहायक। छोटे वाक्य, इमोजी 🙏।`
+            },
+            { role: "user", content: message }
+          ],
+          max_tokens: 250
+        })
+      });
+      const deepseekData = await deepseekResponse.json();
+      const fallbackReply = deepseekData.choices[0]?.message?.content || "क्षमा करें, सेवा व्यस्त है। 🙏";
+      await saveConversationToDB(sid, message, fallbackReply, 'SahcharAssistant');
+      res.json({ reply: fallbackReply });
+    } catch (fallbackError) {
+      res.json({ 
+        reply: "क्षमा करें, सेवा में कुछ समस्या आ रही है। कृपया थोड़ी देर बाद प्रयास करें। 🙏" 
+      });
     }
-    // Fallback response
-    res.json({ 
-      reply: "क्षमा करें, सेवा में कुछ समस्या आ रही है। कृपया थोड़ी देर बाद प्रयास करें। 🙏" 
-    });
   }
 });
 // ==================== 3. SAMBANOVA CHAT ====================
