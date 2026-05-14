@@ -493,16 +493,18 @@ app.post("/api/image/generate", async (req, res) => {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     console.error("❌ OPENAI_API_KEY not configured");
-    return res.status(500).json({ 
-      error: "API key not configured",
-      imageUrl: null
-    });
+    return res.status(500).json({ error: "API key not configured" });
   }
   
   try {
-    const openai = new OpenAI({ apiKey });
+    const openai = new OpenAI({ 
+      apiKey: apiKey,
+      timeout: 30000,
+      maxRetries: 2
+    });
     
-    // ✅ CORRECT: Use dall-e-3 with proper parameters
+    console.log(`🎨 Generating image for: ${prompt.substring(0, 50)}...`);
+    
     const response = await openai.images.generate({
       model: "dall-e-3",
       prompt: prompt,
@@ -517,14 +519,15 @@ app.post("/api/image/generate", async (req, res) => {
       throw new Error("No image URL in response");
     }
     
-    console.log(`✅ Image generated with DALL-E 3`);
+    console.log(`✅ DALL-E 3 image generated successfully`);
     res.json({ imageUrl: imageUrl });
     
   } catch (error) {
-    console.error("❌ OpenAI API error:", error.message);
+    console.error("❌ DALL-E error:", error.message);
     
-    // Try fallback with dall-e-2
+    // Fallback to DALL-E 2 if available
     try {
+      console.log("🔄 Trying DALL-E 2 fallback...");
       const openai = new OpenAI({ apiKey });
       const response = await openai.images.generate({
         model: "dall-e-2",
@@ -535,15 +538,15 @@ app.post("/api/image/generate", async (req, res) => {
       
       const imageUrl = response.data[0]?.url;
       if (imageUrl) {
-        console.log(`✅ Image generated with DALL-E 2 (fallback)`);
+        console.log(`✅ DALL-E 2 fallback successful`);
         return res.json({ imageUrl: imageUrl });
       }
     } catch (fallbackError) {
-      console.error("❌ Fallback also failed:", fallbackError.message);
+      console.error("❌ DALL-E 2 also failed:", fallbackError.message);
     }
     
     res.status(500).json({ 
-      error: error.message,
+      error: error.message || "Image generation failed",
       imageUrl: null
     });
   }
