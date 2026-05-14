@@ -480,7 +480,7 @@ app.post("/chat-kimi", async (req, res) => {
   }
 });
 
-// ==================== 5. IMAGE GENERATION - PRODUCTION READY ====================
+// ==================== 5. IMAGE GENERATION - ZEROSCOPE (ALREADY CONFIGURED) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
 
@@ -490,65 +490,206 @@ app.post("/api/image/generate", async (req, res) => {
     return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
   }
   
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    console.error("❌ OPENAI_API_KEY not configured");
+  const replicateToken = process.env.REPLICATE_API_KEY_ZEROSCOPE;
+  
+  if (!replicateToken) {
+    console.error("❌ REPLICATE_API_KEY_ZEROSCOPE not configured");
     return res.status(500).json({ error: "API key not configured" });
   }
   
   try {
-    const openai = new OpenAI({ 
-      apiKey: apiKey,
-      timeout: 30000,
-      maxRetries: 2
+    console.log(`🎨 Generating image with ZeroScope XL for: ${prompt.substring(0, 50)}...`);
+    
+    // Use ZeroScope XL model (high quality, fast)
+    const response = await fetch("https://api.replicate.com/v1/predictions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Token ${replicateToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        version: "zeroscope/zeroscope-xl:7198ce1e3b3d9d4f0e4d8c6f9e6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b",
+        input: {
+          prompt: prompt,
+          width: 1024,
+          height: 576,  // ZeroScope XL aspect ratio
+          num_frames: 24,
+          fps: 8
+        }
+      })
     });
     
-    console.log(`🎨 Generating image for: ${prompt.substring(0, 50)}...`);
-    
-    const response = await openai.images.generate({
-      model: "dall-e-3",
-      prompt: prompt,
-      n: 1,
-      size: "1024x1024",
-      quality: "standard"
-    });
-    
-    const imageUrl = response.data[0]?.url;
-    
-    if (!imageUrl) {
-      throw new Error("No image URL in response");
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
     }
     
-    console.log(`✅ DALL-E 3 image generated successfully`);
-    res.json({ imageUrl: imageUrl });
+    const data = await response.json();
+    const predictionId = data.id;
+    
+    // Poll for result (ZeroScope takes ~30-60 seconds)
+    let imageUrl = null;
+    for (let i = 0; i < 45; i++) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${predictionId}`, {
+        headers: { "Authorization": `Token ${replicateToken}` }
+      });
+      const statusData = await statusRes.json();
+      
+      if (statusData.status === "succeeded") {
+        // ZeroScope returns video, we need to extract a frame
+        imageUrl = statusData.output;
+        break;
+      } else if (statusData.status === "failed") {
+        throw new Error("Generation failed");
+      }
+    }
+    
+    if (imageUrl) {
+      console.log(`✅ ZeroScope XL video generated`);
+      res.json({ imageUrl: imageUrl });
+    } else {
+      throw new Error("Timeout waiting for generation");
+    }
     
   } catch (error) {
-    console.error("❌ DALL-E error:", error.message);
+    console.error("❌ ZeroScope error:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+// ==================== 5. IMAGE GENERATION - SDXL VIA REPLICATE ====================
+app.post("/api/image/generate", async (req, res) => {
+  const { prompt } = req.body;
+
+  console.log(`🎨 Image Gen Request: ${prompt}`);
+
+  if (!prompt) {
+    return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
+  }
+  
+  const replicateToken = process.env.REPLICATE_API_KEY_ZEROSCOPE;
+  
+  if (!replicateToken) {
+    console.error("❌ REPLICATE_API_KEY_ZEROSCOPE not configured");
+    return res.status(500).json({ error: "API key not configured" });
+  }
+  
+  try {
+    console.log(`🎨 Generating SDXL image for: ${prompt.substring(0, 50)}...`);
     
-    // Fallback to DALL-E 2 if available
-    try {
-      console.log("🔄 Trying DALL-E 2 fallback...");
-      const openai = new OpenAI({ apiKey });
-      const response = await openai.images.generate({
-        model: "dall-e-2",
-        prompt: prompt,
-        n: 1,
-        size: "1024x1024"
-      });
-      
-      const imageUrl = response.data[0]?.url;
-      if (imageUrl) {
-        console.log(`✅ DALL-E 2 fallback successful`);
-        return res.json({ imageUrl: imageUrl });
-      }
-    } catch (fallbackError) {
-      console.error("❌ DALL-E 2 also failed:", fallbackError.message);
+    // Use Stability AI SDXL model (best for images)
+    const response = await fetch("https://api.replicate.com/v1/predictions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Token ${replicateToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        version: "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
+        input: {
+          prompt: prompt,
+          negative_prompt: "blurry, ugly, low quality, bad anatomy, watermark, text",
+          width: 1024,
+          height: 1024,
+          num_outputs: 1,
+          scheduler: "DPMSolverMultistep",
+          num_inference_steps: 30,
+          guidance_scale: 7.5,
+          refine: "expert_ensemble_refiner",
+          high_noise_frac: 0.8
+        }
+      })
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API error ${response.status}: ${errorText}`);
     }
     
-    res.status(500).json({ 
-      error: error.message || "Image generation failed",
-      imageUrl: null
-    });
+    const data = await response.json();
+    const predictionId = data.id;
+    
+    console.log(`🔄 Polling for result: ${predictionId}`);
+    
+    // Poll for result (SDXL takes ~15-25 seconds)
+    let imageUrl = null;
+    for (let i = 0; i < 40; i++) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${predictionId}`, {
+        headers: { "Authorization": `Token ${replicateToken}` }
+      });
+      
+      if (!statusRes.ok) continue;
+      
+      const statusData = await statusRes.json();
+      
+      if (statusData.status === "succeeded") {
+        imageUrl = statusData.output[0];
+        console.log(`✅ SDXL image generated successfully`);
+        break;
+      } else if (statusData.status === "failed") {
+        console.error("Generation failed:", statusData.error);
+        throw new Error(statusData.error || "Generation failed");
+      }
+    }
+    
+    if (imageUrl) {
+      res.json({ imageUrl: imageUrl });
+    } else {
+      throw new Error("Timeout - generation took too long");
+    }
+    
+  } catch (error) {
+    console.error("❌ SDXL error:", error.message);
+    
+    // Fallback to simpler model if SDXL fails
+    try {
+      console.log("🔄 Trying simpler model as fallback...");
+      const fallbackResponse = await fetch("https://api.replicate.com/v1/predictions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Token ${replicateToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          version: "stability-ai/stable-diffusion:db21e45d3f7023abc2a46ee38a23973f6dce16bb082a930b0c49861f96d1e5bf",
+          input: {
+            prompt: prompt,
+            width: 512,
+            height: 512,
+            num_outputs: 1,
+            num_inference_steps: 25,
+            guidance_scale: 7
+          }
+        })
+      });
+      
+      const fallbackData = await fallbackResponse.json();
+      const fallbackId = fallbackData.id;
+      
+      let fallbackUrl = null;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${fallbackId}`, {
+          headers: { "Authorization": `Token ${replicateToken}` }
+        });
+        const statusData = await statusRes.json();
+        if (statusData.status === "succeeded") {
+          fallbackUrl = statusData.output[0];
+          break;
+        }
+      }
+      
+      if (fallbackUrl) {
+        console.log(`✅ Fallback model generated image`);
+        return res.json({ imageUrl: fallbackUrl });
+      }
+    } catch (fallbackError) {
+      console.error("Fallback also failed:", fallbackError.message);
+    }
+    
+    res.status(500).json({ error: error.message });
   }
 });
 // ==================== 6. IMAGE ANALYZE ====================
