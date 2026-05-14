@@ -541,6 +541,7 @@ app.post("/api/image/generate", async (req, res) => {
     imageUrl: `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&model=flux&seed=${Date.now()}`,
     provider: "pollinations"
   });
+});
 // ==================== 6. IMAGE ANALYZE ====================
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "कोई इमेज अपलोड नहीं की गई है। 🙏" });
