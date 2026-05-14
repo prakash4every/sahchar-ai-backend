@@ -480,7 +480,7 @@ app.post("/chat-kimi", async (req, res) => {
   }
 });
 
-// ==================== 5. IMAGE GENERATION - HUGGINGFACE FLUX ====================
+// ==================== 5. IMAGE GENERATION - PRODUCTION READY ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
 
@@ -490,57 +490,63 @@ app.post("/api/image/generate", async (req, res) => {
     return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
   }
   
-  const hfToken = process.env.HF_TOKEN;
-  
-  if (!hfToken) {
-    console.log("⚠️ No HF_TOKEN, using fallback");
-    const encodedPrompt = encodeURIComponent(prompt);
-    return res.json({ 
-      imageUrl: `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&seed=${Date.now()}`,
-      provider: "pollinations"
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    console.error("❌ OPENAI_API_KEY not configured");
+    return res.status(500).json({ 
+      error: "API key not configured",
+      imageUrl: null
     });
   }
   
   try {
-    // Try FLUX (best quality)
-    const response = await fetch(
-      "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-dev",
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${hfToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          inputs: prompt,
-          parameters: {
-            negative_prompt: "ugly, blurry, low quality, bad anatomy",
-            num_inference_steps: 28,
-            guidance_scale: 7
-          }
-        })
-      }
-    );
+    const openai = new OpenAI({ apiKey });
     
-    if (response.ok) {
-      const buffer = await response.arrayBuffer();
-      const base64 = Buffer.from(buffer).toString('base64');
-      console.log(`✅ Image generated with FLUX`);
-      return res.json({ 
-        imageUrl: `data:image/png;base64,${base64}`,
-        provider: "flux-hf"
-      });
+    // ✅ CORRECT: Use dall-e-3 with proper parameters
+    const response = await openai.images.generate({
+      model: "dall-e-3",
+      prompt: prompt,
+      n: 1,
+      size: "1024x1024",
+      quality: "standard"
+    });
+    
+    const imageUrl = response.data[0]?.url;
+    
+    if (!imageUrl) {
+      throw new Error("No image URL in response");
     }
+    
+    console.log(`✅ Image generated with DALL-E 3`);
+    res.json({ imageUrl: imageUrl });
+    
   } catch (error) {
-    console.log("FLUX failed:", error.message);
+    console.error("❌ OpenAI API error:", error.message);
+    
+    // Try fallback with dall-e-2
+    try {
+      const openai = new OpenAI({ apiKey });
+      const response = await openai.images.generate({
+        model: "dall-e-2",
+        prompt: prompt,
+        n: 1,
+        size: "1024x1024"
+      });
+      
+      const imageUrl = response.data[0]?.url;
+      if (imageUrl) {
+        console.log(`✅ Image generated with DALL-E 2 (fallback)`);
+        return res.json({ imageUrl: imageUrl });
+      }
+    } catch (fallbackError) {
+      console.error("❌ Fallback also failed:", fallbackError.message);
+    }
+    
+    res.status(500).json({ 
+      error: error.message,
+      imageUrl: null
+    });
   }
-  
-  // Fallback to Pollinations
-  const encodedPrompt = encodeURIComponent(prompt);
-  res.json({ 
-    imageUrl: `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&model=flux&seed=${Date.now()}`,
-    provider: "pollinations"
-  });
 });
 // ==================== 6. IMAGE ANALYZE ====================
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
