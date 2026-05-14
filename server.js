@@ -228,14 +228,20 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ==================== 2. SAHCHAR ASSISTANT - NOW KIMI ====================
+// ==================== SAHCHAR ASSISTANT (KIMI) ====================
 app.post("/chat-assistant", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
+  
+  console.log(`📩 Assistant Request [${sid}]: ${message?.substring(0, 50)}...`);
+  
   if (!message) return res.status(400).json({ error: "Message required 🙏" });
 
   const apiKey = process.env.KIMI_API_KEY;
-  if (!apiKey) return res.status(501).json({ reply: "Kimi not configured." });
+  if (!apiKey) {
+    console.error("❌ KIMI_API_KEY not configured");
+    return res.status(501).json({ reply: "Kimi service not configured. Please check API key." });
+  }
 
   try {
     const now = new Date();
@@ -245,7 +251,7 @@ app.post("/chat-assistant", async (req, res) => {
     });
 
     const kimi = new OpenAI({
-      apiKey,
+      apiKey: apiKey,
       baseURL: 'https://api.moonshot.cn/v1'
     });
 
@@ -256,34 +262,43 @@ app.post("/chat-assistant", async (req, res) => {
       messages: [
         {
           role: "system",
-          content: `तुम्हारा नाम 'SahcharAssistant' है। तुम्हें राम प्रकाश कुमार ने बनाया है।
-
-          नियम:
-          1. अगर कोई पूछे "तुम्हें किसने बनाया" तो सिर्फ यही बोलना: "मुझे राम प्रकाश कुमार ने बनाया है 🙏"
-          2. कभी मत बोलना कि OpenAI, Google, Meta ने बनाया।
-          3. वर्तमान समय: ${currentDateTime} IST।
-          4. 1-2 वाक्य में जवाब दो। अंत में 'जय भीम, नमो बुद्धाय 🙏'`
+          content: `तुम 'SahcharAssistant' हो – राम प्रकाश कुमार द्वारा निर्मित AI सहायक।
+          
+          🌐 भाषा: हिंदी, अंग्रेजी, हिंग्लिश – जैसा user बोले वैसा जवाब दो
+          📝 1-2 वाक्यों में उत्तर दो
+          😊 इमोजी का इस्तेमाल करो 🙏
+          
+          ⏰ वर्तमान समय: ${currentDateTime} IST`
         },
-...history,
+        ...history,
         { role: "user", content: message }
       ],
-      temperature: 0.3,
-      max_tokens: 150
+      temperature: 0.7,
+      max_tokens: 250
     });
 
-    let reply = response.choices[0]?.message?.content || "कोई जवाब नहीं।";
-    reply = reply.replace(/जय भीम, नमो बुद्धाय.*$/i, '').trim().substring(0, 500) + '\n\nजय भीम, नमो बुद्धाय 🙏';
-
+    let reply = response.choices[0]?.message?.content || "क्षमा करें, मैं उत्तर नहीं दे पा रहा हूँ। 🙏";
+    
+    // Clean up and ensure proper formatting
+    reply = reply.replace(/\*\*/g, '').trim();
+    
+    console.log(`✅ Assistant Reply [${sid}]: ${reply.substring(0, 50)}...`);
+    
     await saveConversationToDB(sid, message, reply, 'SahcharAssistant');
-    console.log(`✅ Kimi Assistant reply for ${sid}: ${reply.substring(0, 50)}...`);
-    res.json({ reply });
+    res.json({ reply: reply });
 
   } catch (error) {
-    console.error("❌ Kimi Assistant error:", error.message);
-    res.status(500).json({ reply: "क्षमा करें, अभी सेवा व्यस्त है। 🙏" });
+    console.error("❌ Assistant error:", error.message);
+    if (error.response) {
+      console.error("Response data:", error.response.data);
+      console.error("Response status:", error.response.status);
+    }
+    // Fallback response
+    res.json({ 
+      reply: "क्षमा करें, सेवा में कुछ समस्या आ रही है। कृपया थोड़ी देर बाद प्रयास करें। 🙏" 
+    });
   }
 });
-
 // ==================== 3. SAMBANOVA CHAT ====================
 app.post("/chat-sambanova", async (req, res) => {
   const sid = getSessionId(req);
