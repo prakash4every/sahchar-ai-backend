@@ -11,7 +11,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Sahchar Live v13.2 on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Sahchar Live v14.0 on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -81,7 +81,6 @@ wss.on('connection', (ws, req) => {
     if (ws.readyState === 1 && !isClosing) {
       try {
         ws.ping();
-        console.log(`📡 Ping sent to ${clientId.substring(0, 8)}`);
       } catch (e) {
         console.log('Ping failed:', e.message);
       }
@@ -118,7 +117,7 @@ wss.on('connection', (ws, req) => {
 
   const resetSilenceTimer = () => {
     if (silenceTimer) clearTimeout(silenceTimer);
-    if (!isBotSpeaking && !isProcessing && audioBuffer.length > 0) {
+    if (!isBotSpeaking && !isProcessing && audioBuffer.length > 0 && !isClosing) {
       silenceTimer = setTimeout(() => {
         if (!isBotSpeaking && !isProcessing && audioBuffer.length > 0 && !isClosing) {
           processAudio();
@@ -212,20 +211,14 @@ wss.on('connection', (ws, req) => {
       // Amplify audio
       audioPcm = amplifyAudio(audioPcm, 2.5);
       
-      // Send audio in chunks with smaller chunks and longer delay
+      // Send audio in chunks
       const chunkSize = 4000;
       for (let i = 0; i < audioPcm.length; i += chunkSize) {
-        if (ws.readyState !== 1 || isClosing) {
-          console.log('WebSocket closed during audio send');
-          break; // ✅ This break is valid (inside for loop)
-        }
+        if (ws.readyState !== 1 || isClosing) break;
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         const sent = safeSend(chunk, true);
-        if (!sent) {
-          console.log('Failed to send chunk, stopping');
-          break; // ✅ This break is also valid (inside for loop)
-        }
-        await new Promise(r => setTimeout(r, 100));
+        if (!sent) break;
+        await new Promise(r => setTimeout(r, 80));
       }
       
       isBotSpeaking = false;
@@ -237,9 +230,6 @@ wss.on('connection', (ws, req) => {
       console.error('❌ Error:', error.message);
       isBotSpeaking = false;
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
-      if (error.message.includes('Empty')) {
-        safeSend(JSON.stringify({ type: 'status', text: 'ज़ोर से बोलिए... 🔊' }));
-      }
     } finally {
       try {
         fs.unlinkSync(tempPath);
@@ -249,15 +239,30 @@ wss.on('connection', (ws, req) => {
   }
 
   ws.on('message', (data, isBinary) => {
-    if (!isBinary) return;
-    if (isBotSpeaking) return;
+    // Log incoming message size for debugging
+    if (data.length > 0) {
+      console.log(`📥 Received ${data.length} bytes from client`);
+    }
+    
+    if (!isBinary) {
+      console.log('Received text message:', data.toString());
+      return;
+    }
+    
+    if (isBotSpeaking) {
+      console.log('Bot speaking, ignoring user audio');
+      return;
+    }
+    
     if (isClosing) return;
+    
     audioBuffer.push(Buffer.from(data));
+    console.log(`Audio buffer size: ${audioBuffer.length} chunks`);
     resetSilenceTimer();
   });
   
   ws.on('pong', () => {
-    console.log(`📡 Pong received from ${clientId.substring(0, 8)}`);
+    // Silent pong, no log
   });
 
   ws.on('close', (code, reason) => {
@@ -272,7 +277,7 @@ wss.on('connection', (ws, req) => {
   });
   
   ws.on('error', (error) => {
-    console.error(`WebSocket error for ${clientId.substring(0, 8)}:`, error.message);
+    console.error(`WebSocket error:`, error.message);
     isClosing = true;
   });
 });
