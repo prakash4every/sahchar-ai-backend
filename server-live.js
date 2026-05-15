@@ -11,7 +11,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Sahchar Live v12.0 on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Sahchar Live v13.0 on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -46,11 +46,6 @@ function calculateRMS(buf) {
   return Math.sqrt(sum / samples) / 32768;
 }
 
-// Store conversation history per connection
-const clientHistories = new Map();
-const clientIntervals = new Map();
-
-// ✅ Function to amplify audio volume
 function amplifyAudio(pcmData, factor = 2.0) {
   const amplified = Buffer.alloc(pcmData.length);
   for (let i = 0; i < pcmData.length; i += 2) {
@@ -60,6 +55,11 @@ function amplifyAudio(pcmData, factor = 2.0) {
   }
   return amplified;
 }
+
+// Store conversation history per connection
+const clientHistories = new Map();
+const clientIntervals = new Map();
+const activeClients = new Map();
 
 wss.on('connection', (ws, req) => {
   console.log('🔌 Client connected');
@@ -71,18 +71,22 @@ wss.on('connection', (ws, req) => {
   let lastBotTime = 0;
   let clientId = randomUUID();
   let pingInterval = null;
+  let isClosing = false;
+  
+  // Store client reference
+  activeClients.set(clientId, ws);
   
   // Ping interval to keep connection alive
   pingInterval = setInterval(() => {
-    if (ws.readyState === 1) {
+    if (ws.readyState === 1 && !isClosing) {
       try {
         ws.ping();
-        console.log('📡 Ping sent');
+        console.log(`📡 Ping sent to ${clientId.substring(0, 8)}`);
       } catch (e) {
         console.log('Ping failed:', e.message);
       }
     }
-  }, 20000);
+  }, 15000);
   
   clientIntervals.set(clientId, pingInterval);
   
@@ -100,7 +104,7 @@ wss.on('connection', (ws, req) => {
   }]);
 
   const safeSend = (data, isBinary = false) => {
-    if (ws.readyState === 1) {
+    if (ws.readyState === 1 && !isClosing) {
       try {
         ws.send(data);
         return true;
@@ -116,7 +120,7 @@ wss.on('connection', (ws, req) => {
     if (silenceTimer) clearTimeout(silenceTimer);
     if (!isBotSpeaking && !isProcessing && audioBuffer.length > 0) {
       silenceTimer = setTimeout(() => {
-        if (!isBotSpeaking && !isProcessing && audioBuffer.length > 0) {
+        if (!isBotSpeaking && !isProcessing && audioBuffer.length > 0 && !isClosing) {
           processAudio();
         }
       }, 600);
@@ -124,7 +128,7 @@ wss.on('connection', (ws, req) => {
   };
 
   async function processAudio() {
-    if (isProcessing || isBotSpeaking || audioBuffer.length === 0) return;
+    if (isProcessing || isBotSpeaking || audioBuffer.length === 0 || isClosing) return;
     if (Date.now() - lastBotTime < 800) return;
 
     isProcessing = true;
@@ -193,32 +197,32 @@ wss.on('connection', (ws, req) => {
       isBotSpeaking = true;
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
       
-      // ✅ Generate speech with louder voice
+      // Generate speech
       const ttsResponse = await openai.audio.speech.create({
         model: 'tts-1',
-        voice: 'nova',  // Changed from 'alloy' to 'nova' (clearer, more natural)
+        voice: 'nova',
         input: botReply,
         response_format: 'pcm',
-        speed: 0.95  // Slightly slower for better clarity
+        speed: 0.95
       });
       
       let audioPcm = Buffer.from(await ttsResponse.arrayBuffer());
       console.log(`TTS PCM size: ${audioPcm.length} bytes`);
       
-      // ✅ Amplify audio volume (2.5x for louder voice)
+      // Amplify audio
       audioPcm = amplifyAudio(audioPcm, 2.5);
       
-      // Send audio in larger chunks with proper delay
-      const chunkSize = 8000;
+      // Send audio in chunks with smaller chunks and longer delay
+      const chunkSize = 4000;
       for (let i = 0; i < audioPcm.length; i += chunkSize) {
-        if (ws.readyState !== 1) {
+        if (ws.readyState !== 1 || isClosing) {
           console.log('WebSocket closed during audio send');
           break;
         }
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         const sent = safeSend(chunk, true);
         if (!sent) break;
-        await new Promise(r => setTimeout(r, 80));
+        await new Promise(r => setTimeout(r, 100));
       }
       
       isBotSpeaking = false;
@@ -244,24 +248,37 @@ wss.on('connection', (ws, req) => {
   ws.on('message', (data, isBinary) => {
     if (!isBinary) return;
     if (isBotSpeaking) return;
+    if (isClosing) return;
     audioBuffer.push(Buffer.from(data));
     resetSilenceTimer();
   });
   
   ws.on('pong', () => {
-    console.log('📡 Pong received');
+    console.log(`📡 Pong received from ${clientId.substring(0, 8)}`);
   });
 
-  ws.on('close', () => {
-    console.log('🔌 Client disconnected');
+  ws.on('close', (code, reason) => {
+    console.log(`🔌 Client ${clientId.substring(0, 8)} disconnected: ${code} - ${reason}`);
+    isClosing = true;
     if (silenceTimer) clearTimeout(silenceTimer);
     const interval = clientIntervals.get(clientId);
     if (interval) clearInterval(interval);
     clientIntervals.delete(clientId);
     clientHistories.delete(clientId);
+    activeClients.delete(clientId);
   });
   
   ws.on('error', (error) => {
-    console.error('WebSocket error:', error.message);
+    console.error(`WebSocket error for ${clientId.substring(0, 8)}:`, error.message);
+    isClosing = true;
   });
+});
+
+// Cleanup on server shutdown
+process.on('SIGTERM', () => {
+  console.log('Shutting down...');
+  for (const [id, ws] of activeClients) {
+    ws.close(1000, 'Server shutdown');
+  }
+  server.close();
 });
