@@ -11,7 +11,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Sahchar Live v11.0 on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Sahchar Live v12.0 on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -49,6 +49,17 @@ function calculateRMS(buf) {
 // Store conversation history per connection
 const clientHistories = new Map();
 const clientIntervals = new Map();
+
+// ✅ Function to amplify audio volume
+function amplifyAudio(pcmData, factor = 2.0) {
+  const amplified = Buffer.alloc(pcmData.length);
+  for (let i = 0; i < pcmData.length; i += 2) {
+    let sample = pcmData.readInt16LE(i);
+    sample = Math.min(32767, Math.max(-32768, sample * factor));
+    amplified.writeInt16LE(sample, i);
+  }
+  return amplified;
+}
 
 wss.on('connection', (ws, req) => {
   console.log('🔌 Client connected');
@@ -182,17 +193,20 @@ wss.on('connection', (ws, req) => {
       isBotSpeaking = true;
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
       
-      // Generate speech
+      // ✅ Generate speech with louder voice
       const ttsResponse = await openai.audio.speech.create({
         model: 'tts-1',
-        voice: 'alloy',
+        voice: 'nova',  // Changed from 'alloy' to 'nova' (clearer, more natural)
         input: botReply,
         response_format: 'pcm',
-        speed: 1.0
+        speed: 0.95  // Slightly slower for better clarity
       });
       
-      const audioPcm = Buffer.from(await ttsResponse.arrayBuffer());
+      let audioPcm = Buffer.from(await ttsResponse.arrayBuffer());
       console.log(`TTS PCM size: ${audioPcm.length} bytes`);
+      
+      // ✅ Amplify audio volume (2.5x for louder voice)
+      audioPcm = amplifyAudio(audioPcm, 2.5);
       
       // Send audio in larger chunks with proper delay
       const chunkSize = 8000;
@@ -204,7 +218,7 @@ wss.on('connection', (ws, req) => {
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         const sent = safeSend(chunk, true);
         if (!sent) break;
-        await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 80));
       }
       
       isBotSpeaking = false;
