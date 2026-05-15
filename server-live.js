@@ -42,10 +42,8 @@ function calculateRMS(buf) {
     const sample = buf.readInt16LE(i);
     sum += sample * sample;
   }
-  const samples = buf.length / 2;
-  return Math.sqrt(sum / samples) / 32768;
+  return Math.sqrt(sum / (buf.length/2)) / 32768;
 }
-
 function amplifyAudio(pcmData, factor = 2.0) {
   const amplified = Buffer.alloc(pcmData.length);
   for (let i = 0; i < pcmData.length; i += 2) {
@@ -136,13 +134,11 @@ wss.on('connection', (ws, req) => {
     audioBuffer = [];
 
     const rms = calculateRMS(fullAudio);
-    console.log(`Audio RMS: ${rms.toFixed(4)}, Length: ${fullAudio.length}`);
-    
-    if (rms < 0.005 || fullAudio.length < 1600) {
-      console.log('Audio too quiet or too short, ignoring');
-      isProcessing = false;
-      return;
-    }
+if (rms < 0.002 || fullAudio.length < 3200) { // ✅ 0.005 → 0.002
+  console.log('Too quiet');
+  isProcessing = false;
+  safeSend(JSON.stringify({ type: 'status', text: 'ज़ोर से बोलिए... 🔊' }));
+  r
 
     console.log('🎤 Processing user speech...');
     safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
@@ -207,36 +203,21 @@ wss.on('connection', (ws, req) => {
       });
       
       let audioPcm = Buffer.from(await ttsResponse.arrayBuffer());
-      console.log(`TTS PCM size: ${audioPcm.length} bytes`);
-      
-      // Amplify audio
-      audioPcm = amplifyAudio(audioPcm, 2.5);
-      
-      // Send audio in chunks with smaller chunks and longer delay
-      const chunkSize = 4000;
-      for (let i = 0; i < audioPcm.length; i += chunkSize) {
-        if (ws.readyState !== 1 || isClosing) {
-          console.log('WebSocket closed during audio send');
-          break;
-        }
-        const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
+audioPcm = amplifyAudio(audioPcm, 2.0);
+const chunkSize = 4800; // 100ms @24kHz
+for (let i = 0; i < audioPcm.length; i += chunkSize) {
+  if (ws.readyState !== 1) break;
+  ws.send(audioPcm.subarray(i, i+chunkSize));
+  await new Promise(r => setTimeout(r, 20)); // 100 → 20ms
+}        const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         const sent = safeSend(chunk, true);
         if (!sent) break;
         await new Promise(r => setTimeout(r, 100));
       }
       
-      isBotSpeaking = false;
-      lastBotTime = Date.now();
-      safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
-      console.log('✅ Bot finished speaking');
-
-    } catch (error) {
-      console.error('❌ Error:', error.message);
-      isBotSpeaking = false;
-      safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
-      if (error.message.includes('Empty')) {
-        safeSend(JSON.stringify({ type: 'status', text: 'ज़ोर से बोलिए... 🔊' }));
-      }
+     isBotSpeaking = false;
+safeSend(JSON.stringify({ type: 'audio_done' })); // ✅ नया signal
+safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));      }
     } finally {
       try {
         fs.unlinkSync(tempPath);
