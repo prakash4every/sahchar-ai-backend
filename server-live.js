@@ -11,7 +11,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Sahchar Live v10.0 on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Sahchar Live v11.0 on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -48,6 +48,7 @@ function calculateRMS(buf) {
 
 // Store conversation history per connection
 const clientHistories = new Map();
+const clientIntervals = new Map();
 
 wss.on('connection', (ws, req) => {
   console.log('🔌 Client connected');
@@ -58,8 +59,23 @@ wss.on('connection', (ws, req) => {
   let silenceTimer = null;
   let lastBotTime = 0;
   let clientId = randomUUID();
+  let pingInterval = null;
   
-  // Initialize conversation history for this client
+  // Ping interval to keep connection alive
+  pingInterval = setInterval(() => {
+    if (ws.readyState === 1) {
+      try {
+        ws.ping();
+        console.log('📡 Ping sent');
+      } catch (e) {
+        console.log('Ping failed:', e.message);
+      }
+    }
+  }, 20000);
+  
+  clientIntervals.set(clientId, pingInterval);
+  
+  // Initialize conversation history
   clientHistories.set(clientId, [{
     role: 'system',
     content: `तुम सहचर हो। एक दोस्त की तरह बात करो। 
@@ -72,14 +88,17 @@ wss.on('connection', (ws, req) => {
     6. जवाब देते समय इमोजी का इस्तेमाल करो 🙏😊`
   }]);
 
-  const safeSend = (data) => {
+  const safeSend = (data, isBinary = false) => {
     if (ws.readyState === 1) {
       try {
         ws.send(data);
+        return true;
       } catch (e) {
         console.error('Send error:', e.message);
+        return false;
       }
     }
+    return false;
   };
 
   const resetSilenceTimer = () => {
@@ -89,7 +108,7 @@ wss.on('connection', (ws, req) => {
         if (!isBotSpeaking && !isProcessing && audioBuffer.length > 0) {
           processAudio();
         }
-      }, 600); // 600ms silence triggers processing
+      }, 600);
     }
   };
 
@@ -138,7 +157,6 @@ wss.on('connection', (ws, req) => {
       const history = clientHistories.get(clientId) || [];
       history.push({ role: 'user', content: userMessage });
       
-      // Keep last 10 exchanges (20 messages + system)
       while (history.length > 21) {
         history.splice(1, 2);
       }
@@ -176,13 +194,17 @@ wss.on('connection', (ws, req) => {
       const audioPcm = Buffer.from(await ttsResponse.arrayBuffer());
       console.log(`TTS PCM size: ${audioPcm.length} bytes`);
       
-      // Stream audio in chunks
-      const chunkSize = 3200;
+      // Send audio in larger chunks with proper delay
+      const chunkSize = 8000;
       for (let i = 0; i < audioPcm.length; i += chunkSize) {
-        if (ws.readyState !== 1) break;
+        if (ws.readyState !== 1) {
+          console.log('WebSocket closed during audio send');
+          break;
+        }
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
-        safeSend(chunk);
-        await new Promise(r => setTimeout(r, 50));
+        const sent = safeSend(chunk, true);
+        if (!sent) break;
+        await new Promise(r => setTimeout(r, 100));
       }
       
       isBotSpeaking = false;
@@ -207,18 +229,22 @@ wss.on('connection', (ws, req) => {
 
   ws.on('message', (data, isBinary) => {
     if (!isBinary) return;
-    
-    // If bot is speaking, ignore user audio
     if (isBotSpeaking) return;
-    
     audioBuffer.push(Buffer.from(data));
     resetSilenceTimer();
   });
+  
+  ws.on('pong', () => {
+    console.log('📡 Pong received');
+  });
 
   ws.on('close', () => {
-    if (silenceTimer) clearTimeout(silenceTimer);
-    clientHistories.delete(clientId);
     console.log('🔌 Client disconnected');
+    if (silenceTimer) clearTimeout(silenceTimer);
+    const interval = clientIntervals.get(clientId);
+    if (interval) clearInterval(interval);
+    clientIntervals.delete(clientId);
+    clientHistories.delete(clientId);
   });
   
   ws.on('error', (error) => {
