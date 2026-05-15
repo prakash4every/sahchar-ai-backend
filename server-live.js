@@ -11,19 +11,27 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Sahchar Live v13.1 on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Sahchar Live v13.2 on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req, res) => res.send('Sahchar Live v13.1 - Working'));
+app.get('/', (req, res) => res.send('Sahchar Live - Working'));
 
 function pcmToWav(pcm, rate = 16000) {
   const h = Buffer.alloc(44);
-  h.write('RIFF', 0); h.writeUInt32LE(36 + pcm.length, 4); h.write('WAVE', 8);
-  h.write('fmt ', 12); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20);
-  h.writeUInt16LE(1, 22); h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * 2, 28);
-  h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34); h.write('data', 36);
+  h.write('RIFF', 0);
+  h.writeUInt32LE(36 + pcm.length, 4);
+  h.write('WAVE', 8);
+  h.write('fmt ', 12);
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20);
+  h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(rate, 24);
+  h.writeUInt32LE(rate * 2, 28);
+  h.writeUInt16LE(2, 32);
+  h.writeUInt16LE(16, 34);
+  h.write('data', 36);
   h.writeUInt32LE(pcm.length, 40);
   return Buffer.concat([h, pcm]);
 }
@@ -34,48 +42,88 @@ function calculateRMS(buf) {
     const sample = buf.readInt16LE(i);
     sum += sample * sample;
   }
-  return Math.sqrt(sum / (buf.length / 2)) / 32768;
+  const samples = buf.length / 2;
+  return Math.sqrt(sum / samples) / 32768;
 }
 
 function amplifyAudio(pcmData, factor = 2.0) {
-  const out = Buffer.alloc(pcmData.length);
+  const amplified = Buffer.alloc(pcmData.length);
   for (let i = 0; i < pcmData.length; i += 2) {
-    let s = pcmData.readInt16LE(i);
-    s = Math.max(-32768, Math.min(32767, s * factor));
-    out.writeInt16LE(s, i);
+    let sample = pcmData.readInt16LE(i);
+    sample = Math.min(32767, Math.max(-32768, sample * factor));
+    amplified.writeInt16LE(sample, i);
   }
-  return out;
+  return amplified;
 }
 
+// Store conversation history per connection
 const clientHistories = new Map();
 const clientIntervals = new Map();
 const activeClients = new Map();
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   console.log('🔌 Client connected');
-  let audioBuffer = [], isProcessing = false, isBotSpeaking = false;
-  let silenceTimer = null, lastBotTime = 0, clientId = randomUUID(), isClosing = false;
-
+  
+  let audioBuffer = [];
+  let isProcessing = false;
+  let isBotSpeaking = false;
+  let silenceTimer = null;
+  let lastBotTime = 0;
+  let clientId = randomUUID();
+  let pingInterval = null;
+  let isClosing = false;
+  
+  // Store client reference
   activeClients.set(clientId, ws);
-  const pingInterval = setInterval(() => {
-    if (ws.readyState === 1 && !isClosing) try { ws.ping(); } catch {}
+  
+  // Ping interval to keep connection alive
+  pingInterval = setInterval(() => {
+    if (ws.readyState === 1 && !isClosing) {
+      try {
+        ws.ping();
+        console.log(`📡 Ping sent to ${clientId.substring(0, 8)}`);
+      } catch (e) {
+        console.log('Ping failed:', e.message);
+      }
+    }
   }, 15000);
+  
   clientIntervals.set(clientId, pingInterval);
-
+  
+  // Initialize conversation history
   clientHistories.set(clientId, [{
     role: 'system',
-    content: `तुम सहचर हो। दोस्त की तरह बात करो। सिर्फ हिंदी/हिंग्लिश, 10-15 शब्द, इमोजी use करो। तुम्हें राम प्रकाश कुमार ने बनाया है।`
+    content: `तुम सहचर हो। एक दोस्त की तरह बात करो। 
+    नियम:
+    1. सिर्फ हिंदी या हिंग्लिश में बात करो
+    2. जवाब 10-15 शब्दों में रखो
+    3. प्राकृतिक और दोस्ताना बात करो
+    4. तुम्हें राम प्रकाश कुमार ने बनाया है
+    5. भूलकर भी OpenAI, ChatGPT या AI मत बोलना
+    6. जवाब देते समय इमोजी का इस्तेमाल करो 🙏😊`
   }]);
 
-  const safeSend = (data) => {
-    if (ws.readyState === 1 && !isClosing) try { ws.send(data); return true; } catch {}
+  const safeSend = (data, isBinary = false) => {
+    if (ws.readyState === 1 && !isClosing) {
+      try {
+        ws.send(data);
+        return true;
+      } catch (e) {
+        console.error('Send error:', e.message);
+        return false;
+      }
+    }
     return false;
   };
 
   const resetSilenceTimer = () => {
     if (silenceTimer) clearTimeout(silenceTimer);
     if (!isBotSpeaking && !isProcessing && audioBuffer.length > 0) {
-      silenceTimer = setTimeout(processAudio, 900);
+      silenceTimer = setTimeout(() => {
+        if (!isBotSpeaking && !isProcessing && audioBuffer.length > 0 && !isClosing) {
+          processAudio();
+        }
+      }, 600);
     }
   };
 
@@ -86,94 +134,156 @@ wss.on('connection', (ws) => {
     isProcessing = true;
     const fullAudio = Buffer.concat(audioBuffer);
     audioBuffer = [];
-    const rms = calculateRMS(fullAudio);
 
-    console.log(`🎤 RMS: ${rms.toFixed(4)} Len:${fullAudio.length}`);
+    const rms = calculateRMS(fullAudio);
+    console.log(`Audio RMS: ${rms.toFixed(4)}, Length: ${fullAudio.length}`);
     
-    if (rms < 0.002 || fullAudio.length < 3200) {
-      console.log('Too quiet');
+    if (rms < 0.005 || fullAudio.length < 1600) {
+      console.log('Audio too quiet or too short, ignoring');
       isProcessing = false;
-      safeSend(JSON.stringify({ type: 'status', text: 'ज़ोर से बोलिए... 🔊' }));
       return;
     }
 
+    console.log('🎤 Processing user speech...');
     safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
-    const wav = pcmToWav(fullAudio, 16000);
-    const tmp = path.join('/tmp', `${randomUUID()}.wav`);
-    fs.writeFileSync(tmp, wav);
+    
+    const wavFile = pcmToWav(fullAudio, 16000);
+    const tempPath = path.join('/tmp', `${randomUUID()}.wav`);
+    fs.writeFileSync(tempPath, wavFile);
 
     try {
+      // Transcription
       const transcription = await openai.audio.transcriptions.create({
-        file: fs.createReadStream(tmp),
+        file: fs.createReadStream(tempPath),
         model: 'whisper-1',
         language: 'hi',
         response_format: 'text'
       });
+      
       const userMessage = (transcription || '').trim();
-      if (!userMessage) throw new Error('Empty');
+      if (!userMessage || userMessage.length < 2) {
+        throw new Error('Empty transcription');
+      }
 
       console.log(`📝 User: ${userMessage}`);
       safeSend(JSON.stringify({ type: 'user_text', text: userMessage }));
-
-      const history = clientHistories.get(clientId);
+      
+      // Get conversation history
+      const history = clientHistories.get(clientId) || [];
       history.push({ role: 'user', content: userMessage });
-      if (history.length > 21) history.splice(1, 2);
-
+      
+      while (history.length > 21) {
+        history.splice(1, 2);
+      }
+      
       safeSend(JSON.stringify({ type: 'status', text: 'सोच रहा हूँ... 🤔' }));
+      
+      // Generate response
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: history,
-        max_tokens: 120,
-        temperature: 0.85
+        max_tokens: 150,
+        temperature: 0.85,
+        presence_penalty: 0.6
       });
+      
       const botReply = completion.choices[0].message.content;
-      history.push({ role: 'assistant', content: botReply });
       console.log(`🤖 Bot: ${botReply}`);
-
+      
+      history.push({ role: 'assistant', content: botReply });
+      clientHistories.set(clientId, history);
+      
       safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
       isBotSpeaking = true;
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
-
-      const tts = await openai.audio.speech.create({
-        model: 'tts-1', voice: 'nova', input: botReply,
-        response_format: 'pcm', speed: 0.95
+      
+      // Generate speech
+      const ttsResponse = await openai.audio.speech.create({
+        model: 'tts-1',
+        voice: 'nova',
+        input: botReply,
+        response_format: 'pcm',
+        speed: 0.95
       });
-      let pcm = Buffer.from(await tts.arrayBuffer());
-      pcm = amplifyAudio(pcm, 2.0);
-
-      const chunkSize = 4800;
-      for (let i = 0; i < pcm.length; i += chunkSize) {
-        if (ws.readyState !== 1) break;
-        safeSend(pcm.subarray(i, i + chunkSize));
-        await new Promise(r => setTimeout(r, 20));
+      
+      let audioPcm = Buffer.from(await ttsResponse.arrayBuffer());
+      console.log(`TTS PCM size: ${audioPcm.length} bytes`);
+      
+      // Amplify audio
+      audioPcm = amplifyAudio(audioPcm, 2.5);
+      
+      // Send audio in chunks with smaller chunks and longer delay
+      const chunkSize = 4000;
+      for (let i = 0; i < audioPcm.length; i += chunkSize) {
+        if (ws.readyState !== 1 || isClosing) {
+          console.log('WebSocket closed during audio send');
+          break; // ✅ This break is valid (inside for loop)
+        }
+        const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
+        const sent = safeSend(chunk, true);
+        if (!sent) {
+          console.log('Failed to send chunk, stopping');
+          break; // ✅ This break is also valid (inside for loop)
+        }
+        await new Promise(r => setTimeout(r, 100));
       }
-
+      
       isBotSpeaking = false;
       lastBotTime = Date.now();
-      safeSend(JSON.stringify({ type: 'audio_done' }));
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
+      console.log('✅ Bot finished speaking');
 
-    } catch (e) {
-      console.error('❌', e.message);
+    } catch (error) {
+      console.error('❌ Error:', error.message);
       isBotSpeaking = false;
-      safeSend(JSON.stringify({ type: 'status', text: 'फिर से बोलिए...' }));
+      safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
+      if (error.message.includes('Empty')) {
+        safeSend(JSON.stringify({ type: 'status', text: 'ज़ोर से बोलिए... 🔊' }));
+      }
     } finally {
-      try { fs.unlinkSync(tmp); } catch {}
+      try {
+        fs.unlinkSync(tempPath);
+      } catch (e) {}
       isProcessing = false;
     }
   }
 
   ws.on('message', (data, isBinary) => {
-    if (!isBinary || isBotSpeaking || isClosing) return;
+    if (!isBinary) return;
+    if (isBotSpeaking) return;
+    if (isClosing) return;
     audioBuffer.push(Buffer.from(data));
     resetSilenceTimer();
   });
+  
+  ws.on('pong', () => {
+    console.log(`📡 Pong received from ${clientId.substring(0, 8)}`);
+  });
 
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
+    console.log(`🔌 Client ${clientId.substring(0, 8)} disconnected: ${code} - ${reason}`);
     isClosing = true;
-    clearInterval(clientIntervals.get(clientId));
+    if (silenceTimer) clearTimeout(silenceTimer);
+    const interval = clientIntervals.get(clientId);
+    if (interval) clearInterval(interval);
     clientIntervals.delete(clientId);
     clientHistories.delete(clientId);
     activeClients.delete(clientId);
   });
+  
+  ws.on('error', (error) => {
+    console.error(`WebSocket error for ${clientId.substring(0, 8)}:`, error.message);
+    isClosing = true;
+  });
+});
+
+// Cleanup on server shutdown
+process.on('SIGTERM', () => {
+  console.log('Shutting down...');
+  for (const [id, ws] of activeClients) {
+    try {
+      ws.close(1000, 'Server shutdown');
+    } catch (e) {}
+  }
+  server.close();
 });
