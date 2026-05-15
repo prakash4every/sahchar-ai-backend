@@ -90,10 +90,10 @@ async function loadConversationFromDB(sid, limit = 6) {
   if (!db) return [];
   try {
     const messages = await db.collection('conversations')
-.find({ sessionId: sid })
-.sort({ timestamp: -1 })
-.limit(limit)
-.toArray();
+      .find({ sessionId: sid })
+      .sort({ timestamp: -1 })
+      .limit(limit)
+      .toArray();
 
     const history = [];
     messages.reverse().forEach(msg => {
@@ -168,7 +168,7 @@ app.post("/chat", async (req, res) => {
       conversations[sid] = [
         {
           role: "system",
-         content: `तुम 'SahcharAI' हो – राम प्रकाश कुमार द्वारा निर्मित एक बुद्धिमान AI सहायक।
+          content: `तुम 'SahcharAI' हो – राम प्रकाश कुमार द्वारा निर्मित एक बुद्धिमान AI सहायक।
 
 🌐 भाषा नियम:
 - तुम्हें हिंदी, अंग्रेजी और हिंग्लिश (Hinglish) में बात करने की पूरी आज़ादी है
@@ -185,13 +185,13 @@ app.post("/chat", async (req, res) => {
 
 ⏰ वर्तमान समय: ${currentDateTime} IST${imageContext}`
         },
-...history
+        ...history
       ];
     } else {
-     conversations[sid][0].content = conversations[sid][0].content.replace(
-  /वर्तमान समय:.*?(?=IST)/,
-  `वर्तमान समय: ${currentDateTime}`
-) + imageContext;
+      conversations[sid][0].content = conversations[sid][0].content.replace(
+        /वर्तमान समय:.*?(?=IST)/,
+        `वर्तमान समय: ${currentDateTime}`
+      ) + imageContext;
     }
 
     conversations[sid].push({ role: "user", content: message });
@@ -214,7 +214,7 @@ app.post("/chat", async (req, res) => {
 
     conversations[sid].push({ role: "assistant", content: botReply });
     if (conversations[sid].length > 30) {
-      conversations[sid] = [conversations[sid][0],...conversations[sid].slice(-20)];
+      conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-20)];
     }
 
     await saveConversationToDB(sid, message, botReply, 'DeepSeek');
@@ -323,6 +323,7 @@ app.post("/chat-assistant", async (req, res) => {
     }
   }
 });
+
 // ==================== 3. SAMBANOVA CHAT ====================
 app.post("/chat-sambanova", async (req, res) => {
   const sid = getSessionId(req);
@@ -346,7 +347,7 @@ app.post("/chat-sambanova", async (req, res) => {
       const history = await loadConversationFromDB(sid, 6);
       conversations[sid] = [
         { role: "system", content: `तुम राम प्रकाश कुमार द्वारा निर्मित AI हो। वर्तमान समय: ${currentDateTime} IST। अंत में 'जय भीम, नमो बुद्धाय 🙏'${imageContext}` },
-...history
+        ...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -361,7 +362,7 @@ app.post("/chat-sambanova", async (req, res) => {
 
     const botReply = response.choices[0]?.message?.content || "No response.";
     conversations[sid].push({ role: "assistant", content: botReply });
-    if (conversations[sid].length > 20) conversations[sid] = [conversations[sid][0],...conversations[sid].slice(-10)];
+    if (conversations[sid].length > 20) conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-10)];
 
     await saveConversationToDB(sid, message, botReply, 'SambaNova');
     res.json({ reply: botReply });
@@ -393,7 +394,7 @@ app.post("/chat-nvidia", async (req, res) => {
       const history = await loadConversationFromDB(sid, 6);
       conversations[sid] = [
         { role: "system", content: `तुम 'SuperSahchar' हो – राम प्रकाश कुमार द्वारा निर्मित इंसानी दोस्त। छोटे वाक्य, सवाल पूछो, इमोजी 😊🙏। वर्तमान समय: ${currentDateTime} IST।${imageContext}` },
-...history
+        ...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -414,7 +415,7 @@ app.post("/chat-nvidia", async (req, res) => {
     fullReply = fullReply.trim().substring(0, 800);
 
     conversations[sid].push({ role: "assistant", content: fullReply });
-    if (conversations[sid].length > 20) conversations[sid] = [conversations[sid][0],...conversations[sid].slice(-10)];
+    if (conversations[sid].length > 20) conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-10)];
 
     await saveConversationToDB(sid, message, fullReply, 'SuperSahchar');
     res.json({ reply: fullReply });
@@ -450,7 +451,7 @@ app.post("/chat-kimi", async (req, res) => {
       const history = await loadConversationFromDB(sid, 6);
       conversations[sid] = [
         { role: "system", content: `तुम 'SahcharAI' हो – राम प्रकाश कुमार द्वारा निर्मित। वर्तमान समय: ${currentDateTime} IST। छोटे जवाब, इमोजी 🙏। अंत में 'जय भीम, नमो बुद्धाय 🙏'${imageContext}` },
-      ...history
+        ...history
       ];
     } else {
       conversations[sid][0].content = conversations[sid][0].content.replace(
@@ -469,7 +470,7 @@ app.post("/chat-kimi", async (req, res) => {
 
     const botReply = response.choices[0]?.message?.content || "कोई जवाब नहीं।";
     conversations[sid].push({ role: "assistant", content: botReply });
-    if (conversations[sid].length > 20) conversations[sid] = [conversations[sid][0],...conversations[sid].slice(-10)];
+    if (conversations[sid].length > 20) conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-10)];
 
     await saveConversationToDB(sid, message, botReply, 'Kimi');
     console.log(`✅ Kimi reply for ${sid}: ${botReply.substring(0, 50)}...`);
@@ -480,7 +481,7 @@ app.post("/chat-kimi", async (req, res) => {
   }
 });
 
-// ==================== 5. IMAGE GENERATION - ZEROSCOPE (ALREADY CONFIGURED) ====================
+// ==================== 5. IMAGE GENERATION - OPENAI DALL-E 3 ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
 
@@ -490,208 +491,136 @@ app.post("/api/image/generate", async (req, res) => {
     return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
   }
   
+  const openaiApiKey = process.env.OPENAI_API_KEY;
   const replicateToken = process.env.REPLICATE_API_KEY_ZEROSCOPE;
   
-  if (!replicateToken) {
-    console.error("❌ REPLICATE_API_KEY_ZEROSCOPE not configured");
-    return res.status(500).json({ error: "API key not configured" });
-  }
-  
-  try {
-    console.log(`🎨 Generating image with ZeroScope XL for: ${prompt.substring(0, 50)}...`);
-    
-    // Use ZeroScope XL model (high quality, fast)
-    const response = await fetch("https://api.replicate.com/v1/predictions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Token ${replicateToken}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        version: "zeroscope/zeroscope-xl:7198ce1e3b3d9d4f0e4d8c6f9e6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b",
-        input: {
-          prompt: prompt,
-          width: 1024,
-          height: 576,  // ZeroScope XL aspect ratio
-          num_frames: 24,
-          fps: 8
-        }
-      })
-    });
-    
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    const predictionId = data.id;
-    
-    // Poll for result (ZeroScope takes ~30-60 seconds)
-    let imageUrl = null;
-    for (let i = 0; i < 45; i++) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${predictionId}`, {
-        headers: { "Authorization": `Token ${replicateToken}` }
-      });
-      const statusData = await statusRes.json();
-      
-      if (statusData.status === "succeeded") {
-        // ZeroScope returns video, we need to extract a frame
-        imageUrl = statusData.output;
-        break;
-      } else if (statusData.status === "failed") {
-        throw new Error("Generation failed");
-      }
-    }
-    
-    if (imageUrl) {
-      console.log(`✅ ZeroScope XL video generated`);
-      res.json({ imageUrl: imageUrl });
-    } else {
-      throw new Error("Timeout waiting for generation");
-    }
-    
-  } catch (error) {
-    console.error("❌ ZeroScope error:", error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-// ==================== 5. IMAGE GENERATION - SDXL VIA REPLICATE ====================
-app.post("/api/image/generate", async (req, res) => {
-  const { prompt } = req.body;
-
-  console.log(`🎨 Image Gen Request: ${prompt}`);
-
-  if (!prompt) {
-    return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
-  }
-  
-  const replicateToken = process.env.REPLICATE_API_KEY_ZEROSCOPE;
-  
-  if (!replicateToken) {
-    console.error("❌ REPLICATE_API_KEY_ZEROSCOPE not configured");
-    return res.status(500).json({ error: "API key not configured" });
-  }
-  
-  try {
-    console.log(`🎨 Generating SDXL image for: ${prompt.substring(0, 50)}...`);
-    
-    // Use Stability AI SDXL model (best for images)
-    const response = await fetch("https://api.replicate.com/v1/predictions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Token ${replicateToken}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        version: "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
-        input: {
-          prompt: prompt,
-          negative_prompt: "blurry, ugly, low quality, bad anatomy, watermark, text",
-          width: 1024,
-          height: 1024,
-          num_outputs: 1,
-          scheduler: "DPMSolverMultistep",
-          num_inference_steps: 30,
-          guidance_scale: 7.5,
-          refine: "expert_ensemble_refiner",
-          high_noise_frac: 0.8
-        }
-      })
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API error ${response.status}: ${errorText}`);
-    }
-    
-    const data = await response.json();
-    const predictionId = data.id;
-    
-    console.log(`🔄 Polling for result: ${predictionId}`);
-    
-    // Poll for result (SDXL takes ~15-25 seconds)
-    let imageUrl = null;
-    for (let i = 0; i < 40; i++) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${predictionId}`, {
-        headers: { "Authorization": `Token ${replicateToken}` }
-      });
-      
-      if (!statusRes.ok) continue;
-      
-      const statusData = await statusRes.json();
-      
-      if (statusData.status === "succeeded") {
-        imageUrl = statusData.output[0];
-        console.log(`✅ SDXL image generated successfully`);
-        break;
-      } else if (statusData.status === "failed") {
-        console.error("Generation failed:", statusData.error);
-        throw new Error(statusData.error || "Generation failed");
-      }
-    }
-    
-    if (imageUrl) {
-      res.json({ imageUrl: imageUrl });
-    } else {
-      throw new Error("Timeout - generation took too long");
-    }
-    
-  } catch (error) {
-    console.error("❌ SDXL error:", error.message);
-    
-    // Fallback to simpler model if SDXL fails
+  // Try OpenAI DALL-E 3 first
+  if (openaiApiKey) {
     try {
-      console.log("🔄 Trying simpler model as fallback...");
-      const fallbackResponse = await fetch("https://api.replicate.com/v1/predictions", {
+      console.log(`🎨 Generating image with OpenAI DALL-E 3 for: ${prompt.substring(0, 50)}...`);
+      
+      const openai = new OpenAI({ apiKey: openaiApiKey });
+      
+      const response = await openai.images.generate({
+        model: "dall-e-3",
+        prompt: prompt,
+        n: 1,
+        size: "1024x1024",
+        quality: "standard"
+      });
+      
+      const imageUrl = response.data[0]?.url;
+      
+      if (imageUrl) {
+        console.log(`✅ DALL-E 3 image generated successfully`);
+        return res.json({ imageUrl: imageUrl, provider: "dall-e-3" });
+      } else {
+        throw new Error("No image URL in response");
+      }
+    } catch (openaiError) {
+      console.log("❌ OpenAI DALL-E 3 failed:", openaiError.message);
+      
+      // Try DALL-E 2 as fallback
+      try {
+        console.log(`🔄 Trying DALL-E 2 as fallback...`);
+        const openai = new OpenAI({ apiKey: openaiApiKey });
+        
+        const response = await openai.images.generate({
+          model: "dall-e-2",
+          prompt: prompt,
+          n: 1,
+          size: "1024x1024"
+        });
+        
+        const imageUrl = response.data[0]?.url;
+        
+        if (imageUrl) {
+          console.log(`✅ DALL-E 2 image generated successfully`);
+          return res.json({ imageUrl: imageUrl, provider: "dall-e-2" });
+        }
+      } catch (dalle2Error) {
+        console.log("❌ DALL-E 2 also failed:", dalle2Error.message);
+      }
+    }
+  }
+  
+  // Fallback to Replicate SDXL if OpenAI fails
+  if (replicateToken) {
+    try {
+      console.log(`🔄 Falling back to Replicate SDXL for: ${prompt.substring(0, 50)}...`);
+      
+      const response = await fetch("https://api.replicate.com/v1/predictions", {
         method: "POST",
         headers: {
           "Authorization": `Token ${replicateToken}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          version: "stability-ai/stable-diffusion:db21e45d3f7023abc2a46ee38a23973f6dce16bb082a930b0c49861f96d1e5bf",
+          version: "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
           input: {
             prompt: prompt,
-            width: 512,
-            height: 512,
+            negative_prompt: "blurry, ugly, low quality, bad anatomy, watermark, text",
+            width: 1024,
+            height: 1024,
             num_outputs: 1,
-            num_inference_steps: 25,
-            guidance_scale: 7
+            scheduler: "DPMSolverMultistep",
+            num_inference_steps: 30,
+            guidance_scale: 7.5,
+            refine: "expert_ensemble_refiner",
+            high_noise_frac: 0.8
           }
         })
       });
       
-      const fallbackData = await fallbackResponse.json();
-      const fallbackId = fallbackData.id;
+      if (!response.ok) {
+        throw new Error(`Replicate API error: ${response.status}`);
+      }
       
-      let fallbackUrl = null;
-      for (let i = 0; i < 30; i++) {
+      const data = await response.json();
+      const predictionId = data.id;
+      
+      console.log(`🔄 Polling Replicate for result: ${predictionId}`);
+      
+      let imageUrl = null;
+      for (let i = 0; i < 40; i++) {
         await new Promise(resolve => setTimeout(resolve, 2000));
-        const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${fallbackId}`, {
+        
+        const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${predictionId}`, {
           headers: { "Authorization": `Token ${replicateToken}` }
         });
+        
+        if (!statusRes.ok) continue;
+        
         const statusData = await statusRes.json();
+        
         if (statusData.status === "succeeded") {
-          fallbackUrl = statusData.output[0];
+          imageUrl = statusData.output[0];
+          console.log(`✅ Replicate SDXL image generated successfully`);
           break;
+        } else if (statusData.status === "failed") {
+          throw new Error(statusData.error || "Replicate generation failed");
         }
       }
       
-      if (fallbackUrl) {
-        console.log(`✅ Fallback model generated image`);
-        return res.json({ imageUrl: fallbackUrl });
+      if (imageUrl) {
+        return res.json({ imageUrl: imageUrl, provider: "replicate-sdxl" });
+      } else {
+        throw new Error("Timeout waiting for Replicate");
       }
-    } catch (fallbackError) {
-      console.error("Fallback also failed:", fallbackError.message);
+      
+    } catch (replicateError) {
+      console.error("❌ Replicate SDXL error:", replicateError.message);
     }
-    
-    res.status(500).json({ error: error.message });
   }
+  
+  // Final fallback - error message
+  console.error("❌ All image generation methods failed");
+  res.status(500).json({ 
+    error: "Image generation temporarily unavailable. Please try again later.",
+    imageUrl: null
+  });
 });
+
 // ==================== 6. IMAGE ANALYZE ====================
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "कोई इमेज अपलोड नहीं की गई है। 🙏" });
@@ -732,18 +661,22 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
 // ==================== UNIFIED VIDEO GENERATION - DEMO MODE ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt } = req.body;
-  console.log(`🎬 Video Request (DEMO MODE): ${prompt?.substring(0,50)}...`);
+  console.log(`🎬 Video Request: ${prompt?.substring(0,50)}...`);
 
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
 
-  // Testing Track के लिए Demo Video - 100% Stable
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+  
+  // Try to generate video using Luma AI or similar (demo mode)
+  // For now, return a demo video
   return res.json({
     videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
     status: "demo",
     provider: "demo",
-    message: "Video generation testing mode - coming soon 🙏"
+    message: "Video generation in development. Coming soon with dedicated video API. 🙏"
   });
 });
+
 // ==================== VIDEO PROVIDER FUNCTIONS ====================
 
 // 1. HUGGINGFACE - Improved
@@ -879,7 +812,7 @@ wss.on('connection', (ws, req) => {
         const history = await loadConversationFromDB(sessionId, 6);
         const messages = [
           { role: "system", content: `You are SahcharAI. Reply in Hindi, 1-2 sentences.` },
-   ...history,
+          ...history,
           { role: "user", content: userText }
         ];
 
