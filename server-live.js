@@ -192,8 +192,9 @@ wss.on('connection', (ws, req) => {
         isProcessing = false;
         return;
       }
-      
+      let ttsStartTime = 0;
       isBotSpeaking = true;
+      ttsStartTime = Date.now();
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
       
       // Generate speech (streaming)
@@ -254,6 +255,7 @@ wss.on('connection', (ws, req) => {
     
     // If user is speaking and bot is speaking, interrupt bot
     if (isBotSpeaking) {
+      if (Date.now() - ttsStartTime < 800) return;
       interruptBot();
       // Still add to buffer for next processing
       audioBuffer.push(Buffer.from(data));
