@@ -11,7 +11,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Full Duplex Live v1.2 on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Full Duplex Live v1.3 on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -68,6 +68,7 @@ wss.on('connection', (ws, req) => {
   let clientId = randomUUID();
   let isInterrupted = false;
   let ttsStartTime = 0;
+  let lastAudioTime = Date.now(); 
 
   clientHistories.set(clientId, [{
     role: 'system',
@@ -101,20 +102,23 @@ wss.on('connection', (ws, req) => {
       safeSend(JSON.stringify({ type: 'status', text: 'बीच में रोका गया, सुन रहा हूँ... 🎤' }));
     }
   };
-
   const resetSilenceTimer = () => {
     if (silenceTimer) clearTimeout(silenceTimer);
-    if (!isBotSpeaking &&!isProcessing && audioBuffer.length > 0) {
-      silenceTimer = setTimeout(() => {
-        if (!isBotSpeaking &&!isProcessing && audioBuffer.length > 0) {
-          processAudio();
-        }
-      }, 800);
-    }
+    lastAudioTime = Date.now();
+    silenceTimer = setTimeout(() => {
+      // 1.2 sec se audio nahi aaya + bot nahi bol raha + process nahi ho raha
+      if (!isBotSpeaking && !isProcessing && audioBuffer.length > 16000) { // 0.5 sec ka data minimum
+        console.log(`🔄 Silence detected, processing ${audioBuffer.length} bytes`);
+        processAudio();
+      }
+    }, 1200); // 800 se 1200 kar diya
   };
 
   async function processAudio() {
-    if (isProcessing || isBotSpeaking || audioBuffer.length === 0) return;
+    if (isProcessing || audioBuffer.length === 0) {
+      console.log(`Skip processAudio: isProcessing=${isProcessing}, buffer=${audioBuffer.length}`);
+      return;
+    }
 
     isProcessing = true;
     isInterrupted = false;
@@ -123,10 +127,10 @@ wss.on('connection', (ws, req) => {
     audioBuffer = [];
 
     const rms = calculateRMS(fullAudio);
-    console.log(`🎤 Audio RMS: ${rms.toFixed(4)}, Length: ${fullAudio.length}`);
-
-    if (rms < 0.001 || fullAudio.length < 4000) {
-      console.log('Audio too quiet or too short, ignoring');
+    const duration = fullAudio.length / 32000; // 16kHz * 2 bytes
+    console.log(`🎤 Audio RMS: ${rms.toFixed(4)}, Length: ${fullAudio.length}, Duration: ${duration.toFixed(2)}s`);
+    if (fullAudio.length < 8000) { // 0.25 sec se kam
+      console.log('Audio too short, ignoring');
       isProcessing = false;
       return;
     }
@@ -209,7 +213,7 @@ wss.on('connection', (ws, req) => {
           console.log('🔴 TTS interrupted mid-stream');
           break;
         }
-        if (ws.readyState!== 1) break;
+        if (ws.readyState !== 1) break;
 
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         safeSend(chunk, true);
