@@ -11,7 +11,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Full Duplex Live v1.1 on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Full Duplex Live v1.2 on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -56,24 +56,22 @@ function amplifyAudio(pcmData, factor = 2.5) {
   return amplified;
 }
 
-// Store conversation history per connection
 const clientHistories = new Map();
 
 wss.on('connection', (ws, req) => {
   console.log('🔌 Client connected (Full Duplex Mode)');
-  
+
   let audioBuffer = [];
   let isProcessing = false;
   let isBotSpeaking = false;
   let silenceTimer = null;
   let clientId = randomUUID();
   let isInterrupted = false;
-  let ttsStartTime = 0; // FIX 1: Moved to connection scope
-  
-  // Initialize conversation history
+  let ttsStartTime = 0;
+
   clientHistories.set(clientId, [{
     role: 'system',
-    content: `तुम सहचर हो। एक दोस्त की तरह बात करो। 
+    content: `तुम सहचर हो। एक दोस्त की तरह बात करो।
     नियम:
     1. सिर्फ हिंदी या हिंग्लिश में बात करो
     2. जवाब छोटे और प्राकृतिक रखो (10-15 शब्द)
@@ -95,7 +93,6 @@ wss.on('connection', (ws, req) => {
     return false;
   };
 
-  // Function to interrupt bot speaking
   const interruptBot = () => {
     if (isBotSpeaking) {
       console.log('🔴 USER INTERRUPTED BOT');
@@ -107,28 +104,27 @@ wss.on('connection', (ws, req) => {
 
   const resetSilenceTimer = () => {
     if (silenceTimer) clearTimeout(silenceTimer);
-    if (!isBotSpeaking && !isProcessing && audioBuffer.length > 0) {
+    if (!isBotSpeaking &&!isProcessing && audioBuffer.length > 0) {
       silenceTimer = setTimeout(() => {
-        if (!isBotSpeaking && !isProcessing && audioBuffer.length > 0) {
+        if (!isBotSpeaking &&!isProcessing && audioBuffer.length > 0) {
           processAudio();
         }
-      }, 800); // FIX 2: 500ms se 800ms - aadha sentence na katega
+      }, 800);
     }
   };
 
   async function processAudio() {
     if (isProcessing || isBotSpeaking || audioBuffer.length === 0) return;
-    
+
     isProcessing = true;
     isInterrupted = false;
-    
+
     const fullAudio = Buffer.concat(audioBuffer);
     audioBuffer = [];
 
     const rms = calculateRMS(fullAudio);
     console.log(`🎤 Audio RMS: ${rms.toFixed(4)}, Length: ${fullAudio.length}`);
-    
-    // FIX 3: Minimum length 4000 bytes = 0.25 sec @ 16kHz
+
     if (rms < 0.004 || fullAudio.length < 4000) {
       console.log('Audio too quiet or too short, ignoring');
       isProcessing = false;
@@ -137,20 +133,19 @@ wss.on('connection', (ws, req) => {
 
     console.log('🔄 Processing user speech...');
     safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
-    
+
     const wavFile = pcmToWav(fullAudio, 16000);
     const tempPath = path.join('/tmp', `${randomUUID()}.wav`);
     fs.writeFileSync(tempPath, wavFile);
 
     try {
-      // Transcription
       const transcription = await openai.audio.transcriptions.create({
         file: fs.createReadStream(tempPath),
         model: 'whisper-1',
         language: 'hi',
         response_format: 'text'
       });
-      
+
       const userMessage = (transcription || '').trim();
       if (!userMessage || userMessage.length < 2) {
         throw new Error('Empty transcription');
@@ -158,19 +153,16 @@ wss.on('connection', (ws, req) => {
 
       console.log(`📝 User: ${userMessage}`);
       safeSend(JSON.stringify({ type: 'user_text', text: userMessage }));
-      
-      // Get conversation history
+
       const history = clientHistories.get(clientId) || [];
       history.push({ role: 'user', content: userMessage });
-      
-      // Keep last 10 exchanges
+
       while (history.length > 21) {
         history.splice(1, 2);
       }
-      
+
       safeSend(JSON.stringify({ type: 'status', text: 'सोच रहा हूँ... 🤔' }));
-      
-      // Generate response
+
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: history,
@@ -178,16 +170,15 @@ wss.on('connection', (ws, req) => {
         temperature: 0.85,
         presence_penalty: 0.6
       });
-      
+
       const botReply = completion.choices[0].message.content;
       console.log(`🤖 Bot: ${botReply}`);
-      
+
       history.push({ role: 'assistant', content: botReply });
       clientHistories.set(clientId, history);
-      
+
       safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
-      
-      // Check if interrupted before speaking
+
       if (isInterrupted) {
         console.log('Skipping TTS due to interruption');
         safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
@@ -198,8 +189,7 @@ wss.on('connection', (ws, req) => {
       isBotSpeaking = true;
       ttsStartTime = Date.now();
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
-      
-      // Generate speech (streaming)
+
       const ttsResponse = await openai.audio.speech.create({
         model: 'tts-1',
         voice: 'nova',
@@ -207,29 +197,25 @@ wss.on('connection', (ws, req) => {
         response_format: 'pcm',
         speed: 0.95
       });
-      
+
       let audioPcm = Buffer.from(await ttsResponse.arrayBuffer());
       console.log(`🔊 TTS PCM size: ${audioPcm.length} bytes`);
-      
-      // Amplify audio - 3.5 se 2.5 kiya taki clip na ho
+
       audioPcm = amplifyAudio(audioPcm, 2.5);
-      
-      // Send audio chunks
+
       const chunkSize = 3000;
       for (let i = 0; i < audioPcm.length; i += chunkSize) {
-        // Check for interruption during playback
         if (isInterrupted) {
           console.log('🔴 TTS interrupted mid-stream');
           break;
         }
-        if (ws.readyState !== 1) break;
-        
+        if (ws.readyState!== 1) break;
+
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         safeSend(chunk, true);
         await new Promise(r => setTimeout(r, 60));
       }
-      
-      // FIX 4: Send audio_done event to client
+
       safeSend(JSON.stringify({ type: 'audio_done' }));
       isBotSpeaking = false;
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
@@ -238,7 +224,7 @@ wss.on('connection', (ws, req) => {
     } catch (error) {
       console.error('❌ Error:', error.message);
       isBotSpeaking = false;
-      safeSend(JSON.stringify({ type: 'audio_done' })); // error me bhi bhejo
+      safeSend(JSON.stringify({ type: 'audio_done' }));
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
     } finally {
       try { fs.unlinkSync(tempPath); } catch(e) {}
@@ -248,7 +234,6 @@ wss.on('connection', (ws, req) => {
 
   ws.on('message', (data, isBinary) => {
     if (!isBinary) {
-      // Handle text messages (like interrupt commands)
       try {
         const msg = JSON.parse(data.toString());
         if (msg.type === 'interrupt') {
@@ -257,28 +242,25 @@ wss.on('connection', (ws, req) => {
       } catch(e) {}
       return;
     }
-    
-    // If user is speaking and bot is speaking, interrupt bot
+
     if (isBotSpeaking) {
-      // FIX 5: ttsStartTime ab scope me hai
-      if (Date.now() - ttsStartTime < 800) return; // 0.8 sec ka grace period
+      if (Date.now() - ttsStartTime < 800) return;
       interruptBot();
-      // Still add to buffer for next processing
       audioBuffer.push(Buffer.from(data));
       resetSilenceTimer();
       return;
     }
-    
+
     audioBuffer.push(Buffer.from(data));
     resetSilenceTimer();
   });
-  
+
   ws.on('close', () => {
     console.log(`🔌 Client ${clientId.substring(0, 8)} disconnected`);
     if (silenceTimer) clearTimeout(silenceTimer);
     clientHistories.delete(clientId);
   });
-  
+
   ws.on('error', (error) => {
     console.error('WebSocket error:', error.message);
   });
