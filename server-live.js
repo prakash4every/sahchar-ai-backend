@@ -125,7 +125,7 @@ wss.on('connection', (ws, req) => {
     const rms = calculateRMS(fullAudio);
     console.log(`🎤 Audio RMS: ${rms.toFixed(4)}, Length: ${fullAudio.length}`);
 
-    if (rms < 0.004 || fullAudio.length < 4000) {
+    if (rms < 0.001 || fullAudio.length < 4000) {
       console.log('Audio too quiet or too short, ignoring');
       isProcessing = false;
       return;
