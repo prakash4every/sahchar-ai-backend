@@ -11,7 +11,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Full Duplex Live v1.0 on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Full Duplex Live v1.1 on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -46,7 +46,7 @@ function calculateRMS(buf) {
   return Math.sqrt(sum / samples) / 32768;
 }
 
-function amplifyAudio(pcmData, factor = 2.0) {
+function amplifyAudio(pcmData, factor = 2.5) {
   const amplified = Buffer.alloc(pcmData.length);
   for (let i = 0; i < pcmData.length; i += 2) {
     let sample = pcmData.readInt16LE(i);
@@ -67,8 +67,8 @@ wss.on('connection', (ws, req) => {
   let isBotSpeaking = false;
   let silenceTimer = null;
   let clientId = randomUUID();
-  let currentTTSStream = null;
   let isInterrupted = false;
+  let ttsStartTime = 0; // FIX 1: Moved to connection scope
   
   // Initialize conversation history
   clientHistories.set(clientId, [{
@@ -88,6 +88,7 @@ wss.on('connection', (ws, req) => {
         ws.send(data);
         return true;
       } catch (e) {
+        console.error('Send error:', e);
         return false;
       }
     }
@@ -111,7 +112,7 @@ wss.on('connection', (ws, req) => {
         if (!isBotSpeaking && !isProcessing && audioBuffer.length > 0) {
           processAudio();
         }
-      }, 500); // 500ms silence triggers processing
+      }, 800); // FIX 2: 500ms se 800ms - aadha sentence na katega
     }
   };
 
@@ -127,7 +128,8 @@ wss.on('connection', (ws, req) => {
     const rms = calculateRMS(fullAudio);
     console.log(`🎤 Audio RMS: ${rms.toFixed(4)}, Length: ${fullAudio.length}`);
     
-    if (rms < 0.004 || fullAudio.length < 1200) {
+    // FIX 3: Minimum length 4000 bytes = 0.25 sec @ 16kHz
+    if (rms < 0.004 || fullAudio.length < 4000) {
       console.log('Audio too quiet or too short, ignoring');
       isProcessing = false;
       return;
@@ -192,7 +194,7 @@ wss.on('connection', (ws, req) => {
         isProcessing = false;
         return;
       }
-      let ttsStartTime = 0;
+
       isBotSpeaking = true;
       ttsStartTime = Date.now();
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
@@ -209,8 +211,8 @@ wss.on('connection', (ws, req) => {
       let audioPcm = Buffer.from(await ttsResponse.arrayBuffer());
       console.log(`🔊 TTS PCM size: ${audioPcm.length} bytes`);
       
-      // Amplify audio
-      audioPcm = amplifyAudio(audioPcm, 3.5);
+      // Amplify audio - 3.5 se 2.5 kiya taki clip na ho
+      audioPcm = amplifyAudio(audioPcm, 2.5);
       
       // Send audio chunks
       const chunkSize = 3000;
@@ -227,6 +229,8 @@ wss.on('connection', (ws, req) => {
         await new Promise(r => setTimeout(r, 60));
       }
       
+      // FIX 4: Send audio_done event to client
+      safeSend(JSON.stringify({ type: 'audio_done' }));
       isBotSpeaking = false;
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
       console.log('✅ Bot finished speaking');
@@ -234,6 +238,7 @@ wss.on('connection', (ws, req) => {
     } catch (error) {
       console.error('❌ Error:', error.message);
       isBotSpeaking = false;
+      safeSend(JSON.stringify({ type: 'audio_done' })); // error me bhi bhejo
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
     } finally {
       try { fs.unlinkSync(tempPath); } catch(e) {}
@@ -255,7 +260,8 @@ wss.on('connection', (ws, req) => {
     
     // If user is speaking and bot is speaking, interrupt bot
     if (isBotSpeaking) {
-      if (Date.now() - ttsStartTime < 800) return;
+      // FIX 5: ttsStartTime ab scope me hai
+      if (Date.now() - ttsStartTime < 800) return; // 0.8 sec ka grace period
       interruptBot();
       // Still add to buffer for next processing
       audioBuffer.push(Buffer.from(data));
