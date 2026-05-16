@@ -210,7 +210,7 @@ wss.on('connection', (ws, req) => {
       console.log(`🔊 TTS PCM size: ${audioPcm.length} bytes`);
       
       // Amplify audio
-      audioPcm = amplifyAudio(audioPcm, 2.5);
+      audioPcm = amplifyAudio(audioPcm, 3.5);
       
       // Send audio chunks
       const chunkSize = 3000;
