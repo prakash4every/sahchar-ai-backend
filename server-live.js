@@ -11,7 +11,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Full Duplex Live v1.5 on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Full Duplex Live v2.0 on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -59,7 +59,7 @@ function amplifyAudio(pcmData, factor = 2.5) {
 const clientHistories = new Map();
 
 wss.on('connection', (ws, req) => {
-  console.log('🔌 Client connected (Full Duplex Mode)');
+  console.log('🔌 Client connected (Full Duplex Mode v2.0)');
 
   let audioBuffer = [];
   let isProcessing = false;
@@ -71,6 +71,7 @@ wss.on('connection', (ws, req) => {
   let lastAudioTime = Date.now();
   let totalBytesReceived = 0;
   let packetCount = 0;
+  let lastPacketTime = Date.now();
 
   console.log(`📱 Client ID: ${clientId.substring(0, 8)}`);
 
@@ -107,6 +108,14 @@ wss.on('connection', (ws, req) => {
     }
   };
 
+  const processNow = () => {
+    if (silenceTimer) clearTimeout(silenceTimer);
+    if (!isBotSpeaking && !isProcessing && audioBuffer.length > 8000) {
+      console.log(`🔄 FORCE processing ${audioBuffer.length} bytes`);
+      processAudio();
+    }
+  };
+
   const resetSilenceTimer = () => {
     if (silenceTimer) clearTimeout(silenceTimer);
     lastAudioTime = Date.now();
@@ -114,8 +123,10 @@ wss.on('connection', (ws, req) => {
       if (!isBotSpeaking && !isProcessing && audioBuffer.length > 8000) {
         console.log(`🔄 Silence detected, processing ${audioBuffer.length} bytes`);
         processAudio();
+      } else if (audioBuffer.length > 8000) {
+        console.log(`⚠️ Buffer has data but can't process: botSpeaking=${isBotSpeaking}, processing=${isProcessing}`);
       }
-    }, 1000);
+    }, 800);
   };
 
   async function processAudio() {
@@ -124,6 +135,7 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    console.log(`🚀 STARTING processAudio with buffer size: ${audioBuffer.length} chunks`);
     isProcessing = true;
     isInterrupted = false;
 
@@ -134,8 +146,8 @@ wss.on('connection', (ws, req) => {
     const duration = fullAudio.length / 32000;
     console.log(`🎤 Audio RMS: ${rms.toFixed(4)}, Length: ${fullAudio.length}, Duration: ${duration.toFixed(2)}s`);
     
-    if (fullAudio.length < 8000 || rms < 0.003) {
-      console.log('Audio too short or too quiet, ignoring');
+    if (fullAudio.length < 8000 || rms < 0.002) {
+      console.log(`Audio too short or too quiet (rms=${rms.toFixed(4)}), ignoring`);
       isProcessing = false;
       return;
     }
@@ -243,29 +255,25 @@ wss.on('connection', (ws, req) => {
 
   ws.on('message', (data, isBinary) => {
     packetCount++;
+    lastPacketTime = Date.now();
     
     if (!isBinary) {
       try {
         const msg = JSON.parse(data.toString());
-        console.log(`📨 Text message from client:`, msg);
         if (msg.type === 'interrupt') {
           interruptBot();
         }
-      } catch(e) {
-        console.log(`📨 Text message: ${data.toString().substring(0, 100)}`);
-      }
+      } catch(e) {}
       return;
     }
     
-    // Binary data (audio)
     totalBytesReceived += data.length;
     
-    // Log every 10 packets
-    if (packetCount % 10 === 0) {
+    // Log every 100 packets
+    if (packetCount % 100 === 0) {
       console.log(`📥 Audio packet #${packetCount}: ${data.length} bytes, Total: ${totalBytesReceived} bytes`);
     }
     
-    // First packet received log
     if (packetCount === 1) {
       console.log(`🎙️ FIRST AUDIO PACKET RECEIVED! Size: ${data.length} bytes`);
     }
@@ -274,13 +282,18 @@ wss.on('connection', (ws, req) => {
       if (Date.now() - ttsStartTime < 800) return;
       console.log('🔴 User spoke while bot speaking - interrupting');
       interruptBot();
-      audioBuffer.push(Buffer.from(data));
-      resetSilenceTimer();
-      return;
     }
-
+    
     audioBuffer.push(Buffer.from(data));
-    resetSilenceTimer();
+    
+    // Reset timer on each packet
+    if (silenceTimer) clearTimeout(silenceTimer);
+    silenceTimer = setTimeout(() => {
+      if (!isBotSpeaking && !isProcessing && audioBuffer.length > 8000) {
+        console.log(`🔄 Timer triggered, processing ${audioBuffer.length} bytes`);
+        processAudio();
+      }
+    }, 800);
   });
 
   ws.on('close', (code, reason) => {
@@ -297,4 +310,4 @@ wss.on('connection', (ws, req) => {
   safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
 });
 
-console.log('✅ WebSocket server ready');
+console.log('✅ WebSocket server ready v2.0');
