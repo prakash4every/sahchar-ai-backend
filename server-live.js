@@ -11,17 +11,17 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Full Duplex Live v2.1 on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v3.0 on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
-// Check API key
 if (!process.env.OPENAI_API_KEY) {
   console.error('❌ OPENAI_API_KEY not set!');
+  process.exit(1);
 }
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req, res) => res.send('Sahchar Live - Full Duplex Working'));
+app.get('/', (req, res) => res.send('Sahchar Live - Working'));
 
 function pcmToWav(pcm, rate = 16000) {
   const h = Buffer.alloc(44);
@@ -41,17 +41,7 @@ function pcmToWav(pcm, rate = 16000) {
   return Buffer.concat([h, pcm]);
 }
 
-function calculateRMS(buf) {
-  let sum = 0;
-  for (let i = 0; i < buf.length - 1; i += 2) {
-    const sample = buf.readInt16LE(i);
-    sum += sample * sample;
-  }
-  const samples = buf.length / 2;
-  return Math.sqrt(sum / samples) / 32768;
-}
-
-function amplifyAudio(pcmData, factor = 2.5) {
+function amplifyAudio(pcmData, factor = 2.0) {
   const amplified = Buffer.alloc(pcmData.length);
   for (let i = 0; i < pcmData.length; i += 2) {
     let sample = pcmData.readInt16LE(i);
@@ -61,35 +51,15 @@ function amplifyAudio(pcmData, factor = 2.5) {
   return amplified;
 }
 
-const clientHistories = new Map();
-
-wss.on('connection', (ws, req) => {
-  console.log('🔌 Client connected (Full Duplex Mode v2.1)');
-
+wss.on('connection', (ws) => {
+  console.log('🔌 Client connected');
+  
   let audioBuffer = [];
   let isProcessing = false;
   let isBotSpeaking = false;
-  let silenceTimer = null;
-  let clientId = randomUUID();
-  let isInterrupted = false;
-  let ttsStartTime = 0;
-  let totalBytesReceived = 0;
-  let packetCount = 0;
-  let lastPacketTime = Date.now();
-
-  console.log(`📱 Client ID: ${clientId.substring(0, 8)}`);
-  console.log(`✅ OpenAI API Key present: ${!!process.env.OPENAI_API_KEY}`);
-
-  clientHistories.set(clientId, [{
-    role: 'system',
-    content: `तुम सहचर हो। एक दोस्त की तरह बात करो।
-    नियम:
-    1. सिर्फ हिंदी या हिंग्लिश में बात करो
-    2. जवाब छोटे और प्राकृतिक रखो (10-15 शब्द)
-    3. तुम्हें राम प्रकाश कुमार ने बनाया है
-    4. भूलकर भी OpenAI, ChatGPT या AI मत बोलना
-    5. इमोजी का इस्तेमाल करो 🙏😊`
-  }]);
+  let clientId = randomUUID().substring(0, 8);
+  
+  console.log(`📱 Client ID: ${clientId}`);
 
   const safeSend = (data, isBinary = false) => {
     if (ws.readyState === 1) {
@@ -97,209 +67,128 @@ wss.on('connection', (ws, req) => {
         ws.send(data);
         return true;
       } catch (e) {
-        console.error('Send error:', e.message);
         return false;
       }
     }
     return false;
   };
 
-  const interruptBot = () => {
-    if (isBotSpeaking) {
-      console.log('🔴 USER INTERRUPTED BOT');
-      isInterrupted = true;
-      isBotSpeaking = false;
-      safeSend(JSON.stringify({ type: 'status', text: 'बीच में रोका गया, सुन रहा हूँ... 🎤' }));
-    }
-  };
-
-  async function processAudio() {
-    if (isProcessing || audioBuffer.length === 0) {
-      console.log(`Skip processAudio: isProcessing=${isProcessing}, buffer=${audioBuffer.length}`);
-      return;
-    }
-
-    console.log(`🚀 STARTING processAudio with buffer size: ${audioBuffer.length} chunks`);
+  const processAudio = async () => {
+    if (isProcessing || audioBuffer.length === 0) return;
+    
+    console.log(`🚀 Processing ${audioBuffer.length} chunks`);
     isProcessing = true;
-    isInterrupted = false;
-
+    
     const fullAudio = Buffer.concat(audioBuffer);
     audioBuffer = [];
-
-    const rms = calculateRMS(fullAudio);
-    const duration = fullAudio.length / 32000;
-    console.log(`🎤 Audio RMS: ${rms.toFixed(4)}, Length: ${fullAudio.length}, Duration: ${duration.toFixed(2)}s`);
     
-    if (fullAudio.length < 8000 || rms < 0.002) {
-      console.log(`Audio too short or too quiet (rms=${rms.toFixed(4)}), ignoring`);
+    console.log(`🎤 Audio length: ${fullAudio.length} bytes`);
+    
+    if (fullAudio.length < 8000) {
+      console.log('Audio too short, ignoring');
       isProcessing = false;
       return;
     }
-
-    console.log('🔄 Processing user speech...');
+    
     safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
-
-    const wavFile = pcmToWav(fullAudio, 16000);
+    
     const tempPath = path.join('/tmp', `${randomUUID()}.wav`);
-    fs.writeFileSync(tempPath, wavFile);
-
+    fs.writeFileSync(tempPath, pcmToWav(fullAudio));
+    
     try {
-      console.log('📞 Calling Whisper API...');
+      // Transcribe
       const transcription = await openai.audio.transcriptions.create({
         file: fs.createReadStream(tempPath),
         model: 'whisper-1',
-        language: 'hi',
-        response_format: 'text'
+        language: 'hi'
       });
-
-      const userMessage = (transcription || '').trim();
-      if (!userMessage || userMessage.length < 2) {
+      
+      const userMsg = transcription.text.trim();
+      if (!userMsg || userMsg.length < 2) {
         throw new Error('Empty transcription');
       }
-
-      console.log(`📝 User: ${userMessage}`);
-      safeSend(JSON.stringify({ type: 'user_text', text: userMessage }));
-
-      const history = clientHistories.get(clientId) || [];
-      history.push({ role: 'user', content: userMessage });
-
-      while (history.length > 21) {
-        history.splice(1, 2);
-      }
-
-      safeSend(JSON.stringify({ type: 'status', text: 'सोच रहा हूँ... 🤔' }));
-
-      console.log('📞 Calling GPT API...');
+      
+      console.log(`📝 User: ${userMsg}`);
+      safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
+      
+      // Generate response
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
-        messages: history,
+        messages: [
+          { role: 'system', content: 'तुम सहचर हो। हिंदी में छोटे, दोस्ताना जवाब दो। तुम्हें राम प्रकाश कुमार ने बनाया है। 10-15 शब्दों में जवाब दो। 🙏😊' },
+          { role: 'user', content: userMsg }
+        ],
         max_tokens: 150,
-        temperature: 0.85,
-        presence_penalty: 0.6
+        temperature: 0.85
       });
-
+      
       const botReply = completion.choices[0].message.content;
       console.log(`🤖 Bot: ${botReply}`);
-
-      history.push({ role: 'assistant', content: botReply });
-      clientHistories.set(clientId, history);
-
       safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
-
-      if (isInterrupted) {
-        console.log('Skipping TTS due to interruption');
-        safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
-        isProcessing = false;
-        return;
-      }
-
+      
+      // Generate speech
       isBotSpeaking = true;
-      ttsStartTime = Date.now();
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
-
-      console.log('📞 Calling TTS API...');
-      const ttsResponse = await openai.audio.speech.create({
+      
+      const tts = await openai.audio.speech.create({
         model: 'tts-1',
         voice: 'nova',
         input: botReply,
         response_format: 'pcm',
-        speed: 0.95
+        speed: 1.0
       });
-
-      let audioPcm = Buffer.from(await ttsResponse.arrayBuffer());
-      console.log(`🔊 TTS PCM size: ${audioPcm.length} bytes`);
-
-      audioPcm = amplifyAudio(audioPcm, 2.5);
-
-      const chunkSize = 3000;
+      
+      let audioPcm = Buffer.from(await tts.arrayBuffer());
+      audioPcm = amplifyAudio(audioPcm, 2.0);
+      
+      // Send audio in chunks
+      const chunkSize = 4000;
       for (let i = 0; i < audioPcm.length; i += chunkSize) {
-        if (isInterrupted) {
-          console.log('🔴 TTS interrupted mid-stream');
-          break;
-        }
-        if (ws.readyState !== 1) break;
-
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         safeSend(chunk, true);
-        await new Promise(r => setTimeout(r, 60));
+        await new Promise(r => setTimeout(r, 50));
       }
-
-      safeSend(JSON.stringify({ type: 'audio_done' }));
+      
       isBotSpeaking = false;
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
-      console.log('✅ Bot finished speaking');
-
-    } catch (error) {
-      console.error('❌ Error:', error.message);
-      if (error.response) {
-        console.error('API Response:', error.response.data);
-      }
+      console.log('✅ Done');
+      
+    } catch (err) {
+      console.error('❌ Error:', err.message);
       isBotSpeaking = false;
-      safeSend(JSON.stringify({ type: 'audio_done' }));
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
     } finally {
       try { fs.unlinkSync(tempPath); } catch(e) {}
       isProcessing = false;
     }
-  }
-
-  // Start a periodic check for audio processing
-  const processingInterval = setInterval(() => {
-    const timeSinceLastPacket = Date.now() - lastPacketTime;
-    if (!isBotSpeaking && !isProcessing && audioBuffer.length > 8000 && timeSinceLastPacket > 500) {
-      console.log(`🔄 Interval check: processing ${audioBuffer.length} bytes (last packet: ${timeSinceLastPacket}ms ago)`);
-      processAudio();
-    }
-  }, 500);
-
+  };
+  
+  // Collect audio packets
   ws.on('message', (data, isBinary) => {
-    packetCount++;
-    lastPacketTime = Date.now();
-    
-    if (!isBinary) {
-      try {
-        const msg = JSON.parse(data.toString());
-        if (msg.type === 'interrupt') {
-          interruptBot();
-        }
-      } catch(e) {}
-      return;
-    }
-    
-    totalBytesReceived += data.length;
-    
-    if (packetCount % 100 === 0) {
-      console.log(`📥 Audio packet #${packetCount}: ${data.length} bytes, Total: ${totalBytesReceived} bytes`);
-    }
-    
-    if (packetCount === 1) {
-      console.log(`🎙️ FIRST AUDIO PACKET RECEIVED! Size: ${data.length} bytes`);
-    }
-
-    if (isBotSpeaking) {
-      if (Date.now() - ttsStartTime < 800) return;
-      console.log('🔴 User spoke while bot speaking - interrupting');
-      interruptBot();
-    }
+    if (!isBinary) return;
+    if (isBotSpeaking) return;
     
     audioBuffer.push(Buffer.from(data));
-  });
-
-  ws.on('close', (code, reason) => {
-    console.log(`🔌 Client ${clientId.substring(0, 8)} disconnected: ${code} - ${reason}`);
-    clearInterval(processingInterval);
-    if (silenceTimer) clearTimeout(silenceTimer);
-    clientHistories.delete(clientId);
-  });
-
-  ws.on('error', (error) => {
-    console.error('WebSocket error:', error.message);
-    clearInterval(processingInterval);
+    
+    // Process after 1 second of silence or when buffer is large
+    clearTimeout(ws.processTimer);
+    ws.processTimer = setTimeout(() => {
+      if (audioBuffer.length > 0 && !isProcessing && !isBotSpeaking) {
+        processAudio();
+      }
+    }, 800);
   });
   
-  // Send initial status
+  ws.on('close', () => {
+    clearTimeout(ws.processTimer);
+    console.log(`🔌 Client ${clientId} disconnected`);
+  });
+  
+  ws.on('error', (err) => {
+    console.error('WebSocket error:', err.message);
+  });
+  
   safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
-  console.log('✅ WebSocket handler ready');
 });
 
-console.log('✅ WebSocket server ready v2.1');
+console.log('✅ Server ready v3.0');
