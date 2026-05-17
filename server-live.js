@@ -11,8 +11,13 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Full Duplex Live v2.0 on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Full Duplex Live v2.1 on ${PORT}`));
 const wss = new WebSocketServer({ server });
+
+// Check API key
+if (!process.env.OPENAI_API_KEY) {
+  console.error('❌ OPENAI_API_KEY not set!');
+}
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -59,7 +64,7 @@ function amplifyAudio(pcmData, factor = 2.5) {
 const clientHistories = new Map();
 
 wss.on('connection', (ws, req) => {
-  console.log('🔌 Client connected (Full Duplex Mode v2.0)');
+  console.log('🔌 Client connected (Full Duplex Mode v2.1)');
 
   let audioBuffer = [];
   let isProcessing = false;
@@ -68,12 +73,12 @@ wss.on('connection', (ws, req) => {
   let clientId = randomUUID();
   let isInterrupted = false;
   let ttsStartTime = 0;
-  let lastAudioTime = Date.now();
   let totalBytesReceived = 0;
   let packetCount = 0;
   let lastPacketTime = Date.now();
 
   console.log(`📱 Client ID: ${clientId.substring(0, 8)}`);
+  console.log(`✅ OpenAI API Key present: ${!!process.env.OPENAI_API_KEY}`);
 
   clientHistories.set(clientId, [{
     role: 'system',
@@ -108,27 +113,6 @@ wss.on('connection', (ws, req) => {
     }
   };
 
-  const processNow = () => {
-    if (silenceTimer) clearTimeout(silenceTimer);
-    if (!isBotSpeaking && !isProcessing && audioBuffer.length > 8000) {
-      console.log(`🔄 FORCE processing ${audioBuffer.length} bytes`);
-      processAudio();
-    }
-  };
-
-  const resetSilenceTimer = () => {
-    if (silenceTimer) clearTimeout(silenceTimer);
-    lastAudioTime = Date.now();
-    silenceTimer = setTimeout(() => {
-      if (!isBotSpeaking && !isProcessing && audioBuffer.length > 8000) {
-        console.log(`🔄 Silence detected, processing ${audioBuffer.length} bytes`);
-        processAudio();
-      } else if (audioBuffer.length > 8000) {
-        console.log(`⚠️ Buffer has data but can't process: botSpeaking=${isBotSpeaking}, processing=${isProcessing}`);
-      }
-    }, 800);
-  };
-
   async function processAudio() {
     if (isProcessing || audioBuffer.length === 0) {
       console.log(`Skip processAudio: isProcessing=${isProcessing}, buffer=${audioBuffer.length}`);
@@ -160,6 +144,7 @@ wss.on('connection', (ws, req) => {
     fs.writeFileSync(tempPath, wavFile);
 
     try {
+      console.log('📞 Calling Whisper API...');
       const transcription = await openai.audio.transcriptions.create({
         file: fs.createReadStream(tempPath),
         model: 'whisper-1',
@@ -184,6 +169,7 @@ wss.on('connection', (ws, req) => {
 
       safeSend(JSON.stringify({ type: 'status', text: 'सोच रहा हूँ... 🤔' }));
 
+      console.log('📞 Calling GPT API...');
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: history,
@@ -211,6 +197,7 @@ wss.on('connection', (ws, req) => {
       ttsStartTime = Date.now();
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
 
+      console.log('📞 Calling TTS API...');
       const ttsResponse = await openai.audio.speech.create({
         model: 'tts-1',
         voice: 'nova',
@@ -244,6 +231,9 @@ wss.on('connection', (ws, req) => {
 
     } catch (error) {
       console.error('❌ Error:', error.message);
+      if (error.response) {
+        console.error('API Response:', error.response.data);
+      }
       isBotSpeaking = false;
       safeSend(JSON.stringify({ type: 'audio_done' }));
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
@@ -252,6 +242,15 @@ wss.on('connection', (ws, req) => {
       isProcessing = false;
     }
   }
+
+  // Start a periodic check for audio processing
+  const processingInterval = setInterval(() => {
+    const timeSinceLastPacket = Date.now() - lastPacketTime;
+    if (!isBotSpeaking && !isProcessing && audioBuffer.length > 8000 && timeSinceLastPacket > 500) {
+      console.log(`🔄 Interval check: processing ${audioBuffer.length} bytes (last packet: ${timeSinceLastPacket}ms ago)`);
+      processAudio();
+    }
+  }, 500);
 
   ws.on('message', (data, isBinary) => {
     packetCount++;
@@ -269,7 +268,6 @@ wss.on('connection', (ws, req) => {
     
     totalBytesReceived += data.length;
     
-    // Log every 100 packets
     if (packetCount % 100 === 0) {
       console.log(`📥 Audio packet #${packetCount}: ${data.length} bytes, Total: ${totalBytesReceived} bytes`);
     }
@@ -285,29 +283,23 @@ wss.on('connection', (ws, req) => {
     }
     
     audioBuffer.push(Buffer.from(data));
-    
-    // Reset timer on each packet
-    if (silenceTimer) clearTimeout(silenceTimer);
-    silenceTimer = setTimeout(() => {
-      if (!isBotSpeaking && !isProcessing && audioBuffer.length > 8000) {
-        console.log(`🔄 Timer triggered, processing ${audioBuffer.length} bytes`);
-        processAudio();
-      }
-    }, 800);
   });
 
   ws.on('close', (code, reason) => {
     console.log(`🔌 Client ${clientId.substring(0, 8)} disconnected: ${code} - ${reason}`);
+    clearInterval(processingInterval);
     if (silenceTimer) clearTimeout(silenceTimer);
     clientHistories.delete(clientId);
   });
 
   ws.on('error', (error) => {
     console.error('WebSocket error:', error.message);
+    clearInterval(processingInterval);
   });
   
   // Send initial status
   safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
+  console.log('✅ WebSocket handler ready');
 });
 
-console.log('✅ WebSocket server ready v2.0');
+console.log('✅ WebSocket server ready v2.1');
