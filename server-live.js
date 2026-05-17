@@ -11,7 +11,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v3.1 on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v4.0 on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 if (!process.env.OPENAI_API_KEY) {
@@ -58,13 +58,24 @@ wss.on('connection', (ws) => {
   let isProcessing = false;
   let isBotSpeaking = false;
   let silenceTimer = null;
+  let keepAliveInterval = null;
   let clientId = randomUUID().substring(0, 8);
   let packetCount = 0;
+  let isClosing = false;
   
   console.log(`📱 Client ID: ${clientId}`);
 
+  // Keep connection alive
+  keepAliveInterval = setInterval(() => {
+    if (ws.readyState === 1 && !isClosing) {
+      try {
+        ws.ping();
+      } catch (e) {}
+    }
+  }, 15000);
+
   const safeSend = (data, isBinary = false) => {
-    if (ws.readyState === 1) {
+    if (ws.readyState === 1 && !isClosing) {
       try {
         ws.send(data);
         return true;
@@ -76,7 +87,7 @@ wss.on('connection', (ws) => {
   };
 
   const processAudio = async () => {
-    if (isProcessing || audioBuffer.length === 0) return;
+    if (isProcessing || audioBuffer.length === 0 || isClosing) return;
     
     console.log(`🚀 Processing ${audioBuffer.length} chunks, total bytes: ${Buffer.concat(audioBuffer).length}`);
     isProcessing = true;
@@ -130,6 +141,12 @@ wss.on('connection', (ws) => {
       console.log(`🤖 Bot: ${botReply}`);
       safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
       
+      // Check if connection still alive
+      if (isClosing || ws.readyState !== 1) {
+        console.log('Connection closed before TTS');
+        return;
+      }
+      
       // Generate speech
       isBotSpeaking = true;
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
@@ -150,7 +167,7 @@ wss.on('connection', (ws) => {
       // Send audio in chunks
       const chunkSize = 4000;
       for (let i = 0; i < audioPcm.length; i += chunkSize) {
-        if (ws.readyState !== 1) break;
+        if (isClosing || ws.readyState !== 1) break;
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         safeSend(chunk, true);
         await new Promise(r => setTimeout(r, 50));
@@ -174,16 +191,16 @@ wss.on('connection', (ws) => {
     if (silenceTimer) clearTimeout(silenceTimer);
     silenceTimer = setTimeout(() => {
       console.log(`🔇 Silence detected, buffer chunks: ${audioBuffer.length}`);
-      if (audioBuffer.length > 0 && !isProcessing && !isBotSpeaking) {
+      if (audioBuffer.length > 0 && !isProcessing && !isBotSpeaking && !isClosing) {
         processAudio();
       }
-    }, 800);
+    }, 1000);
   };
   
   // Collect audio packets
   ws.on('message', (data, isBinary) => {
     if (!isBinary) return;
-    if (isBotSpeaking) return;
+    if (isBotSpeaking || isProcessing || isClosing) return;
     
     packetCount++;
     audioBuffer.push(Buffer.from(data));
@@ -192,20 +209,28 @@ wss.on('connection', (ws) => {
       console.log(`📥 Packets: ${packetCount}, Buffer: ${audioBuffer.length} chunks`);
     }
     
-    // Reset silence timer on each packet
     startSilenceTimer();
   });
   
-  ws.on('close', () => {
+  ws.on('pong', () => {
+    // Keep alive response
+  });
+  
+  ws.on('close', (code, reason) => {
+    console.log(`🔌 Client ${clientId} disconnected: ${code} - ${reason}`);
+    isClosing = true;
     if (silenceTimer) clearTimeout(silenceTimer);
-    console.log(`🔌 Client ${clientId} disconnected, total packets: ${packetCount}`);
+    if (keepAliveInterval) clearInterval(keepAliveInterval);
   });
   
   ws.on('error', (err) => {
     console.error('WebSocket error:', err.message);
+    isClosing = true;
+    if (silenceTimer) clearTimeout(silenceTimer);
+    if (keepAliveInterval) clearInterval(keepAliveInterval);
   });
   
   safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
 });
 
-console.log('✅ Server ready v3.1 - Fixed silence detection');
+console.log('✅ Server ready v4.0 - Stable with keep-alive');
