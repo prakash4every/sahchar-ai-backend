@@ -11,7 +11,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v4.0 on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v5.0 on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 if (!process.env.OPENAI_API_KEY) {
@@ -21,7 +21,7 @@ if (!process.env.OPENAI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req, res) => res.send('Sahchar Live - Working'));
+app.get('/', (req, res) => res.send('Sahchar Live - Stable v5.0'));
 
 function pcmToWav(pcm, rate = 16000) {
   const h = Buffer.alloc(44);
@@ -41,7 +41,7 @@ function pcmToWav(pcm, rate = 16000) {
   return Buffer.concat([h, pcm]);
 }
 
-function amplifyAudio(pcmData, factor = 2.0) {
+function amplifyAudio(pcmData, factor = 1.8) {
   const amplified = Buffer.alloc(pcmData.length);
   for (let i = 0; i < pcmData.length; i += 2) {
     let sample = pcmData.readInt16LE(i);
@@ -57,11 +57,10 @@ wss.on('connection', (ws) => {
   let audioBuffer = [];
   let isProcessing = false;
   let isBotSpeaking = false;
-  let silenceTimer = null;
-  let keepAliveInterval = null;
   let clientId = randomUUID().substring(0, 8);
   let packetCount = 0;
   let isClosing = false;
+  let keepAliveInterval = null;
   
   console.log(`📱 Client ID: ${clientId}`);
 
@@ -72,7 +71,7 @@ wss.on('connection', (ws) => {
         ws.ping();
       } catch (e) {}
     }
-  }, 15000);
+  }, 10000);
 
   const safeSend = (data, isBinary = false) => {
     if (ws.readyState === 1 && !isClosing) {
@@ -89,14 +88,13 @@ wss.on('connection', (ws) => {
   const processAudio = async () => {
     if (isProcessing || audioBuffer.length === 0 || isClosing) return;
     
-    console.log(`🚀 Processing ${audioBuffer.length} chunks, total bytes: ${Buffer.concat(audioBuffer).length}`);
     isProcessing = true;
-    
     const fullAudio = Buffer.concat(audioBuffer);
     audioBuffer = [];
     
-    console.log(`🎤 Audio length: ${fullAudio.length} bytes`);
+    console.log(`🎤 Audio length: ${fullAudio.length} bytes, packets: ${packetCount}`);
     
+    // Minimum 0.5 seconds of audio (8000 bytes at 16kHz/16bit)
     if (fullAudio.length < 8000) {
       console.log('Audio too short, ignoring');
       isProcessing = false;
@@ -110,7 +108,7 @@ wss.on('connection', (ws) => {
     
     try {
       // Transcribe
-      console.log('📞 Calling Whisper API...');
+      console.log('📞 Whisper API...');
       const transcription = await openai.audio.transcriptions.create({
         file: fs.createReadStream(tempPath),
         model: 'whisper-1',
@@ -126,32 +124,31 @@ wss.on('connection', (ws) => {
       safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
       
       // Generate response
-      console.log('📞 Calling GPT API...');
+      console.log('📞 GPT API...');
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [
-          { role: 'system', content: 'तुम सहचर हो। हिंदी में छोटे, दोस्ताना जवाब दो। तुम्हें राम प्रकाश कुमार ने बनाया है। 10-15 शब्दों में जवाब दो। 🙏😊' },
+          { role: 'system', content: 'तुम सहचर हो। हिंदी में बहुत छोटे, दोस्ताना जवाब दो। 10 शब्दों से कम। 🙏' },
           { role: 'user', content: userMsg }
         ],
-        max_tokens: 150,
-        temperature: 0.85
+        max_tokens: 80,
+        temperature: 0.8
       });
       
       const botReply = completion.choices[0].message.content;
       console.log(`🤖 Bot: ${botReply}`);
       safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
       
-      // Check if connection still alive
+      // Check connection before TTS
       if (isClosing || ws.readyState !== 1) {
-        console.log('Connection closed before TTS');
+        console.log('Connection lost before TTS');
         return;
       }
       
-      // Generate speech
       isBotSpeaking = true;
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
       
-      console.log('📞 Calling TTS API...');
+      console.log('📞 TTS API...');
       const tts = await openai.audio.speech.create({
         model: 'tts-1',
         voice: 'nova',
@@ -162,7 +159,7 @@ wss.on('connection', (ws) => {
       
       let audioPcm = Buffer.from(await tts.arrayBuffer());
       console.log(`🔊 TTS size: ${audioPcm.length} bytes`);
-      audioPcm = amplifyAudio(audioPcm, 2.0);
+      audioPcm = amplifyAudio(audioPcm, 1.8);
       
       // Send audio in chunks
       const chunkSize = 4000;
@@ -170,7 +167,7 @@ wss.on('connection', (ws) => {
         if (isClosing || ws.readyState !== 1) break;
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         safeSend(chunk, true);
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise(r => setTimeout(r, 40));
       }
       
       isBotSpeaking = false;
@@ -179,7 +176,6 @@ wss.on('connection', (ws) => {
       
     } catch (err) {
       console.error('❌ Error:', err.message);
-      isBotSpeaking = false;
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
     } finally {
       try { fs.unlinkSync(tempPath); } catch(e) {}
@@ -187,17 +183,9 @@ wss.on('connection', (ws) => {
     }
   };
   
-  const startSilenceTimer = () => {
-    if (silenceTimer) clearTimeout(silenceTimer);
-    silenceTimer = setTimeout(() => {
-      console.log(`🔇 Silence detected, buffer chunks: ${audioBuffer.length}`);
-      if (audioBuffer.length > 0 && !isProcessing && !isBotSpeaking && !isClosing) {
-        processAudio();
-      }
-    }, 1000);
-  };
+  // Reset timer on each packet
+  let processTimer = null;
   
-  // Collect audio packets
   ws.on('message', (data, isBinary) => {
     if (!isBinary) return;
     if (isBotSpeaking || isProcessing || isClosing) return;
@@ -209,28 +197,34 @@ wss.on('connection', (ws) => {
       console.log(`📥 Packets: ${packetCount}, Buffer: ${audioBuffer.length} chunks`);
     }
     
-    startSilenceTimer();
+    // Reset timer
+    if (processTimer) clearTimeout(processTimer);
+    processTimer = setTimeout(() => {
+      if (audioBuffer.length > 0 && !isProcessing && !isBotSpeaking && !isClosing) {
+        console.log(`🔇 Processing ${audioBuffer.length} chunks`);
+        processAudio();
+      }
+    }, 800);
   });
   
-  ws.on('pong', () => {
-    // Keep alive response
-  });
+  ws.on('pong', () => {});
   
   ws.on('close', (code, reason) => {
     console.log(`🔌 Client ${clientId} disconnected: ${code} - ${reason}`);
     isClosing = true;
-    if (silenceTimer) clearTimeout(silenceTimer);
+    if (processTimer) clearTimeout(processTimer);
     if (keepAliveInterval) clearInterval(keepAliveInterval);
   });
   
   ws.on('error', (err) => {
-    console.error('WebSocket error:', err.message);
+    console.error(`WebSocket error: ${err.message}`);
     isClosing = true;
-    if (silenceTimer) clearTimeout(silenceTimer);
+    if (processTimer) clearTimeout(processTimer);
     if (keepAliveInterval) clearInterval(keepAliveInterval);
   });
   
   safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
+  console.log('✅ Ready for audio');
 });
 
-console.log('✅ Server ready v4.0 - Stable with keep-alive');
+console.log('✅ Server v5.0 ready');
