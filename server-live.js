@@ -11,7 +11,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Full Duplex Live v1.3 on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Full Duplex Live v1.5 on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -68,7 +68,11 @@ wss.on('connection', (ws, req) => {
   let clientId = randomUUID();
   let isInterrupted = false;
   let ttsStartTime = 0;
-  let lastAudioTime = Date.now(); 
+  let lastAudioTime = Date.now();
+  let totalBytesReceived = 0;
+  let packetCount = 0;
+
+  console.log(`📱 Client ID: ${clientId.substring(0, 8)}`);
 
   clientHistories.set(clientId, [{
     role: 'system',
@@ -87,7 +91,7 @@ wss.on('connection', (ws, req) => {
         ws.send(data);
         return true;
       } catch (e) {
-        console.error('Send error:', e);
+        console.error('Send error:', e.message);
         return false;
       }
     }
@@ -102,16 +106,16 @@ wss.on('connection', (ws, req) => {
       safeSend(JSON.stringify({ type: 'status', text: 'बीच में रोका गया, सुन रहा हूँ... 🎤' }));
     }
   };
+
   const resetSilenceTimer = () => {
     if (silenceTimer) clearTimeout(silenceTimer);
     lastAudioTime = Date.now();
     silenceTimer = setTimeout(() => {
-      // 1.2 sec se audio nahi aaya + bot nahi bol raha + process nahi ho raha
-      if (!isBotSpeaking && !isProcessing && audioBuffer.length > 16000) { // 0.5 sec ka data minimum
+      if (!isBotSpeaking && !isProcessing && audioBuffer.length > 8000) {
         console.log(`🔄 Silence detected, processing ${audioBuffer.length} bytes`);
         processAudio();
       }
-    }, 1200); // 800 se 1200 kar diya
+    }, 1000);
   };
 
   async function processAudio() {
@@ -127,10 +131,11 @@ wss.on('connection', (ws, req) => {
     audioBuffer = [];
 
     const rms = calculateRMS(fullAudio);
-    const duration = fullAudio.length / 32000; // 16kHz * 2 bytes
+    const duration = fullAudio.length / 32000;
     console.log(`🎤 Audio RMS: ${rms.toFixed(4)}, Length: ${fullAudio.length}, Duration: ${duration.toFixed(2)}s`);
-    if (fullAudio.length < 8000) { // 0.25 sec se kam
-      console.log('Audio too short, ignoring');
+    
+    if (fullAudio.length < 8000 || rms < 0.003) {
+      console.log('Audio too short or too quiet, ignoring');
       isProcessing = false;
       return;
     }
@@ -237,18 +242,37 @@ wss.on('connection', (ws, req) => {
   }
 
   ws.on('message', (data, isBinary) => {
+    packetCount++;
+    
     if (!isBinary) {
       try {
         const msg = JSON.parse(data.toString());
+        console.log(`📨 Text message from client:`, msg);
         if (msg.type === 'interrupt') {
           interruptBot();
         }
-      } catch(e) {}
+      } catch(e) {
+        console.log(`📨 Text message: ${data.toString().substring(0, 100)}`);
+      }
       return;
+    }
+    
+    // Binary data (audio)
+    totalBytesReceived += data.length;
+    
+    // Log every 10 packets
+    if (packetCount % 10 === 0) {
+      console.log(`📥 Audio packet #${packetCount}: ${data.length} bytes, Total: ${totalBytesReceived} bytes`);
+    }
+    
+    // First packet received log
+    if (packetCount === 1) {
+      console.log(`🎙️ FIRST AUDIO PACKET RECEIVED! Size: ${data.length} bytes`);
     }
 
     if (isBotSpeaking) {
       if (Date.now() - ttsStartTime < 800) return;
+      console.log('🔴 User spoke while bot speaking - interrupting');
       interruptBot();
       audioBuffer.push(Buffer.from(data));
       resetSilenceTimer();
@@ -259,8 +283,8 @@ wss.on('connection', (ws, req) => {
     resetSilenceTimer();
   });
 
-  ws.on('close', () => {
-    console.log(`🔌 Client ${clientId.substring(0, 8)} disconnected`);
+  ws.on('close', (code, reason) => {
+    console.log(`🔌 Client ${clientId.substring(0, 8)} disconnected: ${code} - ${reason}`);
     if (silenceTimer) clearTimeout(silenceTimer);
     clientHistories.delete(clientId);
   });
@@ -268,4 +292,9 @@ wss.on('connection', (ws, req) => {
   ws.on('error', (error) => {
     console.error('WebSocket error:', error.message);
   });
+  
+  // Send initial status
+  safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
 });
+
+console.log('✅ WebSocket server ready');
