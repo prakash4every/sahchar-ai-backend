@@ -11,7 +11,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v3.0 on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v3.1 on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 if (!process.env.OPENAI_API_KEY) {
@@ -57,7 +57,9 @@ wss.on('connection', (ws) => {
   let audioBuffer = [];
   let isProcessing = false;
   let isBotSpeaking = false;
+  let silenceTimer = null;
   let clientId = randomUUID().substring(0, 8);
+  let packetCount = 0;
   
   console.log(`📱 Client ID: ${clientId}`);
 
@@ -76,7 +78,7 @@ wss.on('connection', (ws) => {
   const processAudio = async () => {
     if (isProcessing || audioBuffer.length === 0) return;
     
-    console.log(`🚀 Processing ${audioBuffer.length} chunks`);
+    console.log(`🚀 Processing ${audioBuffer.length} chunks, total bytes: ${Buffer.concat(audioBuffer).length}`);
     isProcessing = true;
     
     const fullAudio = Buffer.concat(audioBuffer);
@@ -97,6 +99,7 @@ wss.on('connection', (ws) => {
     
     try {
       // Transcribe
+      console.log('📞 Calling Whisper API...');
       const transcription = await openai.audio.transcriptions.create({
         file: fs.createReadStream(tempPath),
         model: 'whisper-1',
@@ -112,6 +115,7 @@ wss.on('connection', (ws) => {
       safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
       
       // Generate response
+      console.log('📞 Calling GPT API...');
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [
@@ -130,6 +134,7 @@ wss.on('connection', (ws) => {
       isBotSpeaking = true;
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
       
+      console.log('📞 Calling TTS API...');
       const tts = await openai.audio.speech.create({
         model: 'tts-1',
         voice: 'nova',
@@ -139,11 +144,13 @@ wss.on('connection', (ws) => {
       });
       
       let audioPcm = Buffer.from(await tts.arrayBuffer());
+      console.log(`🔊 TTS size: ${audioPcm.length} bytes`);
       audioPcm = amplifyAudio(audioPcm, 2.0);
       
       // Send audio in chunks
       const chunkSize = 4000;
       for (let i = 0; i < audioPcm.length; i += chunkSize) {
+        if (ws.readyState !== 1) break;
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         safeSend(chunk, true);
         await new Promise(r => setTimeout(r, 50));
@@ -163,25 +170,35 @@ wss.on('connection', (ws) => {
     }
   };
   
+  const startSilenceTimer = () => {
+    if (silenceTimer) clearTimeout(silenceTimer);
+    silenceTimer = setTimeout(() => {
+      console.log(`🔇 Silence detected, buffer chunks: ${audioBuffer.length}`);
+      if (audioBuffer.length > 0 && !isProcessing && !isBotSpeaking) {
+        processAudio();
+      }
+    }, 800);
+  };
+  
   // Collect audio packets
   ws.on('message', (data, isBinary) => {
     if (!isBinary) return;
     if (isBotSpeaking) return;
     
+    packetCount++;
     audioBuffer.push(Buffer.from(data));
     
-    // Process after 1 second of silence or when buffer is large
-    clearTimeout(ws.processTimer);
-    ws.processTimer = setTimeout(() => {
-      if (audioBuffer.length > 0 && !isProcessing && !isBotSpeaking) {
-        processAudio();
-      }
-    }, 800);
+    if (packetCount % 100 === 0) {
+      console.log(`📥 Packets: ${packetCount}, Buffer: ${audioBuffer.length} chunks`);
+    }
+    
+    // Reset silence timer on each packet
+    startSilenceTimer();
   });
   
   ws.on('close', () => {
-    clearTimeout(ws.processTimer);
-    console.log(`🔌 Client ${clientId} disconnected`);
+    if (silenceTimer) clearTimeout(silenceTimer);
+    console.log(`🔌 Client ${clientId} disconnected, total packets: ${packetCount}`);
   });
   
   ws.on('error', (err) => {
@@ -191,4 +208,4 @@ wss.on('connection', (ws) => {
   safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
 });
 
-console.log('✅ Server ready v3.0');
+console.log('✅ Server ready v3.1 - Fixed silence detection');
