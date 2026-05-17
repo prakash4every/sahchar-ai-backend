@@ -32,7 +32,7 @@ app.use(express.json({ limit: "10mb" }));
 
 // ========== MONGODB SETUP ==========
 let db = null;
-const conversations = {};
+const conversations = new Map(); // Use Map instead of object for better memory
 const imageContexts = {};
 
 async function initMongoDB() {
@@ -45,8 +45,10 @@ async function initMongoDB() {
     await client.connect();
     db = client.db();
     console.log(`📊 Database Name: ${db.databaseName}`);
+    
+    // Create indexes
     await db.collection('conversations').createIndex({ sessionId: 1, timestamp: -1 });
-    console.log("✅ MongoDB Ready");
+    console.log("✅ MongoDB Ready with indexes");
   } catch (error) {
     console.error("❌ MongoDB Connection FAILED:", error.message);
     process.exit(1);
@@ -54,7 +56,7 @@ async function initMongoDB() {
 }
 initMongoDB();
 
-async function loadConversationFromDB(sid, limit = 4) {
+async function loadConversationFromDB(sid, limit = 10) {
   if (!db) return [];
   try {
     const messages = await db.collection('conversations')
@@ -62,13 +64,19 @@ async function loadConversationFromDB(sid, limit = 4) {
       .sort({ timestamp: -1 })
       .limit(limit)
       .toArray();
+    
     const history = [];
     messages.reverse().forEach(msg => {
       history.push({ role: "user", content: msg.userMessage });
       history.push({ role: "assistant", content: msg.botReply });
     });
+    
+    if (messages.length > 0) {
+      console.log(`📚 Loaded ${messages.length} exchanges from DB for ${sid}`);
+    }
     return history;
   } catch (err) {
+    console.error("DB load error:", err.message);
     return [];
   }
 }
@@ -83,7 +91,9 @@ async function saveConversationToDB(sid, userMessage, botReply, chatbot = 'Sahch
       chatbot,
       timestamp: new Date()
     });
-  } catch (err) {}
+  } catch (err) {
+    console.error("DB insert error:", err.message);
+  }
 }
 
 function getSessionId(req) {
@@ -98,12 +108,14 @@ function getImageContextText(sid) {
 }
 
 // ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 सहचर AI बैकएंड v4.0 FAST चालू है ✅"));
+app.get("/", (req, res) => res.send("🌿 सहचर AI बैकएंड v4.1 चालू है ✅"));
 
-// ==================== OPTIMIZED CHAT ====================
+// ==================== CHAT WITH HISTORY ====================
 app.post("/chat", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
+
+  console.log(`📩 Chat Request [${sid}]: ${message?.substring(0, 50)}...`);
 
   if (!message) return res.status(400).json({ reply: "Message required 🙏" });
 
@@ -116,24 +128,27 @@ app.post("/chat", async (req, res) => {
 
     const imageContext = getImageContextText(sid);
 
-    // Get history (only last 3 exchanges for speed)
-    let history = [];
-    if (!conversations[sid]) {
-      history = await loadConversationFromDB(sid, 4);
-      conversations[sid] = [
+    // Check if conversation exists in memory, if not load from DB
+    let conversation = conversations.get(sid);
+    if (!conversation) {
+      const history = await loadConversationFromDB(sid, 10);
+      conversation = [
         {
           role: "system",
-          content: `तुम 'SahcharAI' हो – राम प्रकाश कुमार द्वारा निर्मित AI सहायक। जैसी भाषा user बोले वैसी में जवाब दो। बहुत छोटा जवाब दो (1-2 sentence)। इमोजी 🙏🌿🪷। वर्तमान समय: ${currentDateTime} IST${imageContext}`
+          content: `तुम 'SahcharAI' हो – राम प्रकाश कुमार द्वारा निर्मित AI सहायक। पिछली बातचीत याद रखो। जैसी भाषा user बोले वैसी में जवाब दो। बहुत छोटा जवाब दो (1-2 sentence)। इमोजी 🙏🌿🪷। वर्तमान समय: ${currentDateTime} IST${imageContext}`
         },
         ...history
       ];
+      conversations.set(sid, conversation);
     }
 
-    conversations[sid].push({ role: "user", content: message });
+    conversation.push({ role: "user", content: message });
 
-    // Limit history to 10 messages (5 exchanges)
-    if (conversations[sid].length > 12) {
-      conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-10)];
+    // Limit conversation to 20 messages (10 exchanges)
+    if (conversation.length > 22) {
+      const systemMsg = conversation[0];
+      conversation = [systemMsg, ...conversation.slice(-20)];
+      conversations.set(sid, conversation);
     }
 
     const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
@@ -144,8 +159,8 @@ app.post("/chat", async (req, res) => {
       },
       body: JSON.stringify({ 
         model: "deepseek-chat", 
-        messages: conversations[sid],
-        max_tokens: 200,  // Limit response length
+        messages: conversation,
+        max_tokens: 200,
         temperature: 0.7
       })
     });
@@ -156,11 +171,13 @@ app.post("/chat", async (req, res) => {
     const botReply = data.choices?.[0]?.message?.content;
     if (!botReply) throw new Error("Empty AI response");
 
-    conversations[sid].push({ role: "assistant", content: botReply });
+    conversation.push({ role: "assistant", content: botReply });
+    conversations.set(sid, conversation);
     
-    // Save to DB asynchronously (don't wait)
+    // Save to DB in background
     saveConversationToDB(sid, message, botReply, 'DeepSeek');
 
+    console.log(`✅ Chat Reply [${sid}]: ${botReply.substring(0, 50)}...`);
     res.json({ reply: botReply });
 
   } catch (error) {
@@ -183,6 +200,21 @@ app.post("/chat-assistant", async (req, res) => {
       hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
     });
 
+    let conversation = conversations.get(`assistant_${sid}`);
+    if (!conversation) {
+      const history = await loadConversationFromDB(sid, 6);
+      conversation = [
+        {
+          role: "system",
+          content: `तुम 'SahcharAssistant' हो – राम प्रकाश कुमार द्वारा निर्मित। 1-2 वाक्य में जवाब दो। इमोजी 🙏। वर्तमान समय: ${currentDateTime} IST`
+        },
+        ...history
+      ];
+      conversations.set(`assistant_${sid}`, conversation);
+    }
+
+    conversation.push({ role: "user", content: message });
+
     const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -191,13 +223,7 @@ app.post("/chat-assistant", async (req, res) => {
       },
       body: JSON.stringify({
         model: "deepseek-chat",
-        messages: [
-          {
-            role: "system",
-            content: `तुम 'SahcharAssistant' हो – राम प्रकाश कुमार द्वारा निर्मित। 1-2 वाक्य में जवाब दो। इमोजी 🙏। वर्तमान समय: ${currentDateTime} IST`
-          },
-          { role: "user", content: message }
-        ],
+        messages: conversation,
         max_tokens: 150,
         temperature: 0.7
       })
@@ -208,6 +234,9 @@ app.post("/chat-assistant", async (req, res) => {
     
     let reply = data.choices[0]?.message?.content || "कोई जवाब नहीं।";
     reply = reply.replace(/\*\*/g, '').trim();
+
+    conversation.push({ role: "assistant", content: reply });
+    conversations.set(`assistant_${sid}`, conversation);
     
     saveConversationToDB(sid, message, reply, 'SahcharAssistant');
     res.json({ reply: reply });
@@ -218,7 +247,7 @@ app.post("/chat-assistant", async (req, res) => {
   }
 });
 
-// ==================== SUPER SAHCHAR (NVIDIA) ====================
+// ==================== SUPER SAHCHAR ====================
 app.post("/chat-nvidia", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
@@ -234,19 +263,36 @@ app.post("/chat-nvidia", async (req, res) => {
       hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
     });
 
-    const nvidiaClient = new OpenAI({ apiKey, baseURL: 'https://integrate.api.nvidia.com/v1' });
+    let conversation = conversations.get(`nvidia_${sid}`);
+    if (!conversation) {
+      const history = await loadConversationFromDB(sid, 4);
+      conversation = [
+        { role: "system", content: `तुम 'SuperSahchar' हो। छोटे वाक्य, सवाल पूछो, इमोजी 😊🙏। वर्तमान समय: ${currentDateTime} IST` },
+        ...history
+      ];
+      conversations.set(`nvidia_${sid}`, conversation);
+    }
 
+    conversation.push({ role: "user", content: message });
+
+    if (conversation.length > 12) {
+      const systemMsg = conversation[0];
+      conversation = [systemMsg, ...conversation.slice(-10)];
+      conversations.set(`nvidia_${sid}`, conversation);
+    }
+
+    const nvidiaClient = new OpenAI({ apiKey, baseURL: 'https://integrate.api.nvidia.com/v1' });
     const completion = await nvidiaClient.chat.completions.create({
       model: "meta/llama-3.1-70b-instruct",
-      messages: [
-        { role: "system", content: `तुम 'SuperSahchar' हो। छोटे वाक्य, सवाल पूछो, इमोजी 😊🙏। वर्तमान समय: ${currentDateTime} IST` },
-        { role: "user", content: message }
-      ],
+      messages: conversation,
       max_tokens: 200,
       temperature: 0.7
     });
 
     const botReply = completion.choices[0]?.message?.content || "No response.";
+    conversation.push({ role: "assistant", content: botReply });
+    conversations.set(`nvidia_${sid}`, conversation);
+    
     saveConversationToDB(sid, message, botReply, 'SuperSahchar');
     res.json({ reply: botReply });
 
@@ -261,9 +307,7 @@ app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
   console.log(`🎨 Image Request: ${prompt}`);
   
-  if (!prompt) {
-    return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
-  }
+  if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
   
   const encodedPrompt = encodeURIComponent(prompt);
   const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true`;
@@ -367,5 +411,5 @@ wss.on('connection', (ws, req) => {
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 Server v4.0 FAST running on port ${PORT}`);
+  console.log(`🚀 Server v4.1 with MongoDB History running on port ${PORT}`);
 });
