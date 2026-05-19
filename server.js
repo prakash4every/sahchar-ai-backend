@@ -206,52 +206,110 @@ app.post("/chat-assistant", async (req, res) => {
   }
 });
 
-// ==================== 3. SUPERSAHCHAR ====================
+// ==================== 3. SUPERSAHCHAR (FIXED - No Echo) ====================
 app.post("/chat-nvidia", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
+  
+  console.log(`📩 SuperSahchar Request [${sid}]: ${message?.substring(0, 50)}...`);
+  
   if (!message) return res.status(400).json({ error: "Message required 🙏" });
 
   const nvidiaKey = process.env.NGC_API_KEY;
+  const deepseekKey = process.env.DEEPSEEK_API_KEY;
   
+  // Try NVIDIA NIM first
   if (nvidiaKey) {
     try {
-      const now = new Date();
-      const currentDateTime = now.toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata' });
-      const nvidiaClient = new OpenAI({ apiKey: nvidiaKey, baseURL: 'https://integrate.api.nvidia.com/v1' });
+      console.log(`🖼️ Trying NVIDIA NIM...`);
+      const nvidiaClient = new OpenAI({ 
+        apiKey: nvidiaKey, 
+        baseURL: 'https://integrate.api.nvidia.com/v1' 
+      });
+      
       const completion = await nvidiaClient.chat.completions.create({
         model: "meta/llama-3.1-70b-instruct",
         messages: [
-          { role: "system", content: `तुम 'SuperSahchar' हो – एक दोस्त। छोटे वाक्य, इमोजी 😊🙏। वर्तमान समय: ${currentDateTime} IST` },
+          { 
+            role: "system", 
+            content: `तुम 'SuperSahchar' हो – एक दोस्ताना AI सहायक। 
+            नियम:
+            1. हिंदी या हिंग्लिश में छोटे जवाब दो (1-2 वाक्य)
+            2. कभी भी user का message दोहराओ मत
+            3. अपना नाम "SuperSahchar" बताओ
+            4. निर्माता: राम प्रकाश कुमार
+            5. इमोजी का इस्तेमाल करो 😊🙏`
+          },
           { role: "user", content: message }
         ],
-        max_tokens: 200
+        max_tokens: 200,
+        temperature: 0.8
       });
+      
       const reply = completion.choices[0]?.message?.content;
-      if (reply) {
+      if (reply && !reply.includes(message)) {
+        console.log(`✅ NVIDIA NIM reply: ${reply.substring(0, 50)}...`);
         await saveConversationToDB(sid, message, reply, 'SuperSahchar');
-        return res.json({ reply: reply });
+        return res.json({ reply: reply, provider: "nvidia-nim" });
+      } else {
+        console.log(`⚠️ NVIDIA returned echo or empty, trying fallback...`);
       }
     } catch (error) {
-      console.log("⚠️ NVIDIA failed:", error.message);
+      console.log(`⚠️ NVIDIA NIM failed: ${error.message}`);
     }
   }
   
-  const messages = [
-    { role: "system", content: `तुम 'SuperSahchar' हो – एक दोस्ताना AI। छोटे जवाब दो, इमोजी 😊🙏` },
-    { role: "user", content: message }
-  ];
-  
-  const reply = await smartChat(messages, 'groq', ['openai', 'deepseek']);
-  
-  if (reply) {
-    await saveConversationToDB(sid, message, reply, 'SuperSahchar');
-    res.json({ reply: reply });
-  } else {
-    res.json({ reply: "क्षमा करें, थोड़ी देर में बात करते हैं? 😅" });
+  // Fallback to DeepSeek (Primary Fallback)
+  if (deepseekKey) {
+    try {
+      console.log(`🔄 Fallback to DeepSeek for SuperSahchar...`);
+      const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json", 
+          "Authorization": `Bearer ${deepseekKey}`
+        },
+        body: JSON.stringify({
+          model: "deepseek-chat",
+          messages: [
+            { 
+              role: "system", 
+              content: `तुम 'SuperSahchar' हो – एक दोस्ताना AI। 
+              बहुत जरूरी: user का message दोहराना मत, सिर्फ अपने शब्दों में जवाब दो।
+              जवाब 1-2 छोटे वाक्यों में दो। इमोजी 😊🙏।`
+            },
+            { role: "user", content: message }
+          ],
+          max_tokens: 200,
+          temperature: 0.8
+        })
+      });
+      
+      const data = await response.json();
+      if (response.ok && data.choices && data.choices[0]) {
+        let reply = data.choices[0].message.content;
+        // Remove any echo of user message
+        if (reply.includes(message)) {
+          reply = reply.replace(message, '').trim();
+        }
+        if (reply.length === 0) {
+          reply = "मैं SuperSahchar हूँ! आपकी कैसे मदद कर सकता हूँ? 😊";
+        }
+        console.log(`✅ DeepSeek reply: ${reply.substring(0, 50)}...`);
+        await saveConversationToDB(sid, message, reply, 'SuperSahchar');
+        return res.json({ reply: reply, provider: "deepseek-fallback" });
+      }
+    } catch (error) {
+      console.log(`⚠️ DeepSeek fallback failed: ${error.message}`);
+    }
   }
+  
+  // Final fallback - Static response
+  console.log(`⚠️ Using static fallback for SuperSahchar`);
+  const fallbackReply = "नमस्ते! मैं SuperSahchar हूँ। थोड़ी देर में सही से बात कर पाऊंगा। कृपया कुछ और पूछें। 😊🙏";
+  await saveConversationToDB(sid, message, fallbackReply, 'SuperSahchar');
+  res.json({ reply: fallbackReply, provider: "static-fallback" });
 });
-
 // ==================== 4. SMART IMAGE GENERATION (Priority: OpenAI DALL-E → Replicate → Pollinations) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
