@@ -11,6 +11,7 @@ import axios from 'axios';
 import OpenAI from 'openai';
 import { WebSocketServer } from 'ws';
 import http from 'http';
+import translate from '@vitalets/google-translate-api';   // npm install @vitalets/google-translate-api
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,8 +19,10 @@ dotenv.config();
 
 // ========== ENV VALIDATION ==========
 if (!process.env.MONGODB_URI) {
-  console.error("❌ FATAL: MONGODB_URI not set");
-  process.exit(1);
+  console.warn("⚠️ MONGODB_URI not set – chat history will be in-memory only.");
+}
+if (!process.env.OPENAI_API_KEY) {
+  console.warn("⚠️ OPENAI_API_KEY not set – image/audio/chat may fail.");
 }
 
 const app = express();
@@ -30,12 +33,13 @@ const upload = multer({ dest: 'uploads/' });
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// ========== MONGODB SETUP ==========
+// ========== MONGODB SETUP (optional) ==========
 let db = null;
 const conversations = {};
 const imageContexts = {};
 
 async function initMongoDB() {
+  if (!process.env.MONGODB_URI) return;
   try {
     const client = new MongoClient(process.env.MONGODB_URI);
     await client.connect();
@@ -85,7 +89,7 @@ function getImageContextText(sid) {
   return "";
 }
 
-// ========== SMART API PROVIDERS ==========
+// ========== SMART API PROVIDERS (text chat) ==========
 const providers = {
   deepseek: { name: 'DeepSeek', url: 'https://api.deepseek.com/v1/chat/completions', key: process.env.DEEPSEEK_API_KEY },
   kimi: { name: 'Kimi', url: 'https://api.moonshot.cn/v1/chat/completions', key: process.env.KIMI_API_KEY },
@@ -98,7 +102,6 @@ const providers = {
 async function callAI(messages, providerName, model = null) {
   const provider = providers[providerName];
   if (!provider || !provider.key) return null;
-
   try {
     if (provider.isGemini) {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${provider.key}`, {
@@ -108,7 +111,6 @@ async function callAI(messages, providerName, model = null) {
       const data = await response.json();
       return data.candidates?.[0]?.content?.parts?.[0]?.text || null;
     }
-    
     const response = await fetch(provider.url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.key}` },
@@ -130,7 +132,6 @@ async function callAI(messages, providerName, model = null) {
 async function smartChat(messages, preferredProvider, fallbackProviders) {
   let reply = await callAI(messages, preferredProvider);
   if (reply) return reply;
-  
   for (const provider of fallbackProviders) {
     console.log(`🔄 Falling back to ${provider}...`);
     reply = await callAI(messages, provider);
@@ -140,20 +141,17 @@ async function smartChat(messages, preferredProvider, fallbackProviders) {
 }
 
 // ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v5.0 Smart ✅"));
+app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v5.1 - Fixed Image & Audio ✅"));
 
-// ==================== 1. SAHCHARAI ====================
+// ==================== CHAT ENDPOINTS (unchanged but improved) ====================
 app.post("/chat", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
-  
   if (!message) return res.status(400).json({ reply: "Message required 🙏" });
-
   try {
     const now = new Date();
     const currentDateTime = now.toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata' });
     const imageContext = getImageContextText(sid);
-
     if (!conversations[sid]) {
       const history = await loadConversationFromDB(sid, 6);
       conversations[sid] = [
@@ -162,223 +160,175 @@ app.post("/chat", async (req, res) => {
       ];
     }
     conversations[sid].push({ role: "user", content: message });
-    
     const reply = await smartChat(conversations[sid], 'deepseek', ['kimi', 'groq', 'openai']);
-    
     if (!reply) throw new Error("All providers failed");
-    
     conversations[sid].push({ role: "assistant", content: reply });
     if (conversations[sid].length > 20) conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-18)];
     await saveConversationToDB(sid, message, reply, 'SahcharAI');
     res.json({ reply: reply });
-
   } catch (error) {
     console.error("❌ /chat error:", error.message);
     res.json({ reply: "क्षमा करें, सेवा व्यस्त है। कृपया पुनः प्रयास करें। 🙏" });
   }
 });
 
-// ==================== 2. SAHCHARASSISTANT ====================
 app.post("/chat-assistant", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
   if (!message) return res.status(400).json({ error: "Message required 🙏" });
-
   try {
     const now = new Date();
     const currentDateTime = now.toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata' });
-    
     const messages = [
       { role: "system", content: `तुम 'SahcharAssistant' हो – राम प्रकाश कुमार द्वारा निर्मित। 1-2 वाक्य में जवाब दो। इमोजी 🙏। वर्तमान समय: ${currentDateTime} IST` },
       { role: "user", content: message }
     ];
-    
     const reply = await smartChat(messages, 'kimi', ['deepseek', 'groq', 'openai']);
-    
     if (!reply) throw new Error("All providers failed");
-    
     await saveConversationToDB(sid, message, reply, 'SahcharAssistant');
     res.json({ reply: reply });
-
   } catch (error) {
     console.error("❌ Assistant error:", error.message);
     res.json({ reply: "क्षमा करें, सेवा व्यस्त है। 🙏" });
   }
 });
 
-// ==================== 3. SUPERSAHCHAR (FAST - Groq First) ====================
 app.post("/chat-nvidia", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
-  
-  console.log(`📩 SuperSahchar: ${message?.substring(0, 50)}...`);
-  
   if (!message) return res.status(400).json({ error: "Message required 🙏" });
 
   const groqKey = process.env.GROQ_API_KEY;
   const deepseekKey = process.env.DEEPSEEK_API_KEY;
   const nvidiaKey = process.env.NGC_API_KEY;
   
-  // ========== PROVIDER 1: GROQ (Fastest) ==========
   if (groqKey) {
     try {
-      console.log(`⚡ Trying Groq (Fast)...`);
       const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${groqKey}` },
+        method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${groqKey}` },
         body: JSON.stringify({
           model: "mixtral-8x7b-32768",
-          messages: [
-            { 
-              role: "system", 
-              content: `तुम 'SuperSahchar' हो – एक दोस्ताना AI। 
-              बहुत जरूरी: user का message दोहराना मत।
-              जवाब 1-2 छोटे वाक्यों में दो।
-              हिंदी या हिंग्लिश में बात करो।
-              इमोजी 😊🙏 का इस्तेमाल करो।`
-            },
-            { role: "user", content: message }
-          ],
-          max_tokens: 150,
-          temperature: 0.8
+          messages: [{ role: "system", content: `तुम 'SuperSahchar' हो – एक दोस्ताना AI। user का message दोहराना मत। 1-2 छोटे वाक्य। हिंदी/हिंग्लिश। इमोजी 😊🙏।` }, { role: "user", content: message }],
+          max_tokens: 150, temperature: 0.8
         })
       });
-      
       const data = await response.json();
       if (response.ok && data.choices && data.choices[0]) {
         let reply = data.choices[0].message.content;
         if (reply && !reply.includes(message)) {
-          console.log(`✅ Groq reply (fast): ${reply.substring(0, 50)}...`);
           await saveConversationToDB(sid, message, reply, 'SuperSahchar');
           return res.json({ reply: reply, provider: "groq" });
         }
       }
-    } catch (error) {
-      console.log(`⚠️ Groq failed: ${error.message}`);
-    }
+    } catch (error) { console.log(`⚠️ Groq failed: ${error.message}`); }
   }
-  
-  // ========== PROVIDER 2: DEEPSEEK (Fast) ==========
   if (deepseekKey) {
     try {
-      console.log(`🔄 Trying DeepSeek...`);
       const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${deepseekKey}` },
+        method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${deepseekKey}` },
         body: JSON.stringify({
           model: "deepseek-chat",
-          messages: [
-            { 
-              role: "system", 
-              content: `तुम 'SuperSahchar' हो। user का message दोहराना मत। छोटे जवाब दो। इमोजी 😊🙏।`
-            },
-            { role: "user", content: message }
-          ],
-          max_tokens: 150,
-          temperature: 0.8
+          messages: [{ role: "system", content: `तुम 'SuperSahchar' हो। user का message दोहराना मत। छोटे जवाब। इमोजी 😊🙏।` }, { role: "user", content: message }],
+          max_tokens: 150, temperature: 0.8
         })
       });
-      
       const data = await response.json();
       if (response.ok && data.choices && data.choices[0]) {
         let reply = data.choices[0].message.content;
         if (reply && !reply.includes(message)) {
-          console.log(`✅ DeepSeek reply: ${reply.substring(0, 50)}...`);
           await saveConversationToDB(sid, message, reply, 'SuperSahchar');
           return res.json({ reply: reply, provider: "deepseek" });
         }
       }
-    } catch (error) {
-      console.log(`⚠️ DeepSeek failed: ${error.message}`);
-    }
+    } catch (error) { console.log(`⚠️ DeepSeek failed: ${error.message}`); }
   }
-  
-  // ========== PROVIDER 3: NVIDIA NIM (Slow - Last Resort) ==========
   if (nvidiaKey) {
     try {
-      console.log(`🐢 Trying NVIDIA NIM (Slow)...`);
       const nvidiaClient = new OpenAI({ apiKey: nvidiaKey, baseURL: 'https://integrate.api.nvidia.com/v1' });
       const completion = await nvidiaClient.chat.completions.create({
         model: "meta/llama-3.1-70b-instruct",
-        messages: [
-          { role: "system", content: `तुम 'SuperSahchar' हो। user का message दोहराना मत। 1-2 वाक्य में जवाब दो। इमोजी 😊🙏।` },
-          { role: "user", content: message }
-        ],
-        max_tokens: 150,
-        temperature: 0.8
+        messages: [{ role: "system", content: `तुम 'SuperSahchar' हो। user का message दोहराना मत। 1-2 वाक्य। इमोजी 😊🙏।` }, { role: "user", content: message }],
+        max_tokens: 150, temperature: 0.8
       });
       const reply = completion.choices[0]?.message?.content;
       if (reply && !reply.includes(message)) {
-        console.log(`✅ NVIDIA reply: ${reply.substring(0, 50)}...`);
         await saveConversationToDB(sid, message, reply, 'SuperSahchar');
         return res.json({ reply: reply, provider: "nvidia" });
       }
-    } catch (error) {
-      console.log(`⚠️ NVIDIA failed: ${error.message}`);
-    }
+    } catch (error) { console.log(`⚠️ NVIDIA failed: ${error.message}`); }
   }
-  
-  // ========== STATIC FALLBACK ==========
-  console.log(`📝 Using static fallback`);
   const fallbackReply = "नमस्ते! मैं SuperSahchar हूँ। आपकी कैसे मदद कर सकता हूँ? 😊🙏";
   await saveConversationToDB(sid, message, fallbackReply, 'SuperSahchar');
   res.json({ reply: fallbackReply, provider: "static" });
 });
-// ==================== 4. SMART IMAGE GENERATION (Priority: OpenAI DALL-E → Replicate → Pollinations) ====================
+
+// ==================== FIXED: IMAGE GENERATION (Hindi prompt → English) ====================
+async function translateToEnglish(text) {
+  try {
+    const res = await translate(text, { to: 'en' });
+    return res.text;
+  } catch (e) {
+    console.log("Translation failed, using original prompt");
+    return text;
+  }
+}
+
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
   console.log(`🎨 Image Request: ${prompt}`);
-  
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
-  
+
   let cleanPrompt = prompt.replace(/^(तस्वीर|इमेज|फोटो|Image|img)\s+(बना|जनरेट करो|दिखाओ|बनाओ)\s*/gi, '');
   cleanPrompt = cleanPrompt.trim();
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
-  
+
+  // Translate to English for better API understanding
+  let englishPrompt = cleanPrompt;
+  try {
+    englishPrompt = await translateToEnglish(cleanPrompt);
+    console.log(`Translated prompt: "${englishPrompt}"`);
+  } catch(e) { console.log("Translation error, using original"); }
+
   const openaiKey = process.env.OPENAI_API_KEY;
-  const replicateToken = process.env.REPLICATE_API_KEY_ZEROSCOPE;
-  const encodedPrompt = encodeURIComponent(cleanPrompt);
+  const replicateToken = process.env.REPLICATE_API_KEY || process.env.REPLICATE_API_KEY_ZEROSCOPE;
+  const encodedEn = encodeURIComponent(englishPrompt);
   const timestamp = Date.now();
-  
-  // Priority Order: OpenAI DALL-E → Replicate SDXL → Pollinations → Placeholder
-  
-  // PROVIDER 1: OpenAI DALL-E (Best Quality)
+
+  // PRIORITY 1: OpenAI DALL-E 2 (more compatible)
   if (openaiKey) {
     try {
-      console.log(`🎨 Trying OpenAI DALL-E 3...`);
+      console.log(`🎨 Trying OpenAI DALL-E 2...`);
       const openai = new OpenAI({ apiKey: openaiKey });
       const response = await openai.images.generate({
-        model: "dall-e-3",
-        prompt: cleanPrompt,
+        model: "dall-e-2",
+        prompt: englishPrompt,
         n: 1,
-        size: "1024x1024",
-        quality: "standard"
+        size: "1024x1024"
       });
       if (response.data && response.data[0] && response.data[0].url) {
-        console.log(`✅ Image by DALL-E 3`);
-        return res.json({ imageUrl: response.data[0].url, provider: "dall-e-3" });
+        console.log(`✅ Image by DALL-E 2`);
+        return res.json({ imageUrl: response.data[0].url, provider: "dall-e-2" });
       }
     } catch (e) {
-      console.log(`⚠️ DALL-E 3 failed: ${e.message}`);
+      console.log(`⚠️ DALL-E 2 failed: ${e.message}`);
       try {
         const openai = new OpenAI({ apiKey: openaiKey });
         const response = await openai.images.generate({
-          model: "dall-e-2",
-          prompt: cleanPrompt,
+          model: "dall-e-3",
+          prompt: englishPrompt,
           n: 1,
-          size: "1024x1024"
+          size: "1024x1024",
+          quality: "standard"
         });
         if (response.data && response.data[0] && response.data[0].url) {
-          console.log(`✅ Image by DALL-E 2`);
-          return res.json({ imageUrl: response.data[0].url, provider: "dall-e-2" });
+          console.log(`✅ Image by DALL-E 3`);
+          return res.json({ imageUrl: response.data[0].url, provider: "dall-e-3" });
         }
-      } catch (e2) {
-        console.log(`⚠️ DALL-E 2 failed: ${e2.message}`);
-      }
+      } catch (e2) { console.log(`⚠️ DALL-E 3 failed: ${e2.message}`); }
     }
   }
-  
-  // PROVIDER 2: Replicate SDXL
+
+  // PRIORITY 2: Replicate SDXL
   if (replicateToken) {
     try {
       console.log(`🎨 Trying Replicate SDXL...`);
@@ -387,7 +337,7 @@ app.post("/api/image/generate", async (req, res) => {
         headers: { "Authorization": `Token ${replicateToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           version: "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
-          input: { prompt: cleanPrompt, width: 1024, height: 1024, num_outputs: 1 }
+          input: { prompt: englishPrompt, width: 1024, height: 1024, num_outputs: 1 }
         })
       });
       if (response.ok) {
@@ -410,16 +360,12 @@ app.post("/api/image/generate", async (req, res) => {
           return res.json({ imageUrl: imageUrl, provider: "replicate-sdxl" });
         }
       }
-    } catch (e) {
-      console.log(`⚠️ Replicate failed: ${e.message}`);
-    }
+    } catch (e) { console.log(`⚠️ Replicate failed: ${e.message}`); }
   }
-  
-  // PROVIDER 3: Pollinations.ai (Free Fallback)
-  console.log(`🎨 Using Pollinations.ai fallback...`);
-  const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&seed=${timestamp}&model=flux&nologo=true`;
-  
-  // Check if URL is accessible
+
+  // PRIORITY 3: Pollinations (with English prompt)
+  console.log(`🎨 Using Pollinations.ai with English prompt...`);
+  const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodedEn}?width=1024&height=1024&seed=${timestamp}&model=flux&nologo=true`;
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -427,31 +373,26 @@ app.post("/api/image/generate", async (req, res) => {
     clearTimeout(timeoutId);
     if (checkRes.ok) {
       console.log(`✅ Image by Pollinations.ai`);
-      return res.json({ imageUrl: pollinationsUrl, provider: "pollinations" });
+      return res.json({ imageUrl: pollinationsUrl, provider: "pollinations", note: "AI generated image" });
     }
-  } catch (e) {
-    console.log(`⚠️ Pollinations check failed`);
-  }
-  
-  // PROVIDER 4: Ultimate Fallback (Placeholder with text)
-  console.log(`🎨 Using placeholder fallback...`);
-  const placeholderUrl = `https://placehold.co/1024x1024/4CAF50/white?text=${encodedPrompt.substring(0, 30)}`;
+  } catch (e) { console.log(`⚠️ Pollinations failed: ${e.message}`); }
+
+  // FALLBACK: placeholder
+  const placeholderUrl = `https://placehold.co/1024x1024/4CAF50/white?text=${encodedEn.substring(0, 30)}`;
   res.json({ imageUrl: placeholderUrl, provider: "placeholder", note: "Image generation temporarily unavailable" });
 });
 
-// ==================== 5. IMAGE ANALYZE ====================
+// ==================== IMAGE ANALYZE (unchanged) ====================
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "कोई इमेज नहीं" });
   const { message } = req.body;
   const sid = getSessionId(req);
-  
   try {
     const imageBuffer = fs.readFileSync(req.file.path);
     const base64Image = imageBuffer.toString('base64');
     fs.unlinkSync(req.file.path);
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: "API key missing" });
-
     if (!imageContexts[sid]) imageContexts[sid] = {};
     const openai = new OpenAI({ apiKey });
     const response = await openai.chat.completions.create({
@@ -464,38 +405,34 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     const analysis = response.choices[0].message.content;
     imageContexts[sid].lastAnalysis = analysis;
     res.json({ analysis });
-
   } catch (error) {
     console.error("❌ Analysis error:", error.message);
     res.status(500).json({ error: "विश्लेषण में त्रुटि" });
   }
 });
 
-// ==================== 6. SMART VIDEO GENERATION (Priority: Replicate Video → OpenAI Video → Pollinations → Demo) ====================
+// ==================== FIXED: VIDEO GENERATION (correct Replicate model) ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt } = req.body;
   console.log(`🎬 Video Request: ${prompt?.substring(0,50)}...`);
-
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
 
   let cleanPrompt = prompt.replace(/^(वीडियो|video)\s+(बना|जनरेट करो|दिखाओ|बनाओ)\s*/gi, '');
   cleanPrompt = cleanPrompt.trim();
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
 
-  const encodedPrompt = encodeURIComponent(cleanPrompt);
-  const timestamp = Date.now();
-  const replicateToken = process.env.REPLICATE_API_KEY_ZEROSCOPE;
+  const replicateToken = process.env.REPLICATE_API_KEY || process.env.REPLICATE_API_KEY_ZEROSCOPE;
   const openaiKey = process.env.OPENAI_API_KEY;
 
-  // PRIORITY 1: Replicate Video (ZeroScope)
+  // PRIORITY 1: Replicate ZeroScope (working model)
   if (replicateToken) {
     try {
-      console.log(`🎬 Trying Replicate ZeroScope Video...`);
+      console.log(`🎬 Trying Replicate ZeroScope V2...`);
       const response = await fetch("https://api.replicate.com/v1/predictions", {
         method: "POST",
         headers: { "Authorization": `Token ${replicateToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({
-          version: "zeroscope/zeroscope-xl:7198ce1e3b3d9d4f0e4d8c6f9e6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b",
+          version: "f66b331a0cc10ea6179942ae66b538cdc34ff43b5a4e700dddffdb7f1a46cf6a", // ZeroScope XL official
           input: { prompt: cleanPrompt, width: 1024, height: 576, num_frames: 24, fps: 8 }
         })
       });
@@ -504,7 +441,7 @@ app.post("/api/video/generate", async (req, res) => {
         const predictionId = data.id;
         let videoUrl = null;
         for (let i = 0; i < 30; i++) {
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          await new Promise(resolve => setTimeout(resolve, 2500));
           const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${predictionId}`, {
             headers: { "Authorization": `Token ${replicateToken}` }
           });
@@ -519,44 +456,24 @@ app.post("/api/video/generate", async (req, res) => {
           return res.json({ videoUrl: videoUrl, provider: "replicate-zeroscope", status: "generated" });
         }
       }
-    } catch (e) {
-      console.log(`⚠️ Replicate video failed: ${e.message}`);
-    }
+    } catch (e) { console.log(`⚠️ Replicate video failed: ${e.message}`); }
   }
 
-  // PRIORITY 2: OpenAI Video (if available in future)
-  if (openaiKey && false) { // Disabled until OpenAI releases video API
-    try {
-      console.log(`🎬 Trying OpenAI Video...`);
-      // OpenAI video generation not yet available
-    } catch (e) {
-      console.log(`⚠️ OpenAI video failed: ${e.message}`);
-    }
-  }
-
-  // PRIORITY 3: Pollinations Image Sequence (Image-based video)
-  console.log(`🎬 Trying Pollinations Image Sequence...`);
-  const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=576&model=flux&nologo=true&seed=${timestamp}`;
-  
+  // PRIORITY 2: Pollinations image (static fallback)
   try {
+    const englishPrompt = cleanPrompt; // or translate
+    const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(englishPrompt)}?width=1024&height=576&model=flux&nologo=true&seed=${Date.now()}`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
     const checkRes = await fetch(pollinationsUrl, { method: 'HEAD', signal: controller.signal });
     clearTimeout(timeoutId);
     if (checkRes.ok) {
-      console.log(`✅ Image sequence by Pollinations`);
-      return res.json({ 
-        videoUrl: pollinationsUrl, 
-        provider: "pollinations-image", 
-        status: "generated",
-        message: "AI generated image - Click to view"
-      });
+      console.log(`✅ Returning generated image as video preview`);
+      return res.json({ videoUrl: pollinationsUrl, provider: "pollinations-image", status: "image_preview" });
     }
-  } catch (e) {
-    console.log(`⚠️ Pollinations failed: ${e.message}`);
-  }
+  } catch (e) {}
 
-  // PRIORITY 4: Demo Video (Final Fallback)
+  // PRIORITY 3: Demo video
   console.log(`🎬 Using demo video fallback...`);
   res.json({
     videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
@@ -566,41 +483,172 @@ app.post("/api/video/generate", async (req, res) => {
   });
 });
 
-// ==================== WEBSOCKET LIVE AUDIO ====================
+// ==================== FIXED: WEBSOCKET LIVE AUDIO (WITH TTS PCM) ====================
+function pcmToWav(pcm, rate = 16000) {
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(rate, 24);
+  header.writeUInt32LE(rate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+function resample24kTo16k(pcm24k) {
+  // ratio 24/16 = 3/2 → take 2 out of every 3 samples
+  const targetLen = Math.floor(pcm24k.length * 2 / 3);
+  const out = Buffer.alloc(targetLen);
+  for (let i = 0; i < targetLen / 2; i++) {
+    const srcIdx = Math.floor(i * 1.5) * 2;
+    if (srcIdx + 1 < pcm24k.length) {
+      out.writeInt16LE(pcm24k.readInt16LE(srcIdx), i * 2);
+    }
+  }
+  return out;
+}
+
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const deviceId = url.searchParams.get('deviceId') || 'default';
-  console.log(`🔌 WebSocket: ${deviceId}`);
+  console.log(`🔌 LiveAudio WebSocket connected: ${deviceId}`);
 
-  let openai;
-  if (process.env.OPENAI_API_KEY) openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  let openaiClient = null;
+  if (process.env.OPENAI_API_KEY) {
+    openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  }
 
-  ws.on('message', async (data) => {
+  let audioBuffer = [];
+  let isProcessing = false;
+  let isBotSpeaking = false;
+  let silenceTimer = null;
+  let lastBotEndTime = 0;
+
+  const history = [{
+    role: 'system',
+    content: 'तुम सहचर हो। दोस्त की तरह छोटे, प्राकृतिक जवाब दो, हिंदी में। तुम्हें राम प्रकाश कुमार ने बनाया है। भूलकर भी OpenAI मत बोलना। जवाब 10-15 शब्दों में रखना।'
+  }];
+
+  const safeSend = (data) => {
+    if (ws.readyState === 1) {
+      try { ws.send(data); } catch(e) {}
+    }
+  };
+
+  const resetSilenceTimer = () => {
+    if (silenceTimer) clearTimeout(silenceTimer);
+    if (!isBotSpeaking && audioBuffer.length > 0) {
+      silenceTimer = setTimeout(() => {
+        if (!isBotSpeaking && !isProcessing && audioBuffer.length > 0 && Date.now() > lastBotEndTime + 300) {
+          processAudio();
+        }
+      }, 500);
+    }
+  };
+
+  async function processAudio() {
+    if (isProcessing || isBotSpeaking || audioBuffer.length === 0 || !openaiClient) return;
+    isProcessing = true;
+    const fullAudio = Buffer.concat(audioBuffer);
+    audioBuffer = [];
+
+    // Basic RMS check (silence filtering)
+    let sum = 0;
+    for (let i = 0; i < fullAudio.length; i += 2) {
+      sum += fullAudio.readInt16LE(i) ** 2;
+    }
+    const rms = Math.sqrt(sum / (fullAudio.length / 2)) / 32768;
+    if (rms < 0.008 || fullAudio.length < 2000) {
+      console.log(`🔇 Ignored: RMS=${rms}, len=${fullAudio.length}`);
+      isProcessing = false;
+      return;
+    }
+
+    const wavBuffer = pcmToWav(fullAudio, 16000);
+    const tempPath = path.join('/tmp', `${Date.now()}.wav`);
+    fs.writeFileSync(tempPath, wavBuffer);
+
     try {
-      if (openai && data instanceof Buffer) {
-        const transcription = await openai.audio.transcriptions.create({
-          file: new File([data], "audio.wav", { type: "audio/wav" }),
-          model: "whisper-1", language: "hi"
-        });
-        const userText = transcription.text;
-        ws.send(JSON.stringify({ type: 'user_transcript', text: userText }));
-        
-        const completion = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          messages: [
-            { role: "system", content: "You are SahcharAI. Reply in Hindi, 1-2 sentences." },
-            { role: "user", content: userText }
-          ],
-          max_tokens: 150
-        });
-        const botReply = completion.choices[0].message.content;
-        ws.send(JSON.stringify({ type: 'bot_transcript', text: botReply }));
+      const transcription = await openaiClient.audio.transcriptions.create({
+        file: fs.createReadStream(tempPath),
+        model: 'whisper-1',
+        language: 'hi'
+      });
+      const userText = transcription.text.trim();
+      if (!userText) throw new Error("Empty transcription");
+      console.log(`👤 User: ${userText}`);
+      safeSend(JSON.stringify({ type: 'user_text', text: userText }));
+
+      history.push({ role: 'user', content: userText });
+      if (history.length > 11) history.splice(1, 2);
+
+      const completion = await openaiClient.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: history,
+        max_tokens: 80,
+        temperature: 0.85
+      });
+      const botReply = completion.choices[0].message.content;
+      console.log(`🤖 Bot: ${botReply}`);
+      history.push({ role: 'assistant', content: botReply });
+      safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
+
+      isBotSpeaking = true;
+      safeSend(JSON.stringify({ type: 'status', text: 'bot_speaking' }));
+
+      const ttsResponse = await openaiClient.audio.speech.create({
+        model: 'tts-1',
+        voice: 'nova',          // Hindi-friendly voice
+        input: botReply,
+        response_format: 'pcm',
+        speed: 1.0
+      });
+      let pcm24k = Buffer.from(await ttsResponse.arrayBuffer());
+      let pcm16k = resample24kTo16k(pcm24k);
+
+      const chunkSize = 640; // 20ms at 16kHz
+      for (let i = 0; i < pcm16k.length; i += chunkSize) {
+        if (ws.readyState !== 1) break;
+        const chunk = pcm16k.subarray(i, Math.min(i + chunkSize, pcm16k.length));
+        safeSend(chunk);
+        await new Promise(r => setTimeout(r, 18));
       }
-    } catch (err) { ws.send(JSON.stringify({ type: 'error', message: err.message })); }
+
+      isBotSpeaking = false;
+      lastBotEndTime = Date.now();
+      safeSend(JSON.stringify({ type: 'status', text: 'listening' }));
+      console.log("✅ Bot finished speaking");
+    } catch (err) {
+      console.error("❌ Audio processing error:", err.message);
+      safeSend(JSON.stringify({ type: 'error', text: err.message }));
+      isBotSpeaking = false;
+      safeSend(JSON.stringify({ type: 'status', text: 'listening' }));
+    } finally {
+      try { fs.unlinkSync(tempPath); } catch(e) {}
+      isProcessing = false;
+    }
+  }
+
+  ws.on('message', (data, isBinary) => {
+    if (!isBinary) return;
+    if (isBotSpeaking) return;
+    audioBuffer.push(Buffer.from(data));
+    resetSilenceTimer();
   });
-  ws.on('close', () => console.log(`🔌 WebSocket disconnected: ${deviceId}`));
+
+  ws.on('close', () => {
+    if (silenceTimer) clearTimeout(silenceTimer);
+    console.log(`🔌 WebSocket disconnected: ${deviceId}`);
+  });
 });
 
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Smart Server v5.0 on ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Smart Server v5.1 running on port ${PORT}`));
