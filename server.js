@@ -11,7 +11,7 @@ import axios from 'axios';
 import OpenAI from 'openai';
 import { WebSocketServer } from 'ws';
 import http from 'http';
-import translate from '@vitalets/google-translate-api';   // npm install @vitalets/google-translate-api
+import translate from '@vitalets/google-translate-api';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -141,9 +141,9 @@ async function smartChat(messages, preferredProvider, fallbackProviders) {
 }
 
 // ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v5.1 - Fixed Image & Audio ✅"));
+app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v6.0 - GPT-Image-1 + Audio ✅"));
 
-// ==================== CHAT ENDPOINTS (unchanged but improved) ====================
+// ==================== CHAT ENDPOINTS ====================
 app.post("/chat", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
@@ -262,7 +262,7 @@ app.post("/chat-nvidia", async (req, res) => {
   res.json({ reply: fallbackReply, provider: "static" });
 });
 
-// ==================== FIXED: IMAGE GENERATION (Hindi prompt → English) ====================
+// ==================== IMAGE GENERATION (using GPT-Image-1) ====================
 async function translateToEnglish(text) {
   try {
     const res = await translate(text, { to: 'en' });
@@ -291,40 +291,42 @@ app.post("/api/image/generate", async (req, res) => {
 
   const openaiKey = process.env.OPENAI_API_KEY;
   const replicateToken = process.env.REPLICATE_API_KEY || process.env.REPLICATE_API_KEY_ZEROSCOPE;
-  const encodedEn = encodeURIComponent(englishPrompt);
-  const timestamp = Date.now();
 
-  // PRIORITY 1: OpenAI DALL-E 2 (more compatible)
+  // PRIORITY 1: OpenAI GPT-Image-1 (new model)
   if (openaiKey) {
     try {
-      console.log(`🎨 Trying OpenAI DALL-E 2...`);
+      console.log(`🎨 Trying OpenAI GPT-Image-1...`);
       const openai = new OpenAI({ apiKey: openaiKey });
       const response = await openai.images.generate({
-        model: "dall-e-2",
+        model: "gpt-image-1",      // ✅ New model name (replaces DALL-E)
         prompt: englishPrompt,
         n: 1,
-        size: "1024x1024"
+        size: "1024x1024",
+        quality: "standard"        // or "high" for better quality
       });
       if (response.data && response.data[0] && response.data[0].url) {
-        console.log(`✅ Image by DALL-E 2`);
-        return res.json({ imageUrl: response.data[0].url, provider: "dall-e-2" });
+        console.log(`✅ Image by GPT-Image-1`);
+        return res.json({ imageUrl: response.data[0].url, provider: "gpt-image-1" });
+      } else {
+        throw new Error("No image URL returned");
       }
     } catch (e) {
-      console.log(`⚠️ DALL-E 2 failed: ${e.message}`);
+      console.log(`⚠️ GPT-Image-1 failed: ${e.message}`);
+      // Optionally try a fallback model (if available)
       try {
         const openai = new OpenAI({ apiKey: openaiKey });
         const response = await openai.images.generate({
-          model: "dall-e-3",
+          model: "dall-e-3",        // Legacy fallback
           prompt: englishPrompt,
           n: 1,
           size: "1024x1024",
           quality: "standard"
         });
         if (response.data && response.data[0] && response.data[0].url) {
-          console.log(`✅ Image by DALL-E 3`);
+          console.log(`✅ Image by DALL-E 3 (fallback)`);
           return res.json({ imageUrl: response.data[0].url, provider: "dall-e-3" });
         }
-      } catch (e2) { console.log(`⚠️ DALL-E 3 failed: ${e2.message}`); }
+      } catch (e2) { console.log(`⚠️ DALL-E 3 fallback also failed: ${e2.message}`); }
     }
   }
 
@@ -363,12 +365,13 @@ app.post("/api/image/generate", async (req, res) => {
     } catch (e) { console.log(`⚠️ Replicate failed: ${e.message}`); }
   }
 
-  // PRIORITY 3: Pollinations (with English prompt)
+  // PRIORITY 3: Pollinations (English prompt)
   console.log(`🎨 Using Pollinations.ai with English prompt...`);
-  const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodedEn}?width=1024&height=1024&seed=${timestamp}&model=flux&nologo=true`;
+  const encodedEn = encodeURIComponent(englishPrompt);
+  const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodedEn}?width=1024&height=1024&seed=${Date.now()}&model=flux&nologo=true`;
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
     const checkRes = await fetch(pollinationsUrl, { method: 'HEAD', signal: controller.signal });
     clearTimeout(timeoutId);
     if (checkRes.ok) {
@@ -377,12 +380,12 @@ app.post("/api/image/generate", async (req, res) => {
     }
   } catch (e) { console.log(`⚠️ Pollinations failed: ${e.message}`); }
 
-  // FALLBACK: placeholder
-  const placeholderUrl = `https://placehold.co/1024x1024/4CAF50/white?text=${encodedEn.substring(0, 30)}`;
-  res.json({ imageUrl: placeholderUrl, provider: "placeholder", note: "Image generation temporarily unavailable" });
+  // FALLBACK: error message (no placeholder)
+  console.error(`❌ All image providers failed for: ${englishPrompt}`);
+  res.status(503).json({ error: "इमेज जनरेशन अभी संभव नहीं है। कृपया बाद में प्रयास करें। 🙏" });
 });
 
-// ==================== IMAGE ANALYZE (unchanged) ====================
+// ==================== IMAGE ANALYZE ====================
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "कोई इमेज नहीं" });
   const { message } = req.body;
@@ -411,7 +414,7 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   }
 });
 
-// ==================== FIXED: VIDEO GENERATION (correct Replicate model) ====================
+// ==================== VIDEO GENERATION ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt } = req.body;
   console.log(`🎬 Video Request: ${prompt?.substring(0,50)}...`);
@@ -422,9 +425,7 @@ app.post("/api/video/generate", async (req, res) => {
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
 
   const replicateToken = process.env.REPLICATE_API_KEY || process.env.REPLICATE_API_KEY_ZEROSCOPE;
-  const openaiKey = process.env.OPENAI_API_KEY;
 
-  // PRIORITY 1: Replicate ZeroScope (working model)
   if (replicateToken) {
     try {
       console.log(`🎬 Trying Replicate ZeroScope V2...`);
@@ -432,7 +433,7 @@ app.post("/api/video/generate", async (req, res) => {
         method: "POST",
         headers: { "Authorization": `Token ${replicateToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({
-          version: "f66b331a0cc10ea6179942ae66b538cdc34ff43b5a4e700dddffdb7f1a46cf6a", // ZeroScope XL official
+          version: "f66b331a0cc10ea6179942ae66b538cdc34ff43b5a4e700dddffdb7f1a46cf6a",
           input: { prompt: cleanPrompt, width: 1024, height: 576, num_frames: 24, fps: 8 }
         })
       });
@@ -459,21 +460,7 @@ app.post("/api/video/generate", async (req, res) => {
     } catch (e) { console.log(`⚠️ Replicate video failed: ${e.message}`); }
   }
 
-  // PRIORITY 2: Pollinations image (static fallback)
-  try {
-    const englishPrompt = cleanPrompt; // or translate
-    const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(englishPrompt)}?width=1024&height=576&model=flux&nologo=true&seed=${Date.now()}`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const checkRes = await fetch(pollinationsUrl, { method: 'HEAD', signal: controller.signal });
-    clearTimeout(timeoutId);
-    if (checkRes.ok) {
-      console.log(`✅ Returning generated image as video preview`);
-      return res.json({ videoUrl: pollinationsUrl, provider: "pollinations-image", status: "image_preview" });
-    }
-  } catch (e) {}
-
-  // PRIORITY 3: Demo video
+  // Fallback: demo video
   console.log(`🎬 Using demo video fallback...`);
   res.json({
     videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
@@ -483,7 +470,7 @@ app.post("/api/video/generate", async (req, res) => {
   });
 });
 
-// ==================== FIXED: WEBSOCKET LIVE AUDIO (WITH TTS PCM) ====================
+// ==================== WEBSOCKET LIVE AUDIO (WITH TTS PCM) ====================
 function pcmToWav(pcm, rate = 16000) {
   const header = Buffer.alloc(44);
   header.write('RIFF', 0);
@@ -503,7 +490,6 @@ function pcmToWav(pcm, rate = 16000) {
 }
 
 function resample24kTo16k(pcm24k) {
-  // ratio 24/16 = 3/2 → take 2 out of every 3 samples
   const targetLen = Math.floor(pcm24k.length * 2 / 3);
   const out = Buffer.alloc(targetLen);
   for (let i = 0; i < targetLen / 2; i++) {
@@ -559,7 +545,6 @@ wss.on('connection', (ws, req) => {
     const fullAudio = Buffer.concat(audioBuffer);
     audioBuffer = [];
 
-    // Basic RMS check (silence filtering)
     let sum = 0;
     for (let i = 0; i < fullAudio.length; i += 2) {
       sum += fullAudio.readInt16LE(i) ** 2;
@@ -605,7 +590,7 @@ wss.on('connection', (ws, req) => {
 
       const ttsResponse = await openaiClient.audio.speech.create({
         model: 'tts-1',
-        voice: 'nova',          // Hindi-friendly voice
+        voice: 'nova',
         input: botReply,
         response_format: 'pcm',
         speed: 1.0
@@ -613,7 +598,7 @@ wss.on('connection', (ws, req) => {
       let pcm24k = Buffer.from(await ttsResponse.arrayBuffer());
       let pcm16k = resample24kTo16k(pcm24k);
 
-      const chunkSize = 640; // 20ms at 16kHz
+      const chunkSize = 640;
       for (let i = 0; i < pcm16k.length; i += chunkSize) {
         if (ws.readyState !== 1) break;
         const chunk = pcm16k.subarray(i, Math.min(i + chunkSize, pcm16k.length));
@@ -651,4 +636,4 @@ wss.on('connection', (ws, req) => {
 
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Smart Server v5.1 running on port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Smart Server v6.0 running on port ${PORT}`));
