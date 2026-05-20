@@ -262,75 +262,64 @@ app.post("/chat-nvidia", async (req, res) => {
   res.json({ reply: fallbackReply, provider: "static" });
 });
 
-// ==================== IMAGE GENERATION (using GPT-Image-1) ====================
+// ==================== TRANSLATION FUNCTION (Free Google Translate API) ====================
 async function translateToEnglish(text) {
   try {
-    const res = await translate(text, { to: 'en' });
-    return res.text;
+    // Google Translate unofficial API (no key required)
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=hi&tl=en&dt=t&q=${encodeURIComponent(text)}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    if (data && data[0] && data[0][0] && data[0][0][0]) {
+      return data[0][0][0];
+    }
+    throw new Error("No translation");
   } catch (e) {
     console.log("Translation failed, using original prompt");
     return text;
   }
 }
 
+// ==================== IMAGE GENERATION (fixed GPT-Image-1) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
   console.log(`🎨 Image Request: ${prompt}`);
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
 
+  // Clean prompt – remove Hindi verbs like "तस्वीर बना"
   let cleanPrompt = prompt.replace(/^(तस्वीर|इमेज|फोटो|Image|img)\s+(बना|जनरेट करो|दिखाओ|बनाओ)\s*/gi, '');
   cleanPrompt = cleanPrompt.trim();
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
 
-  // Translate to English for better API understanding
-  let englishPrompt = cleanPrompt;
-  try {
-    englishPrompt = await translateToEnglish(cleanPrompt);
-    console.log(`Translated prompt: "${englishPrompt}"`);
-  } catch(e) { console.log("Translation error, using original"); }
+  // Translate to English
+  let englishPrompt = await translateToEnglish(cleanPrompt);
+  console.log(`Translated prompt: "${englishPrompt}"`);
 
   const openaiKey = process.env.OPENAI_API_KEY;
   const replicateToken = process.env.REPLICATE_API_KEY || process.env.REPLICATE_API_KEY_ZEROSCOPE;
 
-  // PRIORITY 1: OpenAI GPT-Image-1 (new model)
+  // PRIORITY 1: OpenAI GPT-Image-1 (correct quality value)
   if (openaiKey) {
     try {
       console.log(`🎨 Trying OpenAI GPT-Image-1...`);
       const openai = new OpenAI({ apiKey: openaiKey });
       const response = await openai.images.generate({
-        model: "gpt-image-1",      // ✅ New model name (replaces DALL-E)
+        model: "gpt-image-1",
         prompt: englishPrompt,
         n: 1,
         size: "1024x1024",
-        quality: "standard"        // or "high" for better quality
+        quality: "auto"        // ✅ Fixed: 'auto' instead of 'standard'
       });
       if (response.data && response.data[0] && response.data[0].url) {
         console.log(`✅ Image by GPT-Image-1`);
         return res.json({ imageUrl: response.data[0].url, provider: "gpt-image-1" });
-      } else {
-        throw new Error("No image URL returned");
       }
     } catch (e) {
       console.log(`⚠️ GPT-Image-1 failed: ${e.message}`);
-      // Optionally try a fallback model (if available)
-      try {
-        const openai = new OpenAI({ apiKey: openaiKey });
-        const response = await openai.images.generate({
-          model: "dall-e-3",        // Legacy fallback
-          prompt: englishPrompt,
-          n: 1,
-          size: "1024x1024",
-          quality: "standard"
-        });
-        if (response.data && response.data[0] && response.data[0].url) {
-          console.log(`✅ Image by DALL-E 3 (fallback)`);
-          return res.json({ imageUrl: response.data[0].url, provider: "dall-e-3" });
-        }
-      } catch (e2) { console.log(`⚠️ DALL-E 3 fallback also failed: ${e2.message}`); }
+      // Optionally try a fallback model (dall-e-3) – but may not exist
     }
   }
 
-  // PRIORITY 2: Replicate SDXL
+  // PRIORITY 2: Replicate SDXL (if token exists)
   if (replicateToken) {
     try {
       console.log(`🎨 Trying Replicate SDXL...`);
@@ -365,13 +354,13 @@ app.post("/api/image/generate", async (req, res) => {
     } catch (e) { console.log(`⚠️ Replicate failed: ${e.message}`); }
   }
 
-  // PRIORITY 3: Pollinations (English prompt)
-  console.log(`🎨 Using Pollinations.ai with English prompt...`);
+  // PRIORITY 3: Pollinations.ai (English prompt, longer timeout)
+  console.log(`🎨 Using Pollinations.ai...`);
   const encodedEn = encodeURIComponent(englishPrompt);
   const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodedEn}?width=1024&height=1024&seed=${Date.now()}&model=flux&nologo=true`;
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 sec timeout
     const checkRes = await fetch(pollinationsUrl, { method: 'HEAD', signal: controller.signal });
     clearTimeout(timeoutId);
     if (checkRes.ok) {
@@ -380,11 +369,10 @@ app.post("/api/image/generate", async (req, res) => {
     }
   } catch (e) { console.log(`⚠️ Pollinations failed: ${e.message}`); }
 
-  // FALLBACK: error message (no placeholder)
+  // All providers failed
   console.error(`❌ All image providers failed for: ${englishPrompt}`);
   res.status(503).json({ error: "इमेज जनरेशन अभी संभव नहीं है। कृपया बाद में प्रयास करें। 🙏" });
 });
-
 // ==================== IMAGE ANALYZE ====================
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "कोई इमेज नहीं" });
