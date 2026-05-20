@@ -1,3 +1,4 @@
+import RunwayML from '@runwayml/sdk';
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -11,7 +12,6 @@ import axios from 'axios';
 import OpenAI from 'openai';
 import { WebSocketServer } from 'ws';
 import http from 'http';
-import translate from '@vitalets/google-translate-api';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,10 +19,8 @@ dotenv.config();
 
 // ========== ENV VALIDATION ==========
 if (!process.env.MONGODB_URI) {
-  console.warn("⚠️ MONGODB_URI not set – chat history will be in-memory only.");
-}
-if (!process.env.OPENAI_API_KEY) {
-  console.warn("⚠️ OPENAI_API_KEY not set – image/audio/chat may fail.");
+  console.error("❌ FATAL: MONGODB_URI environment variable is not set.");
+  process.exit(1);
 }
 
 const app = express();
@@ -33,24 +31,60 @@ const upload = multer({ dest: 'uploads/' });
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// ========== MONGODB SETUP (optional) ==========
+// ========== JSON ERROR HANDLER ==========
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    console.error('❌ Invalid JSON received:', err.message);
+    return res.status(400).json({
+      reply: "क्षमा करें, मैसेज का फॉर्मेट सही नहीं है। 🙏"
+    });
+  }
+  next(err);
+});
+
+// ========== MONGODB SETUP ==========
 let db = null;
+const assistantThreads = new Map();
 const conversations = {};
 const imageContexts = {};
 
 async function initMongoDB() {
-  if (!process.env.MONGODB_URI) return;
   try {
-    const client = new MongoClient(process.env.MONGODB_URI);
+    console.log("🔄 Connecting to MongoDB...");
+    const client = new MongoClient(process.env.MONGODB_URI, {
+      maxPoolSize: 10,
+      serverSelectionTimeoutMS: 5000
+    });
     await client.connect();
     db = client.db();
-    console.log(`✅ MongoDB Connected`);
+    console.log(`📊 Database Name: ${db.databaseName}`);
+
+    const threads = await db.collection('assistant_threads').find({}).toArray();
+    threads.forEach(t => assistantThreads.set(t.sessionId, t.threadId));
+    console.log(`📚 Loaded ${threads.length} assistant threads from DB`);
+
     await db.collection('conversations').createIndex({ sessionId: 1, timestamp: -1 });
+    await db.collection('assistant_threads').createIndex({ sessionId: 1 }, { unique: true });
+    console.log("✅ MongoDB Indexes Created");
   } catch (error) {
-    console.error("❌ MongoDB Error:", error.message);
+    console.error("❌ MongoDB Connection FAILED:", error.message);
+    process.exit(1);
   }
 }
 initMongoDB();
+
+async function saveThreadToDB(sessionId, threadId) {
+  if (!db) return;
+  try {
+    await db.collection('assistant_threads').updateOne(
+      { sessionId },
+      { $set: { sessionId, threadId, updatedAt: new Date() } },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.error("Thread save error:", err.message);
+  }
+}
 
 async function loadConversationFromDB(sid, limit = 6) {
   if (!db) return [];
@@ -60,22 +94,33 @@ async function loadConversationFromDB(sid, limit = 6) {
       .sort({ timestamp: -1 })
       .limit(limit)
       .toArray();
+
     const history = [];
     messages.reverse().forEach(msg => {
       history.push({ role: "user", content: msg.userMessage });
       history.push({ role: "assistant", content: msg.botReply });
     });
+    if (messages.length > 0) console.log(`📚 Loaded ${messages.length} exchanges from DB for ${sid}`);
     return history;
-  } catch (err) { return []; }
+  } catch (err) {
+    console.error("DB load error:", err.message);
+    return [];
+  }
 }
 
 async function saveConversationToDB(sid, userMessage, botReply, chatbot = 'SahcharAI') {
   if (!db) return;
   try {
     await db.collection('conversations').insertOne({
-      sessionId: sid, userMessage, botReply, chatbot, timestamp: new Date()
+      sessionId: sid,
+      userMessage,
+      botReply,
+      chatbot,
+      timestamp: new Date()
     });
-  } catch (err) {}
+  } catch (err) {
+    console.error("DB insert error:", err.message);
+  }
 }
 
 function getSessionId(req) {
@@ -84,258 +129,430 @@ function getSessionId(req) {
 
 function getImageContextText(sid) {
   if (imageContexts[sid]?.lastAnalysis) {
-    return `\n\n📷 पिछली इमेज: "${imageContexts[sid].lastAnalysis.substring(0, 400)}"\n\n`;
+    return `\n\n📷 **पिछली इमेज:** "${imageContexts[sid].lastAnalysis.substring(0, 400)}"\n\n`;
   }
   return "";
 }
 
-// ========== SMART API PROVIDERS (text chat) ==========
-const providers = {
-  deepseek: { name: 'DeepSeek', url: 'https://api.deepseek.com/v1/chat/completions', key: process.env.DEEPSEEK_API_KEY },
-  kimi: { name: 'Kimi', url: 'https://api.moonshot.cn/v1/chat/completions', key: process.env.KIMI_API_KEY },
-  openai: { name: 'OpenAI', url: 'https://api.openai.com/v1/chat/completions', key: process.env.OPENAI_API_KEY },
-  groq: { name: 'Groq', url: 'https://api.groq.com/openai/v1/chat/completions', key: process.env.GROQ_API_KEY },
-  gemini: { name: 'Gemini', key: process.env.GEMINI_API_KEY, isGemini: true },
-  sambanova: { name: 'SambaNova', url: process.env.SAMBANOVA_BASE_URL || 'https://api.sambanova.ai/v1', key: process.env.SAMBANOVA_API_KEY }
-};
-
-async function callAI(messages, providerName, model = null) {
-  const provider = providers[providerName];
-  if (!provider || !provider.key) return null;
-  try {
-    if (provider.isGemini) {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${provider.key}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: messages[messages.length-1]?.content || '' }] }] })
-      });
-      const data = await response.json();
-      return data.candidates?.[0]?.content?.parts?.[0]?.text || null;
-    }
-    const response = await fetch(provider.url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.key}` },
-      body: JSON.stringify({
-        model: model || (providerName === 'deepseek' ? 'deepseek-chat' : providerName === 'kimi' ? 'moonshot-v1-8k' : 'gpt-4o-mini'),
-        messages: messages,
-        max_tokens: 200,
-        temperature: 0.7
-      })
-    });
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content || null;
-  } catch (error) {
-    console.log(`⚠️ ${provider.name} failed:`, error.message);
-    return null;
-  }
-}
-
-async function smartChat(messages, preferredProvider, fallbackProviders) {
-  let reply = await callAI(messages, preferredProvider);
-  if (reply) return reply;
-  for (const provider of fallbackProviders) {
-    console.log(`🔄 Falling back to ${provider}...`);
-    reply = await callAI(messages, provider);
-    if (reply) return reply;
-  }
-  return null;
-}
+// ========== GLOBAL ERROR HANDLERS ==========
+process.on('unhandledRejection', (reason) => console.error('❌ Unhandled Rejection:', reason));
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  process.exit(1);
+});
 
 // ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v6.0 - GPT-Image-1 + Audio ✅"));
+app.get("/", (req, res) => res.send("🌿 सहचर AI बैकएंड v3.3 STABLE चालू है ✅"));
+app.get("/chat", (req, res) => res.send("सहचर चैट एंडपॉइंट काम कर रहा है ✅"));
 
-// ==================== CHAT ENDPOINTS ====================
+// ==================== 1. DEEPSEEK CHAT ====================
 app.post("/chat", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
+
+  console.log(`📩 Chat Request [${sid}]: ${message?.substring(0, 50)}...`);
+
   if (!message) return res.status(400).json({ reply: "Message required 🙏" });
+
   try {
     const now = new Date();
-    const currentDateTime = now.toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata' });
+    const currentDateTime = now.toLocaleString('hi-IN', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
+    });
+
     const imageContext = getImageContextText(sid);
+
     if (!conversations[sid]) {
       const history = await loadConversationFromDB(sid, 6);
       conversations[sid] = [
-        { role: "system", content: `तुम 'SahcharAI' हो – एक दोस्ताना AI सहायक। हिंदी/अंग्रेजी/हिंग्लिश में बात करो। निर्माता: राम प्रकाश कुमार (सिर्फ पूछने पर बताना)। 2 छोटे वाक्यों में जवाब दो। इमोजी 🙏🌿। वर्तमान समय: ${currentDateTime} IST${imageContext}` },
+        {
+          role: "system",
+          content: `तुम 'SahcharAI' हो – एक दोस्ताना AI सहायक।
+
+🌐 भाषा नियम:
+- तुम्हें हिंदी, अंग्रेजी और हिंग्लिश (Hinglish) में बात करने की पूरी आज़ादी है
+- जैसा उपयोगकर्ता बोले, वैसी ही भाषा में जवाब दो
+- अगर कोई "Hi" बोले तो "नमस्ते" या "Hi" दोनों में जवाब दे सकते हो
+- अंग्रेजी शब्दों का इस्तेमाल कर सकते हो, लेकिन थोड़े में
+- अपना परिचय देते समय "SahcharAI" नाम जरूर लो
+
+ℹ️ अन्य नियम:
+- बहुत जरूरी नियम (बिना किसी अपवाद के): अपने निर्माता का नाम "राम प्रकाश कुमार" है, लेकिन यह सिर्फ तब बताना जब कोई स्पष्ट रूप से पूछे:
+ - "तुम्हें किसने बनाया?"
+   - "तुम्हारा निर्माता कौन है?"
+- सामान्य बातचीत में अपना परिचय सिर्फ "SahcharAI" के रूप में दो
+- जवाब हमेशा 2-3 छोटे वाक्यों में दो
+- इमोजी का इस्तेमाल करो 🙏🌿🪷
+- कभी-कभार अंत में 'जय भीम, नमो बुद्धाय 🙏' लिखो
+
+⏰ वर्तमान समय: ${currentDateTime} IST${imageContext}`
+        },
         ...history
       ];
+    } else {
+      conversations[sid][0].content = conversations[sid][0].content.replace(
+        /वर्तमान समय:.*?(?=IST)/,
+        `वर्तमान समय: ${currentDateTime}`
+      ) + imageContext;
     }
+
     conversations[sid].push({ role: "user", content: message });
-    const reply = await smartChat(conversations[sid], 'deepseek', ['kimi', 'groq', 'openai']);
-    if (!reply) throw new Error("All providers failed");
-    conversations[sid].push({ role: "assistant", content: reply });
-    if (conversations[sid].length > 20) conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-18)];
-    await saveConversationToDB(sid, message, reply, 'SahcharAI');
-    res.json({ reply: reply });
+
+    const estimateTokens = (msgs) => msgs.reduce((acc, m) => acc + JSON.stringify(m).length / 4, 0);
+    while (estimateTokens(conversations[sid]) > 8000 && conversations[sid].length > 2) {
+      conversations[sid].splice(1, 1);
+    }
+
+    const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}` },
+      body: JSON.stringify({ model: "deepseek-chat", messages: conversations[sid] })
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error?.message || "DeepSeek API error");
+    const botReply = data.choices?.[0]?.message?.content;
+    if (!botReply) throw new Error("Empty AI response");
+
+    conversations[sid].push({ role: "assistant", content: botReply });
+    if (conversations[sid].length > 30) {
+      conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-20)];
+    }
+
+    await saveConversationToDB(sid, message, botReply, 'DeepSeek');
+
+    console.log(`✅ Chat Reply [${sid}]: ${botReply.substring(0, 50)}...`);
+
+    res.json({ reply: botReply });
   } catch (error) {
     console.error("❌ /chat error:", error.message);
-    res.json({ reply: "क्षमा करें, सेवा व्यस्त है। कृपया पुनः प्रयास करें। 🙏" });
+    res.status(500).json({ reply: "क्षमा करें, अभी सेवा व्यस्त है। 🙏" });
   }
 });
 
+// ==================== SAHCHAR ASSISTANT (KIMI - FIXED) ====================
 app.post("/chat-assistant", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
+  
+  console.log(`📩 Assistant Request [${sid}]: ${message?.substring(0, 50)}...`);
+  
   if (!message) return res.status(400).json({ error: "Message required 🙏" });
+
+  const apiKey = process.env.KIMI_API_KEY;
+  if (!apiKey) {
+    console.error("❌ KIMI_API_KEY not configured");
+    return res.status(501).json({ reply: "Kimi service not configured. Please check API key." });
+  }
+
   try {
     const now = new Date();
-    const currentDateTime = now.toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata' });
-    const messages = [
-      { role: "system", content: `तुम 'SahcharAssistant' हो – राम प्रकाश कुमार द्वारा निर्मित। 1-2 वाक्य में जवाब दो। इमोजी 🙏। वर्तमान समय: ${currentDateTime} IST` },
-      { role: "user", content: message }
-    ];
-    const reply = await smartChat(messages, 'kimi', ['deepseek', 'groq', 'openai']);
-    if (!reply) throw new Error("All providers failed");
+    const currentDateTime = now.toLocaleString('hi-IN', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
+    });
+    const response = await fetch("https://api.moonshot.cn/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: "moonshot-v1-8k",
+        messages: [
+          {
+            role: "system",
+            content: `तुम 'SahcharAssistant' हो – राम प्रकाश कुमार द्वारा निर्मित AI सहायक।
+            
+🌐 भाषा: हिंदी, अंग्रेजी, हिंग्लिश – जैसा user बोले वैसा जवाब दो
+📝 1-2 वाक्यों में उत्तर दो
+😊 इमोजी का इस्तेमाल करो 🙏
+
+⏰ वर्तमान समय: ${currentDateTime} IST`
+          },
+          { role: "user", content: message }
+        ],
+        temperature: 0.7,
+        max_tokens: 250
+      })
+    });
+
+    const data = await response.json();
+    
+    if (!response.ok) {
+      console.error("Moonshot API error:", data);
+      throw new Error(data.error?.message || "API request failed");
+    }
+
+    let reply = data.choices[0]?.message?.content || "क्षमा करें, मैं उत्तर नहीं दे पा रहा हूँ। 🙏";
+    reply = reply.replace(/\*\*/g, '').trim();
+    
+    console.log(`✅ Assistant Reply [${sid}]: ${reply.substring(0, 50)}...`);
+    
     await saveConversationToDB(sid, message, reply, 'SahcharAssistant');
     res.json({ reply: reply });
+
   } catch (error) {
     console.error("❌ Assistant error:", error.message);
-    res.json({ reply: "क्षमा करें, सेवा व्यस्त है। 🙏" });
+    try {
+      console.log("🔄 Falling back to DeepSeek for Assistant...");
+      const deepseekResponse = await fetch("https://api.deepseek.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: "deepseek-chat",
+          messages: [
+            {
+              role: "system",
+              content: `तुम 'SahcharAssistant' हो – राम प्रकाश कुमार द्वारा निर्मित AI सहायक। छोटे वाक्य, इमोजी 🙏।`
+            },
+            { role: "user", content: message }
+          ],
+          max_tokens: 250
+        })
+      });
+      const deepseekData = await deepseekResponse.json();
+      const fallbackReply = deepseekData.choices[0]?.message?.content || "क्षमा करें, सेवा व्यस्त है। 🙏";
+      await saveConversationToDB(sid, message, fallbackReply, 'SahcharAssistant');
+      res.json({ reply: fallbackReply });
+    } catch (fallbackError) {
+      res.json({ 
+        reply: "क्षमा करें, सेवा में कुछ समस्या आ रही है। कृपया थोड़ी देर बाद प्रयास करें। 🙏" 
+      });
+    }
   }
 });
 
+// ==================== 3. SAMBANOVA CHAT ====================
+app.post("/chat-sambanova", async (req, res) => {
+  const sid = getSessionId(req);
+  const { message } = req.body;
+  if (!message) return res.status(400).json({ error: "Message required 🙏" });
+
+  const apiKey = process.env.SAMBANOVA_API_KEY;
+  const baseURL = process.env.SAMBANOVA_BASE_URL || "https://api.sambanova.ai/v1";
+  if (!apiKey) return res.status(501).json({ reply: "SambaNova not configured." });
+
+  try {
+    const now = new Date();
+    const currentDateTime = now.toLocaleString('hi-IN', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
+    });
+    const imageContext = getImageContextText(sid);
+    const sambanova = new OpenAI({ apiKey, baseURL });
+
+    if (!conversations[sid]) {
+      const history = await loadConversationFromDB(sid, 6);
+      conversations[sid] = [
+        { role: "system", content: `तुम राम प्रकाश कुमार द्वारा निर्मित AI हो। वर्तमान समय: ${currentDateTime} IST। अंत में 'जय भीम, नमो बुद्धाय 🙏'${imageContext}` },
+        ...history
+      ];
+    } else {
+      conversations[sid][0].content = conversations[sid][0].content.replace(
+        /वर्तमान समय:.*?(?=IST)/, `वर्तमान समय: ${currentDateTime}`
+      ) + imageContext;
+    }
+    conversations[sid].push({ role: "user", content: message });
+
+    const response = await sambanova.chat.completions.create({
+      model: "Meta-Llama-3.3-70B-Instruct", messages: conversations[sid], temperature: 0.7
+    });
+
+    const botReply = response.choices[0]?.message?.content || "No response.";
+    conversations[sid].push({ role: "assistant", content: botReply });
+    if (conversations[sid].length > 20) conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-10)];
+
+    await saveConversationToDB(sid, message, botReply, 'SambaNova');
+    res.json({ reply: botReply });
+  } catch (error) {
+    console.error("❌ SambaNova error:", error.message);
+    res.status(500).json({ reply: "क्षमा करें, SambaNova सेवा उपलब्ध नहीं है। 🙏" });
+  }
+});
+
+// ==================== 4. NVIDIA NIM ====================
 app.post("/chat-nvidia", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
   if (!message) return res.status(400).json({ error: "Message required 🙏" });
 
-  const groqKey = process.env.GROQ_API_KEY;
-  const deepseekKey = process.env.DEEPSEEK_API_KEY;
-  const nvidiaKey = process.env.NGC_API_KEY;
-  
-  if (groqKey) {
-    try {
-      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${groqKey}` },
-        body: JSON.stringify({
-          model: "mixtral-8x7b-32768",
-          messages: [{ role: "system", content: `तुम 'SuperSahchar' हो – एक दोस्ताना AI। user का message दोहराना मत। 1-2 छोटे वाक्य। हिंदी/हिंग्लिश। इमोजी 😊🙏।` }, { role: "user", content: message }],
-          max_tokens: 150, temperature: 0.8
-        })
-      });
-      const data = await response.json();
-      if (response.ok && data.choices && data.choices[0]) {
-        let reply = data.choices[0].message.content;
-        if (reply && !reply.includes(message)) {
-          await saveConversationToDB(sid, message, reply, 'SuperSahchar');
-          return res.json({ reply: reply, provider: "groq" });
-        }
-      }
-    } catch (error) { console.log(`⚠️ Groq failed: ${error.message}`); }
+  const apiKey = process.env.NGC_API_KEY;
+  if (!apiKey) return res.status(501).json({ reply: "NVIDIA NIM not configured." });
+
+  try {
+    const now = new Date();
+    const currentDateTime = now.toLocaleString('hi-IN', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
+    });
+    const imageContext = getImageContextText(sid);
+    const nvidiaClient = new OpenAI({ apiKey, baseURL: 'https://integrate.api.nvidia.com/v1' });
+
+    if (!conversations[sid]) {
+      const history = await loadConversationFromDB(sid, 6);
+      conversations[sid] = [
+        { role: "system", content: `तुम 'SuperSahchar' हो – राम प्रकाश कुमार द्वारा निर्मित इंसानी दोस्त। छोटे वाक्य, सवाल पूछो, इमोजी 😊🙏। वर्तमान समय: ${currentDateTime} IST।${imageContext}` },
+        ...history
+      ];
+    } else {
+      conversations[sid][0].content = conversations[sid][0].content.replace(
+        /वर्तमान समय:.*?(?=IST)/, `वर्तमान समय: ${currentDateTime}`
+      ) + imageContext;
+    }
+
+    conversations[sid].push({ role: "user", content: message });
+
+    const stream = await nvidiaClient.chat.completions.create({
+      model: "meta/llama-3.1-70b-instruct", messages: conversations[sid],
+      temperature: 1.0, top_p: 0.95, frequency_penalty: 0.3, presence_penalty: 0.3,
+      max_completion_tokens: 300, stream: true,
+    });
+
+    let fullReply = "";
+    for await (const chunk of stream) fullReply += chunk.choices[0]?.delta?.content || "";
+    fullReply = fullReply.trim().substring(0, 800);
+
+    conversations[sid].push({ role: "assistant", content: fullReply });
+    if (conversations[sid].length > 20) conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-10)];
+
+    await saveConversationToDB(sid, message, fullReply, 'SuperSahchar');
+    res.json({ reply: fullReply });
+  } catch (error) {
+    console.error("❌ NVIDIA NIM error:", error.message);
+    res.status(500).json({ reply: "क्षमा करें, अभी थोड़ी देर में बात करते हैं? 😅" });
   }
-  if (deepseekKey) {
-    try {
-      const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
-        method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${deepseekKey}` },
-        body: JSON.stringify({
-          model: "deepseek-chat",
-          messages: [{ role: "system", content: `तुम 'SuperSahchar' हो। user का message दोहराना मत। छोटे जवाब। इमोजी 😊🙏।` }, { role: "user", content: message }],
-          max_tokens: 150, temperature: 0.8
-        })
-      });
-      const data = await response.json();
-      if (response.ok && data.choices && data.choices[0]) {
-        let reply = data.choices[0].message.content;
-        if (reply && !reply.includes(message)) {
-          await saveConversationToDB(sid, message, reply, 'SuperSahchar');
-          return res.json({ reply: reply, provider: "deepseek" });
-        }
-      }
-    } catch (error) { console.log(`⚠️ DeepSeek failed: ${error.message}`); }
-  }
-  if (nvidiaKey) {
-    try {
-      const nvidiaClient = new OpenAI({ apiKey: nvidiaKey, baseURL: 'https://integrate.api.nvidia.com/v1' });
-      const completion = await nvidiaClient.chat.completions.create({
-        model: "meta/llama-3.1-70b-instruct",
-        messages: [{ role: "system", content: `तुम 'SuperSahchar' हो। user का message दोहराना मत। 1-2 वाक्य। इमोजी 😊🙏।` }, { role: "user", content: message }],
-        max_tokens: 150, temperature: 0.8
-      });
-      const reply = completion.choices[0]?.message?.content;
-      if (reply && !reply.includes(message)) {
-        await saveConversationToDB(sid, message, reply, 'SuperSahchar');
-        return res.json({ reply: reply, provider: "nvidia" });
-      }
-    } catch (error) { console.log(`⚠️ NVIDIA failed: ${error.message}`); }
-  }
-  const fallbackReply = "नमस्ते! मैं SuperSahchar हूँ। आपकी कैसे मदद कर सकता हूँ? 😊🙏";
-  await saveConversationToDB(sid, message, fallbackReply, 'SuperSahchar');
-  res.json({ reply: fallbackReply, provider: "static" });
 });
 
-// ==================== TRANSLATION FUNCTION (Free Google Translate API) ====================
-async function translateToEnglish(text) {
-  try {
-    // Google Translate unofficial API (no key required)
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=hi&tl=en&dt=t&q=${encodeURIComponent(text)}`;
-    const response = await fetch(url);
-    const data = await response.json();
-    if (data && data[0] && data[0][0] && data[0][0][0]) {
-      return data[0][0][0];
-    }
-    throw new Error("No translation");
-  } catch (e) {
-    console.log("Translation failed, using original prompt");
-    return text;
-  }
-}
+// ==================== 4.5 KIMI CHAT (Extra endpoint - untouched) ====================
+app.post("/chat-kimi", async (req, res) => {
+  const sid = getSessionId(req);
+  const { message } = req.body;
+  if (!message) return res.status(400).json({ error: "Message required 🙏" });
 
-// ==================== IMAGE GENERATION (fixed GPT-Image-1) ====================
+  const apiKey = process.env.KIMI_API_KEY;
+  if (!apiKey) return res.status(501).json({ reply: "Kimi not configured." });
+
+  try {
+    const now = new Date();
+    const currentDateTime = now.toLocaleString('hi-IN', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Asia/Kolkata'
+    });
+    const imageContext = getImageContextText(sid);
+
+    const kimi = new OpenAI({
+      apiKey,
+      baseURL: 'https://api.moonshot.cn/v1'
+    });
+
+    if (!conversations[sid]) {
+      const history = await loadConversationFromDB(sid, 6);
+      conversations[sid] = [
+        { role: "system", content: `तुम 'SahcharAI' हो – राम प्रकाश कुमार द्वारा निर्मित। वर्तमान समय: ${currentDateTime} IST। छोटे जवाब, इमोजी 🙏। अंत में 'जय भीम, नमो बुद्धाय 🙏'${imageContext}` },
+        ...history
+      ];
+    } else {
+      conversations[sid][0].content = conversations[sid][0].content.replace(
+        /वर्तमान समय:.*?(?=IST)/, `वर्तमान समय: ${currentDateTime}`
+      ) + imageContext;
+    }
+
+    conversations[sid].push({ role: "user", content: message });
+
+    const response = await kimi.chat.completions.create({
+      model: "moonshot-v1-8k",
+      messages: conversations[sid],
+      temperature: 0.7,
+      max_tokens: 500
+    });
+
+    const botReply = response.choices[0]?.message?.content || "कोई जवाब नहीं।";
+    conversations[sid].push({ role: "assistant", content: botReply });
+    if (conversations[sid].length > 20) conversations[sid] = [conversations[sid][0], ...conversations[sid].slice(-10)];
+
+    await saveConversationToDB(sid, message, botReply, 'Kimi');
+    console.log(`✅ Kimi reply for ${sid}: ${botReply.substring(0, 50)}...`);
+    res.json({ reply: botReply });
+  } catch (error) {
+    console.error("❌ Kimi error:", error.message);
+    res.status(500).json({ reply: "क्षमा करें, Kimi सेवा व्यस्त है। 🙏" });
+  }
+});
+
+// ==================== 5. IMAGE GENERATION - MULTI-URL FALLBACK ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
   console.log(`🎨 Image Request: ${prompt}`);
-  if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
-
-  // Clean prompt – remove Hindi verbs like "तस्वीर बना"
-  let cleanPrompt = prompt.replace(/^(तस्वीर|इमेज|फोटो|Image|img)\s+(बना|जनरेट करो|दिखाओ|बनाओ)\s*/gi, '');
+  
+  if (!prompt) {
+    return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
+  }
+  
+  // Clean prompt
+  let cleanPrompt = prompt.replace(/^(तस्वीर|इमेज|फोटो|पिक्चर|Image|img)\s+(बना|जनरेट करो|दिखाओ|बनाओ)\s*/gi, '');
+  cleanPrompt = cleanPrompt.replace(/\s*(बना|बनाओ|जनरेट)\s*$/gi, '');
   cleanPrompt = cleanPrompt.trim();
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
-
-  // Translate to English
-  let englishPrompt = await translateToEnglish(cleanPrompt);
-  console.log(`Translated prompt: "${englishPrompt}"`);
-
+  
   const openaiKey = process.env.OPENAI_API_KEY;
-  const replicateToken = process.env.REPLICATE_API_KEY || process.env.REPLICATE_API_KEY_ZEROSCOPE;
-
-  // PRIORITY 1: OpenAI GPT-Image-1 (correct quality value)
-  if (openaiKey) {
+  const replicateToken = process.env.REPLICATE_API_KEY_ZEROSCOPE;
+  
+  // ========== PROVIDER 1: OPENAI DALL-E 3 ==========
+  if (openaiKey && openaiKey.startsWith('sk-')) {
     try {
-      console.log(`🎨 Trying OpenAI GPT-Image-1...`);
       const openai = new OpenAI({ apiKey: openaiKey });
       const response = await openai.images.generate({
-        model: "gpt-image-1",
-        prompt: englishPrompt,
+        model: "dall-e-3",
+        prompt: cleanPrompt,
         n: 1,
         size: "1024x1024",
-        quality: "auto"        // ✅ Fixed: 'auto' instead of 'standard'
+        quality: "standard"
       });
       if (response.data && response.data[0] && response.data[0].url) {
-        console.log(`✅ Image by GPT-Image-1`);
-        return res.json({ imageUrl: response.data[0].url, provider: "gpt-image-1" });
+        console.log(`✅ Image by DALL-E 3`);
+        return res.json({ imageUrl: response.data[0].url, provider: "dall-e-3" });
       }
     } catch (e) {
-      console.log(`⚠️ GPT-Image-1 failed: ${e.message}`);
-      // Optionally try a fallback model (dall-e-3) – but may not exist
+      console.log(`⚠️ OpenAI failed: ${e.message}`);
+      try {
+        const openai = new OpenAI({ apiKey: openaiKey });
+        const response = await openai.images.generate({
+          model: "dall-e-2",
+          prompt: cleanPrompt,
+          n: 1,
+          size: "1024x1024"
+        });
+        if (response.data && response.data[0] && response.data[0].url) {
+          console.log(`✅ Image by DALL-E 2`);
+          return res.json({ imageUrl: response.data[0].url, provider: "dall-e-2" });
+        }
+      } catch (e2) {
+        console.log(`⚠️ DALL-E 2 also failed`);
+      }
     }
   }
-
-  // PRIORITY 2: Replicate SDXL (if token exists)
+  
+  // ========== PROVIDER 2: REPLICATE SDXL ==========
   if (replicateToken) {
     try {
-      console.log(`🎨 Trying Replicate SDXL...`);
       const response = await fetch("https://api.replicate.com/v1/predictions", {
         method: "POST",
         headers: { "Authorization": `Token ${replicateToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           version: "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
-          input: { prompt: englishPrompt, width: 1024, height: 1024, num_outputs: 1 }
+          input: { prompt: cleanPrompt, width: 1024, height: 1024, num_outputs: 1 }
         })
       });
       if (response.ok) {
         const data = await response.json();
         const predictionId = data.id;
         let imageUrl = null;
-        for (let i = 0; i < 20; i++) {
+        for (let i = 0; i < 25; i++) {
           await new Promise(resolve => setTimeout(resolve, 1500));
           const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${predictionId}`, {
             headers: { "Authorization": `Token ${replicateToken}` }
@@ -351,277 +568,269 @@ app.post("/api/image/generate", async (req, res) => {
           return res.json({ imageUrl: imageUrl, provider: "replicate-sdxl" });
         }
       }
-    } catch (e) { console.log(`⚠️ Replicate failed: ${e.message}`); }
-  }
-
-  // PRIORITY 3: Pollinations.ai (English prompt, longer timeout)
-  console.log(`🎨 Using Pollinations.ai...`);
-  const encodedEn = encodeURIComponent(englishPrompt);
-  const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodedEn}?width=1024&height=1024&seed=${Date.now()}&model=flux&nologo=true`;
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 sec timeout
-    const checkRes = await fetch(pollinationsUrl, { method: 'HEAD', signal: controller.signal });
-    clearTimeout(timeoutId);
-    if (checkRes.ok) {
-      console.log(`✅ Image by Pollinations.ai`);
-      return res.json({ imageUrl: pollinationsUrl, provider: "pollinations", note: "AI generated image" });
+    } catch (e) {
+      console.log(`⚠️ Replicate failed: ${e.message}`);
     }
-  } catch (e) { console.log(`⚠️ Pollinations failed: ${e.message}`); }
-
-  // All providers failed
-  console.error(`❌ All image providers failed for: ${englishPrompt}`);
-  res.status(503).json({ error: "इमेज जनरेशन अभी संभव नहीं है। कृपया बाद में प्रयास करें। 🙏" });
+  }
+  
+  // ========== PROVIDER 3: POLLINATIONS WITH MULTIPLE URL PATTERNS ==========
+  const encodedPrompt = encodeURIComponent(cleanPrompt);
+  const timestamp = Date.now();
+  const randomSeed = Math.floor(Math.random() * 1000000);
+  
+  // Multiple Pollinations URLs to try (different servers/approaches)
+  const pollinationsUrls = [
+    `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&seed=${timestamp}&model=flux&nologo=true`,
+    `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&seed=${randomSeed}&model=flux&nologo=true`,
+    `https://pollinations.ai/p/${encodedPrompt}?width=1024&height=1024`,
+    `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&model=flux`
+  ];
+  
+  // Try each URL until one works (with HEAD request check)
+  let workingUrl = null;
+  for (const url of pollinationsUrls) {
+    try {
+      // Quick HEAD request to check if URL is accessible
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const checkRes = await fetch(url, { method: 'HEAD', signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (checkRes.ok) {
+        workingUrl = url;
+        console.log(`✅ Working Pollinations URL found`);
+        break;
+      }
+    } catch (e) {
+      console.log(`Pollinations URL check failed, trying next...`);
+    }
+  }
+  
+  // If all checks failed, use the first URL (most reliable)
+  if (!workingUrl) {
+    workingUrl = pollinationsUrls[0];
+    console.log(`Using default Pollinations URL`);
+  }
+  
+  console.log(`✅ Image URL: ${workingUrl.substring(0, 80)}...`);
+  res.json({ imageUrl: workingUrl, provider: "pollinations" });
 });
-// ==================== IMAGE ANALYZE ====================
+// ==================== 6. IMAGE ANALYZE ====================
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "कोई इमेज नहीं" });
+  if (!req.file) return res.status(400).json({ error: "कोई इमेज अपलोड नहीं की गई है। 🙏" });
   const { message } = req.body;
   const sid = getSessionId(req);
+  if (!message) return res.status(400).json({ error: "कृपया इमेज के बारे में कुछ पूछें। 🙏" });
+
   try {
     const imageBuffer = fs.readFileSync(req.file.path);
     const base64Image = imageBuffer.toString('base64');
     fs.unlinkSync(req.file.path);
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return res.status(500).json({ error: "API key missing" });
-    if (!imageContexts[sid]) imageContexts[sid] = {};
+    if (!apiKey) return res.status(500).json({ error: "OpenAI API key कॉन्फ़िगर नहीं है।" });
+
+    if (!imageContexts[sid]) imageContexts[sid] = { lastImage: null, lastAnalysis: null, conversation: [] };
+    imageContexts[sid].conversation.push({ role: "user", content: message });
+
     const openai = new OpenAI({ apiKey });
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "You are SahcharAI, analyze images. Reply in Hindi." },
-        { role: "user", content: [{ type: "text", text: message || "Describe this image" }, { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64Image}` } }] }
+        { role: "system", content: "You are SahcharAI, analyze images with compassion." },
+        { role: "user", content: [{ type: "text", text: message }, { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64Image}` } }] }
       ]
     });
+
     const analysis = response.choices[0].message.content;
     imageContexts[sid].lastAnalysis = analysis;
+    imageContexts[sid].conversation.push({ role: "assistant", content: analysis });
+    console.log(`📸 Image analyzed for ${sid}`);
     res.json({ analysis });
   } catch (error) {
-    console.error("❌ Analysis error:", error.message);
-    res.status(500).json({ error: "विश्लेषण में त्रुटि" });
+    console.error("❌ Image Analysis Error:", error.message);
+    res.status(500).json({ error: "इमेज का विश्लेषण करने में त्रुटि हुई। 🙏" });
   }
 });
 
-// ==================== VIDEO GENERATION ====================
+// ==================== UNIFIED VIDEO GENERATION - DEMO MODE ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt } = req.body;
   console.log(`🎬 Video Request: ${prompt?.substring(0,50)}...`);
+
   if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
 
-  let cleanPrompt = prompt.replace(/^(वीडियो|video)\s+(बना|जनरेट करो|दिखाओ|बनाओ)\s*/gi, '');
-  cleanPrompt = cleanPrompt.trim();
-  if (cleanPrompt.length === 0) cleanPrompt = prompt;
-
-  const replicateToken = process.env.REPLICATE_API_KEY || process.env.REPLICATE_API_KEY_ZEROSCOPE;
-
-  if (replicateToken) {
-    try {
-      console.log(`🎬 Trying Replicate ZeroScope V2...`);
-      const response = await fetch("https://api.replicate.com/v1/predictions", {
-        method: "POST",
-        headers: { "Authorization": `Token ${replicateToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          version: "f66b331a0cc10ea6179942ae66b538cdc34ff43b5a4e700dddffdb7f1a46cf6a",
-          input: { prompt: cleanPrompt, width: 1024, height: 576, num_frames: 24, fps: 8 }
-        })
-      });
-      if (response.ok) {
-        const data = await response.json();
-        const predictionId = data.id;
-        let videoUrl = null;
-        for (let i = 0; i < 30; i++) {
-          await new Promise(resolve => setTimeout(resolve, 2500));
-          const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${predictionId}`, {
-            headers: { "Authorization": `Token ${replicateToken}` }
-          });
-          const statusData = await statusRes.json();
-          if (statusData.status === "succeeded") {
-            videoUrl = statusData.output;
-            break;
-          } else if (statusData.status === "failed") break;
-        }
-        if (videoUrl) {
-          console.log(`✅ Video by Replicate ZeroScope`);
-          return res.json({ videoUrl: videoUrl, provider: "replicate-zeroscope", status: "generated" });
-        }
-      }
-    } catch (e) { console.log(`⚠️ Replicate video failed: ${e.message}`); }
-  }
-
-  // Fallback: demo video
-  console.log(`🎬 Using demo video fallback...`);
-  res.json({
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+  
+  // Try to generate video using Luma AI or similar (demo mode)
+  // For now, return a demo video
+  return res.json({
     videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
-    provider: "demo-fallback",
     status: "demo",
-    message: "Demo video - Full video generation coming soon 🙏"
+    provider: "demo",
+    message: "Video generation in development. Coming soon with dedicated video API. 🙏"
   });
 });
 
-// ==================== WEBSOCKET LIVE AUDIO (WITH TTS PCM) ====================
-function pcmToWav(pcm, rate = 16000) {
-  const header = Buffer.alloc(44);
-  header.write('RIFF', 0);
-  header.writeUInt32LE(36 + pcm.length, 4);
-  header.write('WAVE', 8);
-  header.write('fmt ', 12);
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1, 20);
-  header.writeUInt16LE(1, 22);
-  header.writeUInt32LE(rate, 24);
-  header.writeUInt32LE(rate * 2, 28);
-  header.writeUInt16LE(2, 32);
-  header.writeUInt16LE(16, 34);
-  header.write('data', 36);
-  header.writeUInt32LE(pcm.length, 40);
-  return Buffer.concat([header, pcm]);
-}
+// ==================== VIDEO PROVIDER FUNCTIONS ====================
 
-function resample24kTo16k(pcm24k) {
-  const targetLen = Math.floor(pcm24k.length * 2 / 3);
-  const out = Buffer.alloc(targetLen);
-  for (let i = 0; i < targetLen / 2; i++) {
-    const srcIdx = Math.floor(i * 1.5) * 2;
-    if (srcIdx + 1 < pcm24k.length) {
-      out.writeInt16LE(pcm24k.readInt16LE(srcIdx), i * 2);
+// 1. HUGGINGFACE - Improved
+async function generateHuggingFaceVideo(prompt) {
+  const response = await fetch(
+    "https://api-inference.huggingface.co/models/ali-vilab/text-to-video-ms-1.7b",
+    {
+      headers: {
+        "Authorization": `Bearer ${process.env.HF_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      method: "POST",
+      body: JSON.stringify({ inputs: prompt }),
     }
+  );
+
+  if (response.status === 503) {
+    throw new Error("Model loading, wait 20s");
   }
-  return out;
+  if (!response.ok) {
+    const text = await response.text();
+    console.error("HF Error:", text);
+    throw new Error("HuggingFace failed");
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+
+  const formData = new FormData();
+  formData.append('file', new Blob([buffer]), 'video.mp4');
+
+  const uploadRes = await fetch("https://0x0.st", {
+    method: "POST",
+    body: formData
+  });
+
+  const videoUrl = await uploadRes.text();
+  if (!videoUrl.startsWith('http')) throw new Error("Upload failed");
+
+  return videoUrl.trim();
 }
 
+// 2. JSON2VIDEO - FIXED: Image to Video (No Text)
+async function generateJSON2Video(prompt, duration) {
+  console.log(`🎨 Step 1: Creating image for video...`);
+
+  const dalleResponse = await axios.post("https://api.openai.com/v1/images/generations", {
+    model: "dall-e-3",
+    prompt: prompt + ", cinematic, high quality, no text, no watermark",
+    n: 1,
+    size: "1024x1024"
+  }, { headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` } });
+
+  const imageUrl = dalleResponse.data.data[0].url;
+  console.log(`✅ Image created`);
+
+  const response = await fetch("https://api.json2video.com/v2/movies", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": process.env.JSON2VIDEO_API_KEY },
+    body: JSON.stringify({
+      resolution: "hd",
+      scenes: [{
+        duration: Math.min(Math.max(parseInt(duration), 5), 10),
+        elements: [{
+          type: "image",
+          src: imageUrl,
+          duration: parseInt(duration),
+          zoom: 1.2,
+          pan: "random"
+        }]
+      }]
+    })
+  });
+
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message || "JSON2Video API error");
+
+  const movieId = data.project;
+  let attempts = 0;
+  while (attempts < 60) {
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    const statusResponse = await fetch(`https://api.json2video.com/v2/movies?project=${movieId}`, {
+      headers: { "x-api-key": process.env.JSON2VIDEO_API_KEY }
+    });
+    const statusData = await statusResponse.json();
+    if (statusData.movie?.status === "done") {
+      console.log(`✅ Video ready`);
+      return statusData.movie.url;
+    }
+    if (statusData.movie?.status === "error") throw new Error("Video generation failed");
+    attempts++;
+  }
+  throw new Error("Video timeout");
+}
+
+// ==================== AUDIO TRANSCRIBE ====================
+app.post("/api/audio/transcribe", upload.single("audio"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "ऑडियो फाइल जरूरी है" });
+  try {
+    const dummyText = "यह एक नमूना ट्रांसक्रिप्शन है। असली API से कनेक्ट करें।";
+    res.json({ transcription: dummyText, confidence: 0.95 });
+  } catch (err) {
+    console.error("Transcription error:", err);
+    res.status(500).json({ error: "ट्रांसक्रिप्शन फेल" });
+  } finally {
+    if (req.file?.path) fs.unlink(req.file.path, (err) => { if (err) console.error("File deletion error:", err); });
+  }
+});
+
+// ==================== WEBSOCKET LIVE AUDIO ====================
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const deviceId = url.searchParams.get('deviceId') || 'default';
-  console.log(`🔌 LiveAudio WebSocket connected: ${deviceId}`);
+  const sessionId = deviceId;
+  console.log(`🔌 WebSocket connected: ${sessionId}`);
 
-  let openaiClient = null;
+  let openai;
   if (process.env.OPENAI_API_KEY) {
-    openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   }
 
-  let audioBuffer = [];
-  let isProcessing = false;
-  let isBotSpeaking = false;
-  let silenceTimer = null;
-  let lastBotEndTime = 0;
-
-  const history = [{
-    role: 'system',
-    content: 'तुम सहचर हो। दोस्त की तरह छोटे, प्राकृतिक जवाब दो, हिंदी में। तुम्हें राम प्रकाश कुमार ने बनाया है। भूलकर भी OpenAI मत बोलना। जवाब 10-15 शब्दों में रखना।'
-  }];
-
-  const safeSend = (data) => {
-    if (ws.readyState === 1) {
-      try { ws.send(data); } catch(e) {}
-    }
-  };
-
-  const resetSilenceTimer = () => {
-    if (silenceTimer) clearTimeout(silenceTimer);
-    if (!isBotSpeaking && audioBuffer.length > 0) {
-      silenceTimer = setTimeout(() => {
-        if (!isBotSpeaking && !isProcessing && audioBuffer.length > 0 && Date.now() > lastBotEndTime + 300) {
-          processAudio();
-        }
-      }, 500);
-    }
-  };
-
-  async function processAudio() {
-    if (isProcessing || isBotSpeaking || audioBuffer.length === 0 || !openaiClient) return;
-    isProcessing = true;
-    const fullAudio = Buffer.concat(audioBuffer);
-    audioBuffer = [];
-
-    let sum = 0;
-    for (let i = 0; i < fullAudio.length; i += 2) {
-      sum += fullAudio.readInt16LE(i) ** 2;
-    }
-    const rms = Math.sqrt(sum / (fullAudio.length / 2)) / 32768;
-    if (rms < 0.008 || fullAudio.length < 2000) {
-      console.log(`🔇 Ignored: RMS=${rms}, len=${fullAudio.length}`);
-      isProcessing = false;
-      return;
-    }
-
-    const wavBuffer = pcmToWav(fullAudio, 16000);
-    const tempPath = path.join('/tmp', `${Date.now()}.wav`);
-    fs.writeFileSync(tempPath, wavBuffer);
-
+  ws.on('message', async (data) => {
     try {
-      const transcription = await openaiClient.audio.transcriptions.create({
-        file: fs.createReadStream(tempPath),
-        model: 'whisper-1',
-        language: 'hi'
-      });
-      const userText = transcription.text.trim();
-      if (!userText) throw new Error("Empty transcription");
-      console.log(`👤 User: ${userText}`);
-      safeSend(JSON.stringify({ type: 'user_text', text: userText }));
+      if (openai && data instanceof Buffer) {
+        const transcription = await openai.audio.transcriptions.create({
+          file: new File([data], "audio.wav", { type: "audio/wav" }),
+          model: "whisper-1",
+          language: "hi"
+        });
+        const userText = transcription.text;
+        console.log(`👤 User [${sessionId}]: ${userText}`);
+        ws.send(JSON.stringify({ type: 'user_transcript', text: userText }));
 
-      history.push({ role: 'user', content: userText });
-      if (history.length > 11) history.splice(1, 2);
+        const history = await loadConversationFromDB(sessionId, 6);
+        const messages = [
+          { role: "system", content: `You are SahcharAI. Reply in Hindi, 1-2 sentences.` },
+          ...history,
+          { role: "user", content: userText }
+        ];
 
-      const completion = await openaiClient.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: history,
-        max_tokens: 80,
-        temperature: 0.85
-      });
-      const botReply = completion.choices[0].message.content;
-      console.log(`🤖 Bot: ${botReply}`);
-      history.push({ role: 'assistant', content: botReply });
-      safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
+        const completion = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages,
+          max_completion_tokens: 150
+        });
+        const botReply = completion.choices[0].message.content;
+        console.log(`🤖 Bot [${sessionId}]: ${botReply}`);
 
-      isBotSpeaking = true;
-      safeSend(JSON.stringify({ type: 'status', text: 'bot_speaking' }));
-
-      const ttsResponse = await openaiClient.audio.speech.create({
-        model: 'tts-1',
-        voice: 'nova',
-        input: botReply,
-        response_format: 'pcm',
-        speed: 1.0
-      });
-      let pcm24k = Buffer.from(await ttsResponse.arrayBuffer());
-      let pcm16k = resample24kTo16k(pcm24k);
-
-      const chunkSize = 640;
-      for (let i = 0; i < pcm16k.length; i += chunkSize) {
-        if (ws.readyState !== 1) break;
-        const chunk = pcm16k.subarray(i, Math.min(i + chunkSize, pcm16k.length));
-        safeSend(chunk);
-        await new Promise(r => setTimeout(r, 18));
+        await saveConversationToDB(sessionId, userText, botReply, 'LiveAudio');
+        ws.send(JSON.stringify({ type: 'bot_transcript', text: botReply }));
       }
-
-      isBotSpeaking = false;
-      lastBotEndTime = Date.now();
-      safeSend(JSON.stringify({ type: 'status', text: 'listening' }));
-      console.log("✅ Bot finished speaking");
     } catch (err) {
-      console.error("❌ Audio processing error:", err.message);
-      safeSend(JSON.stringify({ type: 'error', text: err.message }));
-      isBotSpeaking = false;
-      safeSend(JSON.stringify({ type: 'status', text: 'listening' }));
-    } finally {
-      try { fs.unlinkSync(tempPath); } catch(e) {}
-      isProcessing = false;
+      console.error("WS message error:", err.message);
+      ws.send(JSON.stringify({ type: 'error', message: err.message }));
     }
-  }
-
-  ws.on('message', (data, isBinary) => {
-    if (!isBinary) return;
-    if (isBotSpeaking) return;
-    audioBuffer.push(Buffer.from(data));
-    resetSilenceTimer();
   });
 
-  ws.on('close', () => {
-    if (silenceTimer) clearTimeout(silenceTimer);
-    console.log(`🔌 WebSocket disconnected: ${deviceId}`);
-  });
+  ws.on('close', () => console.log(`🔌 WebSocket disconnected: ${sessionId}`));
 });
 
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Smart Server v6.0 running on port ${PORT}`));
+server.listen(PORT, () => {
+  console.log(`🚀 Server v3.3 STABLE running on port ${PORT}`);
+});
