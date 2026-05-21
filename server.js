@@ -237,7 +237,7 @@ async function agentChat(messages, sessionId) {
 }
 
 // ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v12.0 - GPT-Image-1 + Web Search ✅"));
+app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v13.0 - Persistent Memory for All Bots ✅"));
 
 // ==================== 1. SAHCHARAI (Agent with Web Search) ====================
 app.post("/chat", async (req, res) => {
@@ -282,7 +282,7 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ==================== 2. SAHCHARASSISTANT (fast, no search) ====================
+// ==================== 2. SAHCHARASSISTANT (now with persistent memory) ====================
 app.post("/chat-assistant", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
@@ -291,13 +291,27 @@ app.post("/chat-assistant", async (req, res) => {
   try {
     const now = new Date();
     const currentDateTime = now.toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata' });
-    const messages = [
-      { role: "system", content: `तुम 'SahcharAssistant' हो – राम प्रकाश कुमार द्वारा निर्मित। 1-2 वाक्य में जवाब दो। इमोजी 🙏। वर्तमान समय: ${currentDateTime} IST` },
-      { role: "user", content: message }
-    ];
+    const imageContext = getImageContextText(sid);
+
+    let conversation = conversations.get(sid + "_assistant");
+    if (!conversation) {
+      const history = await loadConversationFromDB(sid, 10);
+      conversation = [
+        { role: "system", content: `तुम 'SahcharAssistant' हो – राम प्रकाश कुमार द्वारा निर्मित। 1-2 वाक्य में जवाब दो। इमोजी 🙏। वर्तमान समय: ${currentDateTime} IST${imageContext}` },
+        ...history
+      ];
+      conversations.set(sid + "_assistant", conversation);
+    }
+    conversation.push({ role: "user", content: message });
     
-    const result = await fastChat(messages, ['Groq', 'DeepSeek', 'OpenAI', 'Kimi']);
+    const result = await fastChat(conversation, ['Groq', 'DeepSeek', 'OpenAI', 'Kimi']);
     if (!result) throw new Error("All providers failed");
+    
+    conversation.push({ role: "assistant", content: result.reply });
+    if (conversation.length > 22) {
+      conversation = [conversation[0], ...conversation.slice(-20)];
+      conversations.set(sid + "_assistant", conversation);
+    }
     
     saveConversationToDB(sid, message, result.reply, `SahcharAssistant (${result.provider})`);
     res.json({ reply: result.reply });
@@ -308,25 +322,44 @@ app.post("/chat-assistant", async (req, res) => {
   }
 });
 
-// ==================== 3. SUPERSAHCHAR (fast, no search) ====================
+// ==================== 3. SUPERSAHCHAR (now with persistent memory) ====================
 app.post("/chat-nvidia", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
   if (!message) return res.status(400).json({ error: "Message required 🙏" });
 
-  const messages = [
-    { role: "system", content: `तुम 'SuperSahchar' हो – एक दोस्ताना AI। user का message दोहराना मत। 1-2 छोटे वाक्य। इमोजी 😊🙏।` },
-    { role: "user", content: message }
-  ];
-  
-  const result = await fastChat(messages, ['Groq', 'DeepSeek', 'OpenAI', 'Kimi']);
-  
-  if (result) {
+  try {
+    const now = new Date();
+    const currentDateTime = now.toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata' });
+    const imageContext = getImageContextText(sid);
+
+    let conversation = conversations.get(sid + "_super");
+    if (!conversation) {
+      const history = await loadConversationFromDB(sid, 10);
+      conversation = [
+        { role: "system", content: `तुम 'SuperSahchar' हो – एक दोस्ताना AI। user का message दोहराना मत। 1-2 छोटे वाक्य। इमोजी 😊🙏। वर्तमान समय: ${currentDateTime} IST${imageContext}` },
+        ...history
+      ];
+      conversations.set(sid + "_super", conversation);
+    }
+    conversation.push({ role: "user", content: message });
+    
+    const result = await fastChat(conversation, ['Groq', 'DeepSeek', 'OpenAI', 'Kimi']);
+    if (!result) throw new Error("All providers failed");
+    
+    conversation.push({ role: "assistant", content: result.reply });
+    if (conversation.length > 22) {
+      conversation = [conversation[0], ...conversation.slice(-20)];
+      conversations.set(sid + "_super", conversation);
+    }
+    
     saveConversationToDB(sid, message, result.reply, `SuperSahchar (${result.provider})`);
-    return res.json({ reply: result.reply });
+    res.json({ reply: result.reply });
+
+  } catch (error) {
+    console.error("❌ SuperSahchar error:", error.message);
+    res.json({ reply: "नमस्ते! मैं SuperSahchar हूँ। आपकी कैसे मदद कर सकता हूँ? 😊🙏" });
   }
-  
-  res.json({ reply: "नमस्ते! मैं SuperSahchar हूँ। आपकी कैसे मदद कर सकता हूँ? 😊🙏" });
 });
 
 // ==================== 4. IMAGE GENERATION (Robust) ====================
@@ -339,9 +372,7 @@ app.post("/api/image/generate", async (req, res) => {
   cleanPrompt = cleanPrompt.trim();
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
   
-  // --------------------------------------------------------------
   // PROVIDER 1: OpenAI GPT-Image-1 (with base64 fallback)
-  // --------------------------------------------------------------
   if (process.env.OPENAI_API_KEY) {
     try {
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -354,17 +385,12 @@ app.post("/api/image/generate", async (req, res) => {
         quality: "auto"
       });
       
-      // Debug: log full response structure
-      console.log(`GPT response data: ${JSON.stringify(response.data).substring(0, 200)}`);
-      
       let imageUrl = null;
       if (response.data && response.data[0]) {
         if (response.data[0].url) {
           imageUrl = response.data[0].url;
         } else if (response.data[0].b64_json) {
-          // Convert base64 to data URL
           imageUrl = `data:image/png;base64,${response.data[0].b64_json}`;
-          console.log(`✅ Received base64 image (length ${response.data[0].b64_json.length})`);
         }
       }
       
@@ -376,13 +402,10 @@ app.post("/api/image/generate", async (req, res) => {
       }
     } catch (e) {
       console.log(`⚠️ GPT-Image-1 failed: ${e.message}`);
-      if (e.response) console.log(e.response.data);
     }
   }
   
-  // --------------------------------------------------------------
-  // PROVIDER 2: Replicate SDXL (more reliable)
-  // --------------------------------------------------------------
+  // PROVIDER 2: Replicate SDXL
   const replicateToken = process.env.REPLICATE_API_KEY || process.env.REPLICATE_API_KEY_ZEROSCOPE;
   if (replicateToken) {
     try {
@@ -414,18 +437,15 @@ app.post("/api/image/generate", async (req, res) => {
         console.log(`✅ Image by Replicate SDXL`);
         return res.json({ imageUrl, provider: "replicate-sdxl" });
       }
-    } catch (e) {
-      console.log(`⚠️ Replicate failed: ${e.message}`);
-    }
+    } catch (e) { console.log(`⚠️ Replicate failed: ${e.message}`); }
   }
   
-  // --------------------------------------------------------------
   // PROVIDER 3: Pollinations.ai (always works, fast fallback)
-  // --------------------------------------------------------------
   console.log(`🎨 Using Pollinations fallback...`);
   const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=1024&height=1024&seed=${Date.now()}&nologo=true`;
   res.json({ imageUrl: pollinationsUrl, provider: "pollinations" });
 });
+
 // ==================== 5. IMAGE ANALYSIS ====================
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "कोई इमेज नहीं" });
@@ -535,4 +555,4 @@ wss.on('connection', (ws, req) => {
 
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Agent Server v12.0 with GPT-Image-1 on ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Agent Server v13.0 with persistent memory for all bots on ${PORT}`));
