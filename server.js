@@ -237,7 +237,7 @@ async function agentChat(messages, sessionId) {
 }
 
 // ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v11.0 - Agent with Web Search ✅"));
+app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v12.0 - GPT-Image-1 + Web Search ✅"));
 
 // ==================== 1. SAHCHARAI (Agent with Web Search) ====================
 app.post("/chat", async (req, res) => {
@@ -263,7 +263,6 @@ app.post("/chat", async (req, res) => {
     }
     conversation.push({ role: "user", content: message });
     
-    // Use agent chat (with web search capability)
     const reply = await agentChat(conversation, sid);
     
     conversation.push({ role: "assistant", content: reply });
@@ -330,7 +329,7 @@ app.post("/chat-nvidia", async (req, res) => {
   res.json({ reply: "नमस्ते! मैं SuperSahchar हूँ। आपकी कैसे मदद कर सकता हूँ? 😊🙏" });
 });
 
-// ==================== 4. IMAGE GENERATION ====================
+// ==================== 4. IMAGE GENERATION (FIXED: GPT-Image-1) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
   console.log(`🎨 Image: ${prompt}`);
@@ -340,22 +339,31 @@ app.post("/api/image/generate", async (req, res) => {
   cleanPrompt = cleanPrompt.trim();
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
   
+  // Priority 1: OpenAI GPT-Image-1 (new model)
   if (process.env.OPENAI_API_KEY) {
     try {
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
       const response = await openai.images.generate({
-        model: "dall-e-3",
+        model: "gpt-image-1",   // ✅ New model (replaces DALL-E)
         prompt: cleanPrompt,
         n: 1,
-        size: "1024x1024"
+        size: "1024x1024",
+        quality: "auto"         // ✅ Supported values: 'low', 'medium', 'high', 'auto'
       });
       if (response.data?.[0]?.url) {
-        console.log(`✅ Image by DALL-E`);
-        return res.json({ imageUrl: response.data[0].url, provider: "dall-e" });
+        console.log(`✅ Image by GPT-Image-1`);
+        return res.json({ imageUrl: response.data[0].url, provider: "gpt-image-1" });
+      } else {
+        throw new Error("No URL returned");
       }
-    } catch (e) { console.log(`⚠️ DALL-E failed: ${e.message}`); }
+    } catch (e) {
+      console.log(`⚠️ GPT-Image-1 failed: ${e.message}`);
+      // No fallback to dall-e because it's deprecated
+    }
   }
   
+  // Fallback to Pollinations (free)
+  console.log(`🎨 Using Pollinations fallback...`);
   const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=1024&height=1024&seed=${Date.now()}&nologo=true`;
   res.json({ imageUrl: pollinationsUrl, provider: "pollinations" });
 });
@@ -469,4 +477,4 @@ wss.on('connection', (ws, req) => {
 
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Agent Server v11.0 with Web Search on ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Agent Server v12.0 with GPT-Image-1 on ${PORT}`));
