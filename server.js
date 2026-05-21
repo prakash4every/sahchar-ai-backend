@@ -11,6 +11,7 @@ import axios from 'axios';
 import OpenAI from 'openai';
 import { WebSocketServer } from 'ws';
 import http from 'http';
+import { getJson } from 'serpapi';   // npm install serpapi
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,7 +27,7 @@ app.use(express.json({ limit: "10mb" }));
 
 // ========== MONGODB SETUP ==========
 let db = null;
-const conversations = new Map();  // Use Map for session isolation
+const conversations = new Map();  // Map sessionId -> messages array
 const imageContexts = new Map();
 
 async function initMongoDB() {
@@ -47,20 +48,14 @@ async function initMongoDB() {
 initMongoDB();
 
 // ========== SESSION MANAGEMENT ==========
-// Get session ID from multiple sources
 function getSessionId(req) {
-  // Priority: JSON body → Header → Query param
   let sid = req.body?.sessionId || req.headers['x-session-id'] || req.query?.sessionId;
-  
-  // If no valid session ID, reject or use IP-based fallback
   if (!sid || sid === "default" || sid === "null" || sid.length < 10) {
-    // Generate from IP + UserAgent for fallback
     const ip = req.ip || req.connection?.remoteAddress || 'unknown';
     const ua = req.headers['user-agent'] || 'unknown';
     sid = Buffer.from(`${ip}-${ua}`).toString('base64').substring(0, 32);
     console.log(`⚠️ Generated fallback session ID: ${sid.substring(0, 8)}...`);
   }
-  
   return sid;
 }
 
@@ -110,7 +105,7 @@ function getImageContextText(sid) {
   return "";
 }
 
-// ========== FAST API PROVIDERS ==========
+// ========== FAST API PROVIDERS (for regular chat) ==========
 const fastProviders = [
   { name: 'Groq', url: 'https://api.groq.com/openai/v1/chat/completions', key: process.env.GROQ_API_KEY, model: 'mixtral-8x7b-32768' },
   { name: 'DeepSeek', url: 'https://api.deepseek.com/v1/chat/completions', key: process.env.DEEPSEEK_API_KEY, model: 'deepseek-chat' },
@@ -151,10 +146,100 @@ async function fastChat(messages, providerNames) {
   return null;
 }
 
-// ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v10.0 - Session Isolated ✅"));
+// ========== WEB SEARCH TOOL (Agent) ==========
+async function searchWeb(query) {
+  if (!process.env.SERPAPI_API_KEY) {
+    console.log("⚠️ SERPAPI_API_KEY not set, web search disabled");
+    return null;
+  }
+  try {
+    const response = await getJson({
+      engine: "google",
+      api_key: process.env.SERPAPI_API_KEY,
+      q: query,
+      num: 5
+    });
+    const results = response.organic_results || [];
+    return results.map(r => ({ title: r.title, link: r.link, snippet: r.snippet }));
+  } catch (error) {
+    console.error("Search error:", error);
+    return null;
+  }
+}
 
-// ==================== 1. SAHCHARAI (Session Isolated) ====================
+// ========== AGENT CHAT (with web search) – used for SahcharAI ==========
+async function agentChat(messages, sessionId) {
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  
+  // Define the search tool
+  const tools = [{
+    type: "function",
+    function: {
+      name: "searchWeb",
+      description: "Search the internet for current information when you don't know the answer or need up-to-date facts.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The search query (preferably in English for best results)" }
+        },
+        required: ["query"]
+      }
+    }
+  }];
+
+  try {
+    // First call: let AI decide if it needs to search
+    let response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: messages,
+      tools: tools,
+      tool_choice: "auto",
+      temperature: 0.7,
+      max_tokens: 500
+    });
+
+    const responseMessage = response.choices[0].message;
+    const toolCalls = responseMessage.tool_calls;
+
+    if (toolCalls && toolCalls.length > 0) {
+      const toolCall = toolCalls[0];
+      const functionArgs = JSON.parse(toolCall.function.arguments);
+      console.log(`🔍 AI requested web search: "${functionArgs.query}"`);
+      
+      // Perform the search
+      const searchResults = await searchWeb(functionArgs.query);
+      
+      // Build messages with tool response
+      const updatedMessages = [...messages, responseMessage, {
+        role: "tool",
+        tool_call_id: toolCall.id,
+        content: JSON.stringify(searchResults || { error: "No results found" })
+      }];
+      
+      // Second call: let AI generate final answer based on search results
+      const secondResponse = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: updatedMessages,
+        temperature: 0.7,
+        max_tokens: 300
+      });
+      return secondResponse.choices[0].message.content;
+    } else {
+      // No search needed, return direct answer
+      return responseMessage.content;
+    }
+  } catch (error) {
+    console.error("Agent chat error:", error);
+    // Fallback to regular fastChat
+    const fallback = await fastChat(messages, ['OpenAI', 'Groq', 'DeepSeek']);
+    return fallback ? fallback.reply : "क्षमा करें, अभी सेवा व्यस्त है। 🙏";
+  }
+}
+
+// ========== HEALTH CHECK ==========
+app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v11.0 - Agent with Web Search ✅"));
+
+// ==================== 1. SAHCHARAI (Agent with Web Search) ====================
 app.post("/chat", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
@@ -171,27 +256,26 @@ app.post("/chat", async (req, res) => {
     if (!conversation) {
       const history = await loadConversationFromDB(sid, 10);
       conversation = [
-        { role: "system", content: `तुम 'SahcharAI' हो – एक दोस्ताना AI सहायक। हिंदी/अंग्रेजी/हिंग्लिश में बात करो। निर्माता: राम प्रकाश कुमार (सिर्फ पूछने पर बताना, हर बार मत बताना)। 2 छोटे वाक्यों में जवाब दो। इमोजी 🙏🌿। वर्तमान समय: ${currentDateTime} IST${imageContext}` },
+        { role: "system", content: `तुम 'SahcharAI' हो – एक दोस्ताना AI सहायक। हिंदी/अंग्रेजी/हिंग्लिश में बात करो। निर्माता: राम प्रकाश कुमार (सिर्फ पूछने पर बताना, हर बार मत बताना)। 2-3 छोटे वाक्यों में जवाब दो। इमोजी 🙏🌿। वर्तमान समय: ${currentDateTime} IST। यदि कोई नया या अज्ञात विषय पूछे तो web search का उपयोग करो।${imageContext}` },
         ...history
       ];
       conversations.set(sid, conversation);
     }
     conversation.push({ role: "user", content: message });
     
-    const result = await fastChat(conversation, ['Groq', 'DeepSeek', 'OpenAI', 'Kimi']);
-    if (!result) throw new Error("All providers failed");
+    // Use agent chat (with web search capability)
+    const reply = await agentChat(conversation, sid);
     
-    conversation.push({ role: "assistant", content: result.reply });
+    conversation.push({ role: "assistant", content: reply });
     if (conversation.length > 22) {
       conversation = [conversation[0], ...conversation.slice(-20)];
       conversations.set(sid, conversation);
     }
     
-    // Save to DB asynchronously
-    saveConversationToDB(sid, message, result.reply, `SahcharAI (${result.provider})`);
+    saveConversationToDB(sid, message, reply, 'SahcharAI (Agent)');
     
-    console.log(`✅ Reply [${sid.substring(0, 8)}...]: ${result.reply.substring(0, 50)}...`);
-    res.json({ reply: result.reply, provider: result.provider });
+    console.log(`✅ Reply [${sid.substring(0, 8)}...]: ${reply.substring(0, 50)}...`);
+    res.json({ reply: reply, provider: "agent" });
 
   } catch (error) {
     console.error("❌ /chat error:", error.message);
@@ -199,7 +283,7 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ==================== 2. SAHCHARASSISTANT ====================
+// ==================== 2. SAHCHARASSISTANT (fast, no search) ====================
 app.post("/chat-assistant", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
@@ -225,7 +309,7 @@ app.post("/chat-assistant", async (req, res) => {
   }
 });
 
-// ==================== 3. SUPERSAHCHAR ====================
+// ==================== 3. SUPERSAHCHAR (fast, no search) ====================
 app.post("/chat-nvidia", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
@@ -243,7 +327,6 @@ app.post("/chat-nvidia", async (req, res) => {
     return res.json({ reply: result.reply });
   }
   
-  // Fallback static response
   res.json({ reply: "नमस्ते! मैं SuperSahchar हूँ। आपकी कैसे मदद कर सकता हूँ? 😊🙏" });
 });
 
@@ -257,7 +340,6 @@ app.post("/api/image/generate", async (req, res) => {
   cleanPrompt = cleanPrompt.trim();
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
   
-  // Try OpenAI DALL-E first (if API key exists)
   if (process.env.OPENAI_API_KEY) {
     try {
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -274,7 +356,6 @@ app.post("/api/image/generate", async (req, res) => {
     } catch (e) { console.log(`⚠️ DALL-E failed: ${e.message}`); }
   }
   
-  // Fallback to Pollinations
   const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=1024&height=1024&seed=${Date.now()}&nologo=true`;
   res.json({ imageUrl: pollinationsUrl, provider: "pollinations" });
 });
@@ -388,4 +469,4 @@ wss.on('connection', (ws, req) => {
 
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Session Isolated Server v10.0 on ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Agent Server v11.0 with Web Search on ${PORT}`));
