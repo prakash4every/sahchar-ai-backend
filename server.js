@@ -329,7 +329,7 @@ app.post("/chat-nvidia", async (req, res) => {
   res.json({ reply: "नमस्ते! मैं SuperSahchar हूँ। आपकी कैसे मदद कर सकता हूँ? 😊🙏" });
 });
 
-// ==================== 4. IMAGE GENERATION (FIXED: GPT-Image-1) ====================
+// ==================== 4. IMAGE GENERATION (Robust) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
   console.log(`🎨 Image: ${prompt}`);
@@ -339,35 +339,93 @@ app.post("/api/image/generate", async (req, res) => {
   cleanPrompt = cleanPrompt.trim();
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
   
-  // Priority 1: OpenAI GPT-Image-1 (new model)
+  // --------------------------------------------------------------
+  // PROVIDER 1: OpenAI GPT-Image-1 (with base64 fallback)
+  // --------------------------------------------------------------
   if (process.env.OPENAI_API_KEY) {
     try {
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      console.log(`🎨 Trying GPT-Image-1...`);
       const response = await openai.images.generate({
-        model: "gpt-image-1",   // ✅ New model (replaces DALL-E)
+        model: "gpt-image-1",
         prompt: cleanPrompt,
         n: 1,
         size: "1024x1024",
-        quality: "auto"         // ✅ Supported values: 'low', 'medium', 'high', 'auto'
+        quality: "auto"
       });
-      if (response.data?.[0]?.url) {
+      
+      // Debug: log full response structure
+      console.log(`GPT response data: ${JSON.stringify(response.data).substring(0, 200)}`);
+      
+      let imageUrl = null;
+      if (response.data && response.data[0]) {
+        if (response.data[0].url) {
+          imageUrl = response.data[0].url;
+        } else if (response.data[0].b64_json) {
+          // Convert base64 to data URL
+          imageUrl = `data:image/png;base64,${response.data[0].b64_json}`;
+          console.log(`✅ Received base64 image (length ${response.data[0].b64_json.length})`);
+        }
+      }
+      
+      if (imageUrl) {
         console.log(`✅ Image by GPT-Image-1`);
-        return res.json({ imageUrl: response.data[0].url, provider: "gpt-image-1" });
+        return res.json({ imageUrl, provider: "gpt-image-1" });
       } else {
-        throw new Error("No URL returned");
+        throw new Error("No URL or b64_json returned");
       }
     } catch (e) {
       console.log(`⚠️ GPT-Image-1 failed: ${e.message}`);
-      // No fallback to dall-e because it's deprecated
+      if (e.response) console.log(e.response.data);
     }
   }
   
-  // Fallback to Pollinations (free)
+  // --------------------------------------------------------------
+  // PROVIDER 2: Replicate SDXL (more reliable)
+  // --------------------------------------------------------------
+  const replicateToken = process.env.REPLICATE_API_KEY || process.env.REPLICATE_API_KEY_ZEROSCOPE;
+  if (replicateToken) {
+    try {
+      console.log(`🎨 Trying Replicate SDXL...`);
+      const response = await fetch("https://api.replicate.com/v1/predictions", {
+        method: "POST",
+        headers: { "Authorization": `Token ${replicateToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
+          input: { prompt: cleanPrompt, width: 1024, height: 1024, num_outputs: 1 }
+        })
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      const predictionId = data.id;
+      let imageUrl = null;
+      for (let i = 0; i < 20; i++) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${predictionId}`, {
+          headers: { "Authorization": `Token ${replicateToken}` }
+        });
+        const statusData = await statusRes.json();
+        if (statusData.status === "succeeded") {
+          imageUrl = statusData.output[0];
+          break;
+        } else if (statusData.status === "failed") break;
+      }
+      if (imageUrl) {
+        console.log(`✅ Image by Replicate SDXL`);
+        return res.json({ imageUrl, provider: "replicate-sdxl" });
+      }
+    } catch (e) {
+      console.log(`⚠️ Replicate failed: ${e.message}`);
+    }
+  }
+  
+  // --------------------------------------------------------------
+  // PROVIDER 3: Pollinations.ai (always works, fast fallback)
+  // --------------------------------------------------------------
   console.log(`🎨 Using Pollinations fallback...`);
   const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=1024&height=1024&seed=${Date.now()}&nologo=true`;
   res.json({ imageUrl: pollinationsUrl, provider: "pollinations" });
 });
-
 // ==================== 5. IMAGE ANALYSIS ====================
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "कोई इमेज नहीं" });
