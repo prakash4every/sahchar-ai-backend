@@ -25,7 +25,7 @@ const upload = multer({ dest: 'uploads/' });
 
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true })); // For Twilio webhook
+app.use(express.urlencoded({ extended: true }));
 
 // ========== TWILIO WHATSAPP SETUP ==========
 const twilioClient = twilio(
@@ -117,7 +117,7 @@ function getImageContextText(sid) {
 // ========== FAST API PROVIDERS ==========
 const fastProviders = [
   { name: 'Groq', url: 'https://api.groq.com/openai/v1/chat/completions', key: process.env.GROQ_API_KEY, model: 'mixtral-8x7b-32768' },
-  { name: 'DeepSeek', url: 'https://api.deepseek.com/v1/chat/completions', key: process.env.DEEPSEEK_API_KEY, model: 'deepseek-v4-flash' },
+  { name: 'DeepSeek', url: 'https://api.deepseek.com/v1/chat/completions', key: process.env.DEEPSEEK_API_KEY, model: 'deepseek-chat' },
   { name: 'OpenAI', url: 'https://api.openai.com/v1/chat/completions', key: process.env.OPENAI_API_KEY, model: 'gpt-4o-mini' },
   { name: 'Kimi', url: 'https://api.moonshot.cn/v1/chat/completions', key: process.env.KIMI_API_KEY, model: 'moonshot-v1-8k' }
 ];
@@ -238,12 +238,39 @@ async function agentChat(messages, sessionId) {
   }
 }
 
-// ========== WHATSAPP WEBHOOK ENDPOINT ==========
+// ========== GENERATE IMAGE FOR WHATSAPP ==========
+async function generateImageForWhatsApp(prompt) {
+  let cleanPrompt = prompt.replace(/^(तस्वीर|इमेज|फोटो|Image|img)\s+(बना|जनरेट करो|दिखाओ|बनाओ)\s*/gi, '');
+  cleanPrompt = cleanPrompt.trim();
+  if (cleanPrompt.length === 0) cleanPrompt = prompt;
+  
+  // Try DALL-E first
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      const response = await openai.images.generate({
+        model: "dall-e-3",
+        prompt: cleanPrompt,
+        n: 1,
+        size: "1024x1024"
+      });
+      if (response.data?.[0]?.url) {
+        console.log(`✅ Image generated for WhatsApp`);
+        return response.data[0].url;
+      }
+    } catch (e) { console.log(`⚠️ DALL-E failed: ${e.message}`); }
+  }
+  
+  // Fallback to Pollinations
+  const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=1024&height=1024&seed=${Date.now()}&nologo=true`;
+  return pollinationsUrl;
+}
+
+// ========== WHATSAPP WEBHOOK ENDPOINT (with Image Generation) ==========
 app.post('/whatsapp-webhook', async (req, res) => {
   try {
-    // Twilio sends data as form-urlencoded
     const userMessage = req.body.Body;
-    const senderId = req.body.From;  // Format: 'whatsapp:+91xxxxxxxxxx'
+    const senderId = req.body.From;
     
     if (!userMessage) {
       return res.status(200).send('OK');
@@ -251,10 +278,7 @@ app.post('/whatsapp-webhook', async (req, res) => {
     
     console.log(`📱 WhatsApp [${senderId}]: ${userMessage}`);
     
-    // Use sender's WhatsApp number as session ID
     const sessionId = senderId;
-    
-    // Get conversation history for this WhatsApp user
     let conversation = conversations.get(sessionId);
     if (!conversation) {
       const history = await loadConversationFromDB(sessionId, 10);
@@ -267,7 +291,56 @@ app.post('/whatsapp-webhook', async (req, res) => {
     
     conversation.push({ role: "user", content: userMessage });
     
-    // Get AI response
+    // Check if user wants to generate image
+    const isImageRequest = userMessage.match(/(तस्वीर|इमेज|फोटो|पिक्चर|image|img)\s+(बना|जनरेट|बनाओ|दिखाओ)/i);
+    const isVideoRequest = userMessage.match(/(वीडियो|video)\s+(बना|जनरेट|बनाओ|दिखाओ)/i);
+    
+    if (isImageRequest) {
+      console.log(`🎨 Generating image for WhatsApp user...`);
+      const imageUrl = await generateImageForWhatsApp(userMessage);
+      
+      if (imageUrl) {
+        await twilioClient.messages.create({
+          body: "🎨 ये रही आपकी तस्वीर:",
+          from: TWILIO_WHATSAPP_NUMBER,
+          to: senderId
+        });
+        
+        await twilioClient.messages.create({
+          from: TWILIO_WHATSAPP_NUMBER,
+          to: senderId,
+          mediaUrl: [imageUrl]
+        });
+        
+        // Save to conversation
+        conversation.push({ role: "assistant", content: "तस्वीर भेज दी गई है। 🎨" });
+        saveConversationToDB(sessionId, userMessage, "Image sent", 'WhatsApp');
+      } else {
+        await twilioClient.messages.create({
+          body: "❌ इमेज बनाने में समस्या आई। कृपया पुनः प्रयास करें। 🙏",
+          from: TWILIO_WHATSAPP_NUMBER,
+          to: senderId
+        });
+      }
+      return res.status(200).send('OK');
+    }
+    
+    if (isVideoRequest) {
+      await twilioClient.messages.create({
+        body: "🎬 वीडियो जनरेशन जल्द आ रहा है! अभी के लिए यह डेमो वीडियो देखें:",
+        from: TWILIO_WHATSAPP_NUMBER,
+        to: senderId
+      });
+      
+      await twilioClient.messages.create({
+        from: TWILIO_WHATSAPP_NUMBER,
+        to: senderId,
+        mediaUrl: ['https://www.w3schools.com/html/mov_bbb.mp4']
+      });
+      return res.status(200).send('OK');
+    }
+    
+    // Normal chat response
     const botReply = await agentChat(conversation, sessionId);
     
     conversation.push({ role: "assistant", content: botReply });
@@ -315,16 +388,15 @@ app.post('/api/whatsapp/send', async (req, res) => {
   }
 });
 
-// ========== WHATSAPP WEBHOOK VERIFICATION (for Twilio) ==========
+// ========== WHATSAPP WEBHOOK VERIFICATION ==========
 app.get('/whatsapp-webhook', (req, res) => {
-  // Twilio may send a GET request for webhook verification
   res.status(200).send('OK');
 });
 
 // ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v14.0 - WhatsApp Integrated ✅"));
+app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v15.0 - WhatsApp with Image Generation ✅"));
 
-// ==================== 1. SAHCHARAI (Agent with Web Search) ====================
+// ==================== 1. SAHCHARAI ====================
 app.post("/chat", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
@@ -460,7 +532,6 @@ app.post("/api/image/generate", async (req, res) => {
   if (process.env.OPENAI_API_KEY) {
     try {
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      console.log(`🎨 Trying DALL-E...`);
       const response = await openai.images.generate({
         model: "dall-e-3",
         prompt: cleanPrompt,
@@ -587,4 +658,4 @@ wss.on('connection', (ws, req) => {
 
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Agent Server v14.0 - WhatsApp Integrated on ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Agent Server v15.0 - WhatsApp with Image Generation on ${PORT}`));
