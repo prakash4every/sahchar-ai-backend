@@ -11,7 +11,8 @@ import axios from 'axios';
 import OpenAI from 'openai';
 import { WebSocketServer } from 'ws';
 import http from 'http';
-import { getJson } from 'serpapi';   // npm install serpapi
+import { getJson } from 'serpapi';
+import twilio from 'twilio';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,10 +25,18 @@ const upload = multer({ dest: 'uploads/' });
 
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true })); // For Twilio webhook
+
+// ========== TWILIO WHATSAPP SETUP ==========
+const twilioClient = twilio(
+  process.env.TWILIO_ACCOUNT_SID || 'AC28fc9f63c2e4263ef722b80cd326ed08',
+  process.env.TWILIO_AUTH_TOKEN
+);
+const TWILIO_WHATSAPP_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER || 'whatsapp:+14155238886';
 
 // ========== MONGODB SETUP ==========
 let db = null;
-const conversations = new Map();  // Map sessionId -> messages array
+const conversations = new Map();
 const imageContexts = new Map();
 
 async function initMongoDB() {
@@ -105,7 +114,7 @@ function getImageContextText(sid) {
   return "";
 }
 
-// ========== FAST API PROVIDERS (for regular chat) ==========
+// ========== FAST API PROVIDERS ==========
 const fastProviders = [
   { name: 'Groq', url: 'https://api.groq.com/openai/v1/chat/completions', key: process.env.GROQ_API_KEY, model: 'mixtral-8x7b-32768' },
   { name: 'DeepSeek', url: 'https://api.deepseek.com/v1/chat/completions', key: process.env.DEEPSEEK_API_KEY, model: 'deepseek-v4-flash' },
@@ -146,7 +155,7 @@ async function fastChat(messages, providerNames) {
   return null;
 }
 
-// ========== WEB SEARCH TOOL (Agent) ==========
+// ========== WEB SEARCH TOOL ==========
 async function searchWeb(query) {
   if (!process.env.SERPAPI_API_KEY) {
     console.log("⚠️ SERPAPI_API_KEY not set, web search disabled");
@@ -167,11 +176,10 @@ async function searchWeb(query) {
   }
 }
 
-// ========== AGENT CHAT (with web search) – used for SahcharAI ==========
+// ========== AGENT CHAT (with web search) ==========
 async function agentChat(messages, sessionId) {
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   
-  // Define the search tool
   const tools = [{
     type: "function",
     function: {
@@ -188,7 +196,6 @@ async function agentChat(messages, sessionId) {
   }];
 
   try {
-    // First call: let AI decide if it needs to search
     let response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: messages,
@@ -206,17 +213,14 @@ async function agentChat(messages, sessionId) {
       const functionArgs = JSON.parse(toolCall.function.arguments);
       console.log(`🔍 AI requested web search: "${functionArgs.query}"`);
       
-      // Perform the search
       const searchResults = await searchWeb(functionArgs.query);
       
-      // Build messages with tool response
       const updatedMessages = [...messages, responseMessage, {
         role: "tool",
         tool_call_id: toolCall.id,
         content: JSON.stringify(searchResults || { error: "No results found" })
       }];
       
-      // Second call: let AI generate final answer based on search results
       const secondResponse = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: updatedMessages,
@@ -225,19 +229,100 @@ async function agentChat(messages, sessionId) {
       });
       return secondResponse.choices[0].message.content;
     } else {
-      // No search needed, return direct answer
       return responseMessage.content;
     }
   } catch (error) {
     console.error("Agent chat error:", error);
-    // Fallback to regular fastChat
     const fallback = await fastChat(messages, ['OpenAI', 'Groq', 'DeepSeek']);
     return fallback ? fallback.reply : "क्षमा करें, अभी सेवा व्यस्त है। 🙏";
   }
 }
 
+// ========== WHATSAPP WEBHOOK ENDPOINT ==========
+app.post('/whatsapp-webhook', async (req, res) => {
+  try {
+    // Twilio sends data as form-urlencoded
+    const userMessage = req.body.Body;
+    const senderId = req.body.From;  // Format: 'whatsapp:+91xxxxxxxxxx'
+    
+    if (!userMessage) {
+      return res.status(200).send('OK');
+    }
+    
+    console.log(`📱 WhatsApp [${senderId}]: ${userMessage}`);
+    
+    // Use sender's WhatsApp number as session ID
+    const sessionId = senderId;
+    
+    // Get conversation history for this WhatsApp user
+    let conversation = conversations.get(sessionId);
+    if (!conversation) {
+      const history = await loadConversationFromDB(sessionId, 10);
+      conversation = [
+        { role: "system", content: `तुम 'SahcharAI' हो – एक दोस्ताना AI सहायक। हिंदी/अंग्रेजी/हिंग्लिश में बात करो। निर्माता: राम प्रकाश कुमार (सिर्फ पूछने पर बताना)। 2-3 छोटे वाक्यों में जवाब दो। इमोजी 🙏🌿। WhatsApp पर बात हो रही है।` },
+        ...history
+      ];
+      conversations.set(sessionId, conversation);
+    }
+    
+    conversation.push({ role: "user", content: userMessage });
+    
+    // Get AI response
+    const botReply = await agentChat(conversation, sessionId);
+    
+    conversation.push({ role: "assistant", content: botReply });
+    if (conversation.length > 22) {
+      conversation = [conversation[0], ...conversation.slice(-20)];
+      conversations.set(sessionId, conversation);
+    }
+    
+    saveConversationToDB(sessionId, userMessage, botReply, 'WhatsApp');
+    
+    // Send reply via Twilio WhatsApp
+    await twilioClient.messages.create({
+      body: botReply,
+      from: TWILIO_WHATSAPP_NUMBER,
+      to: senderId
+    });
+    
+    console.log(`✅ WhatsApp reply sent to ${senderId}`);
+    res.status(200).send('OK');
+    
+  } catch (error) {
+    console.error('WhatsApp webhook error:', error);
+    res.status(500).send('Error');
+  }
+});
+
+// ========== WHATSAPP SEND MESSAGE ENDPOINT (for testing) ==========
+app.post('/api/whatsapp/send', async (req, res) => {
+  const { to, message } = req.body;
+  if (!to || !message) {
+    return res.status(400).json({ error: "To and message required" });
+  }
+  
+  try {
+    const formattedTo = to.startsWith('whatsapp:') ? to : `whatsapp:${to}`;
+    const result = await twilioClient.messages.create({
+      body: message,
+      from: TWILIO_WHATSAPP_NUMBER,
+      to: formattedTo
+    });
+    res.json({ success: true, messageSid: result.sid });
+  } catch (error) {
+    console.error('Send message error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ========== WHATSAPP WEBHOOK VERIFICATION (for Twilio) ==========
+app.get('/whatsapp-webhook', (req, res) => {
+  // Twilio may send a GET request for webhook verification
+  res.status(200).send('OK');
+});
+
 // ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v13.0 - Persistent Memory for All Bots ✅"));
+app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v14.0 - WhatsApp Integrated ✅"));
 
 // ==================== 1. SAHCHARAI (Agent with Web Search) ====================
 app.post("/chat", async (req, res) => {
@@ -282,7 +367,7 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ==================== 2. SAHCHARASSISTANT (now with persistent memory) ====================
+// ==================== 2. SAHCHARASSISTANT ====================
 app.post("/chat-assistant", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
@@ -322,7 +407,7 @@ app.post("/chat-assistant", async (req, res) => {
   }
 });
 
-// ==================== 3. SUPERSAHCHAR (now with persistent memory) ====================
+// ==================== 3. SUPERSAHCHAR ====================
 app.post("/chat-nvidia", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
@@ -362,7 +447,7 @@ app.post("/chat-nvidia", async (req, res) => {
   }
 });
 
-// ==================== 4. IMAGE GENERATION (Robust) ====================
+// ==================== 4. IMAGE GENERATION ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
   console.log(`🎨 Image: ${prompt}`);
@@ -372,76 +457,23 @@ app.post("/api/image/generate", async (req, res) => {
   cleanPrompt = cleanPrompt.trim();
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
   
-  // PROVIDER 1: OpenAI GPT-Image-1 (with base64 fallback)
   if (process.env.OPENAI_API_KEY) {
     try {
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      console.log(`🎨 Trying GPT-Image-1...`);
+      console.log(`🎨 Trying DALL-E...`);
       const response = await openai.images.generate({
-        model: "gpt-image-1",
+        model: "dall-e-3",
         prompt: cleanPrompt,
         n: 1,
-        size: "1024x1024",
-        quality: "auto"
+        size: "1024x1024"
       });
-      
-      let imageUrl = null;
-      if (response.data && response.data[0]) {
-        if (response.data[0].url) {
-          imageUrl = response.data[0].url;
-        } else if (response.data[0].b64_json) {
-          imageUrl = `data:image/png;base64,${response.data[0].b64_json}`;
-        }
+      if (response.data?.[0]?.url) {
+        console.log(`✅ Image by DALL-E`);
+        return res.json({ imageUrl: response.data[0].url, provider: "dall-e" });
       }
-      
-      if (imageUrl) {
-        console.log(`✅ Image by GPT-Image-1`);
-        return res.json({ imageUrl, provider: "gpt-image-1" });
-      } else {
-        throw new Error("No URL or b64_json returned");
-      }
-    } catch (e) {
-      console.log(`⚠️ GPT-Image-1 failed: ${e.message}`);
-    }
+    } catch (e) { console.log(`⚠️ DALL-E failed: ${e.message}`); }
   }
   
-  // PROVIDER 2: Replicate SDXL
-  const replicateToken = process.env.REPLICATE_API_KEY || process.env.REPLICATE_API_KEY_ZEROSCOPE;
-  if (replicateToken) {
-    try {
-      console.log(`🎨 Trying Replicate SDXL...`);
-      const response = await fetch("https://api.replicate.com/v1/predictions", {
-        method: "POST",
-        headers: { "Authorization": `Token ${replicateToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          version: "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
-          input: { prompt: cleanPrompt, width: 1024, height: 1024, num_outputs: 1 }
-        })
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json();
-      const predictionId = data.id;
-      let imageUrl = null;
-      for (let i = 0; i < 20; i++) {
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${predictionId}`, {
-          headers: { "Authorization": `Token ${replicateToken}` }
-        });
-        const statusData = await statusRes.json();
-        if (statusData.status === "succeeded") {
-          imageUrl = statusData.output[0];
-          break;
-        } else if (statusData.status === "failed") break;
-      }
-      if (imageUrl) {
-        console.log(`✅ Image by Replicate SDXL`);
-        return res.json({ imageUrl, provider: "replicate-sdxl" });
-      }
-    } catch (e) { console.log(`⚠️ Replicate failed: ${e.message}`); }
-  }
-  
-  // PROVIDER 3: Pollinations.ai (always works, fast fallback)
-  console.log(`🎨 Using Pollinations fallback...`);
   const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=1024&height=1024&seed=${Date.now()}&nologo=true`;
   res.json({ imageUrl: pollinationsUrl, provider: "pollinations" });
 });
@@ -555,4 +587,4 @@ wss.on('connection', (ws, req) => {
 
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Agent Server v13.0 with persistent memory for all bots on ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Agent Server v14.0 - WhatsApp Integrated on ${PORT}`));
