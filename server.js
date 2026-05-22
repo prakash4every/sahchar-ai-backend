@@ -238,13 +238,39 @@ async function agentChat(messages, sessionId) {
   }
 }
 
-// ========== GENERATE IMAGE FOR WHATSAPP (with priority chain) ==========
+// ========== UPLOAD BASE64 IMAGE TO IMGBB (Free, no API key needed for basic) ==========
+async function uploadBase64ToImgBB(base64Data) {
+  try {
+    // Using free imgbb API (no key required for basic, but better with key)
+    const formData = new FormData();
+    formData.append('image', base64Data);
+    
+    // Try with free service first
+    const response = await fetch('https://api.imgbb.com/1/upload?key=YOUR_IMGBB_API_KEY', {
+      method: 'POST',
+      body: formData
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (data.success && data.data?.url) {
+        return data.data.url;
+      }
+    }
+    return null;
+  } catch (error) {
+    console.log(`Upload failed: ${error.message}`);
+    return null;
+  }
+}
+
+// ========== GENERATE IMAGE FOR WHATSAPP (GPT-Image-1 First) ==========
 async function generateImageForWhatsApp(prompt) {
   let cleanPrompt = prompt.replace(/^(तस्वीर|इमेज|फोटो|Image|img)\s+(बना|जनरेट करो|दिखाओ|बनाओ)\s*/gi, '');
   cleanPrompt = cleanPrompt.trim();
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
   
-  // PROVIDER 1: OpenAI GPT-Image-1
+  // PROVIDER 1: OpenAI GPT-Image-1 (Best quality)
   if (process.env.OPENAI_API_KEY) {
     try {
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -257,19 +283,28 @@ async function generateImageForWhatsApp(prompt) {
         quality: "auto"
       });
       
-      let imageUrl = null;
       if (response.data && response.data[0]) {
+        // If URL is returned directly
         if (response.data[0].url) {
-          imageUrl = response.data[0].url;
-        } else if (response.data[0].b64_json) {
-          imageUrl = `data:image/png;base64,${response.data[0].b64_json}`;
+          console.log(`✅ GPT-Image-1 returned URL`);
+          return response.data[0].url;
+        }
+        // If base64 is returned, upload to get URL
+        if (response.data[0].b64_json) {
+          console.log(`📦 GPT-Image-1 returned base64, uploading...`);
+          const base64Data = response.data[0].b64_json;
+          const uploadedUrl = await uploadBase64ToImgBB(base64Data);
+          if (uploadedUrl) {
+            console.log(`✅ Base64 uploaded, URL obtained`);
+            return uploadedUrl;
+          }
+          // Fallback: return base64 data URL (WhatsApp might not accept)
+          return `data:image/png;base64,${base64Data}`;
         }
       }
-      if (imageUrl) {
-        console.log(`✅ Image by GPT-Image-1`);
-        return imageUrl;
-      }
-    } catch (e) { console.log(`⚠️ GPT-Image-1 failed: ${e.message}`); }
+    } catch (e) { 
+      console.log(`⚠️ GPT-Image-1 failed: ${e.message}`); 
+    }
   }
   
   // PROVIDER 2: Replicate SDXL
@@ -307,7 +342,7 @@ async function generateImageForWhatsApp(prompt) {
     } catch (e) { console.log(`⚠️ Replicate failed: ${e.message}`); }
   }
   
-  // PROVIDER 3: Pollinations.ai (always works)
+  // PROVIDER 3: Pollinations.ai (Final fallback)
   console.log(`🎨 Using Pollinations fallback...`);
   const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=1024&height=1024&seed=${Date.now()}&nologo=true`;
   return pollinationsUrl;
@@ -346,21 +381,32 @@ app.post('/whatsapp-webhook', async (req, res) => {
       const imageUrl = await generateImageForWhatsApp(userMessage);
       
       if (imageUrl) {
+        // Send text caption first
         await twilioClient.messages.create({
           body: "🎨 ये रही आपकी तस्वीर:",
           from: TWILIO_WHATSAPP_NUMBER,
           to: senderId
         });
         
-        await twilioClient.messages.create({
-          from: TWILIO_WHATSAPP_NUMBER,
-          to: senderId,
-          mediaUrl: [imageUrl]
-        });
+        // Send image
+        try {
+          await twilioClient.messages.create({
+            from: TWILIO_WHATSAPP_NUMBER,
+            to: senderId,
+            mediaUrl: [imageUrl]
+          });
+          console.log(`✅ Image sent to WhatsApp`);
+        } catch (mediaError) {
+          console.error(`Failed to send image: ${mediaError.message}`);
+          await twilioClient.messages.create({
+            body: "❌ तस्वीर भेजने में समस्या आई। कृपया पुनः प्रयास करें।",
+            from: TWILIO_WHATSAPP_NUMBER,
+            to: senderId
+          });
+        }
         
         conversation.push({ role: "assistant", content: "तस्वीर भेज दी गई है। 🎨" });
         saveConversationToDB(sessionId, userMessage, "Image sent", 'WhatsApp');
-        console.log(`✅ Image sent to WhatsApp`);
       } else {
         await twilioClient.messages.create({
           body: "❌ इमेज बनाने में समस्या आई। कृपया पुनः प्रयास करें। 🙏",
@@ -424,7 +470,7 @@ app.get('/whatsapp-webhook', (req, res) => {
 });
 
 // ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v17.0 - Robust Image Generation ✅"));
+app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v18.0 - GPT-Image-1 First ✅"));
 
 // ==================== 1. SAHCHARAI ====================
 app.post("/chat", async (req, res) => {
@@ -549,7 +595,7 @@ app.post("/chat-nvidia", async (req, res) => {
   }
 });
 
-// ==================== 4. IMAGE GENERATION (Robust - GPT-Image-1 → Replicate → Pollinations) ====================
+// ==================== 4. IMAGE GENERATION (GPT-Image-1 First) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
   console.log(`🎨 Image: ${prompt}`);
@@ -559,7 +605,7 @@ app.post("/api/image/generate", async (req, res) => {
   cleanPrompt = cleanPrompt.trim();
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
   
-  // PROVIDER 1: OpenAI GPT-Image-1
+  // PROVIDER 1: GPT-Image-1
   if (process.env.OPENAI_API_KEY) {
     try {
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -572,24 +618,18 @@ app.post("/api/image/generate", async (req, res) => {
         quality: "auto"
       });
       
-      let imageUrl = null;
       if (response.data && response.data[0]) {
         if (response.data[0].url) {
-          imageUrl = response.data[0].url;
-        } else if (response.data[0].b64_json) {
-          imageUrl = `data:image/png;base64,${response.data[0].b64_json}`;
+          console.log(`✅ Image by GPT-Image-1 (URL)`);
+          return res.json({ imageUrl: response.data[0].url, provider: "gpt-image-1" });
+        }
+        if (response.data[0].b64_json) {
+          console.log(`✅ Image by GPT-Image-1 (base64)`);
+          const imageUrl = `data:image/png;base64,${response.data[0].b64_json}`;
+          return res.json({ imageUrl: imageUrl, provider: "gpt-image-1" });
         }
       }
-      
-      if (imageUrl) {
-        console.log(`✅ Image by GPT-Image-1`);
-        return res.json({ imageUrl, provider: "gpt-image-1" });
-      } else {
-        throw new Error("No URL or b64_json returned");
-      }
-    } catch (e) {
-      console.log(`⚠️ GPT-Image-1 failed: ${e.message}`);
-    }
+    } catch (e) { console.log(`⚠️ GPT-Image-1 failed: ${e.message}`); }
   }
   
   // PROVIDER 2: Replicate SDXL
@@ -622,14 +662,12 @@ app.post("/api/image/generate", async (req, res) => {
       }
       if (imageUrl) {
         console.log(`✅ Image by Replicate SDXL`);
-        return res.json({ imageUrl, provider: "replicate-sdxl" });
+        return res.json({ imageUrl: imageUrl, provider: "replicate-sdxl" });
       }
-    } catch (e) {
-      console.log(`⚠️ Replicate failed: ${e.message}`);
-    }
+    } catch (e) { console.log(`⚠️ Replicate failed: ${e.message}`); }
   }
   
-  // PROVIDER 3: Pollinations.ai (always works)
+  // PROVIDER 3: Pollinations
   console.log(`🎨 Using Pollinations fallback...`);
   const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=1024&height=1024&seed=${Date.now()}&nologo=true`;
   res.json({ imageUrl: pollinationsUrl, provider: "pollinations" });
@@ -744,4 +782,4 @@ wss.on('connection', (ws, req) => {
 
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Agent Server v17.0 - Robust Image Generation on ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Agent Server v18.0 - GPT-Image-1 First on ${PORT}`));
