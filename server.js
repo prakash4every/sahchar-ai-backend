@@ -41,17 +41,17 @@ const imageContexts = new Map();
 
 async function initMongoDB() {
   if (!process.env.MONGODB_URI) {
-    console.log("⚠️ MONGODB_URI not set – using in-memory only");
+    console.log("MONGODB_URI not set - using in-memory only");
     return;
   }
   try {
     const client = new MongoClient(process.env.MONGODB_URI);
     await client.connect();
     db = client.db();
-    console.log(`✅ MongoDB Connected`);
+    console.log("MongoDB Connected");
     await db.collection('conversations').createIndex({ sessionId: 1, timestamp: -1 });
   } catch (error) {
-    console.error("❌ MongoDB Error:", error.message);
+    console.error("MongoDB Error:", error.message);
   }
 }
 initMongoDB();
@@ -63,7 +63,7 @@ function getSessionId(req) {
     const ip = req.ip || req.connection?.remoteAddress || 'unknown';
     const ua = req.headers['user-agent'] || 'unknown';
     sid = Buffer.from(`${ip}-${ua}`).toString('base64').substring(0, 32);
-    console.log(`⚠️ Generated fallback session ID: ${sid.substring(0, 8)}...`);
+    console.log(`Generated fallback session ID: ${sid.substring(0, 8)}...`);
   }
   return sid;
 }
@@ -82,7 +82,7 @@ async function loadConversationFromDB(sid, limit = 10) {
       history.push({ role: "assistant", content: msg.botReply });
     });
     if (messages.length > 0) {
-      console.log(`📚 Loaded ${messages.length} exchanges for session ${sid.substring(0, 8)}...`);
+      console.log(`Loaded ${messages.length} exchanges for session ${sid.substring(0, 8)}...`);
     }
     return history;
   } catch (err) { 
@@ -109,7 +109,7 @@ async function saveConversationToDB(sid, userMessage, botReply, chatbot = 'Sahch
 function getImageContextText(sid) {
   const ctx = imageContexts.get(sid);
   if (ctx?.lastAnalysis) {
-    return `\n\n📷 पिछली इमेज: "${ctx.lastAnalysis.substring(0, 400)}"\n\n`;
+    return `\n\n[Previous Image Analysis: ${ctx.lastAnalysis.substring(0, 400)}]\n\n`;
   }
   return "";
 }
@@ -138,7 +138,7 @@ async function callFastAPI(messages, provider) {
     const data = await response.json();
     return data.choices?.[0]?.message?.content || null;
   } catch (error) {
-    console.log(`⚠️ ${provider.name} failed: ${error.message}`);
+    console.log(`Provider ${provider.name} failed: ${error.message}`);
     return null;
   }
 }
@@ -147,7 +147,7 @@ async function fastChat(messages, providerNames) {
   for (const providerName of providerNames) {
     const provider = fastProviders.find(p => p.name === providerName);
     if (provider) {
-      console.log(`🔄 Trying ${provider.name}...`);
+      console.log(`Trying ${provider.name}...`);
       const reply = await callFastAPI(messages, provider);
       if (reply) return { reply, provider: provider.name };
     }
@@ -158,7 +158,7 @@ async function fastChat(messages, providerNames) {
 // ========== WEB SEARCH TOOL ==========
 async function searchWeb(query) {
   if (!process.env.SERPAPI_API_KEY) {
-    console.log("⚠️ SERPAPI_API_KEY not set, web search disabled");
+    console.log("SERPAPI_API_KEY not set, web search disabled");
     return null;
   }
   try {
@@ -211,7 +211,7 @@ async function agentChat(messages, sessionId) {
     if (toolCalls && toolCalls.length > 0) {
       const toolCall = toolCalls[0];
       const functionArgs = JSON.parse(toolCall.function.arguments);
-      console.log(`🔍 AI requested web search: "${functionArgs.query}"`);
+      console.log(`AI requested web search: "${functionArgs.query}"`);
       
       const searchResults = await searchWeb(functionArgs.query);
       
@@ -234,15 +234,15 @@ async function agentChat(messages, sessionId) {
   } catch (error) {
     console.error("Agent chat error:", error);
     const fallback = await fastChat(messages, ['OpenAI', 'Groq', 'DeepSeek']);
-    return fallback ? fallback.reply : "क्षमा करें, अभी सेवा व्यस्त है। 🙏";
+    return fallback ? fallback.reply : "Sorry, service is busy. Please try again later.";
   }
 }
 
-// ========== UPLOAD BASE64 IMAGE TO IMGBB (Using API Key from env) ==========
+// ========== UPLOAD BASE64 IMAGE TO IMGBB ==========
 async function uploadBase64ToImgBB(base64Data) {
   const imgbbKey = process.env.IMGBB_API_KEY;
   if (!imgbbKey) {
-    console.log("⚠️ IMGBB_API_KEY not set, cannot upload base64");
+    console.log("IMGBB_API_KEY not set, cannot upload base64");
     return null;
   }
   
@@ -258,7 +258,7 @@ async function uploadBase64ToImgBB(base64Data) {
     if (response.ok) {
       const data = await response.json();
       if (data.success && data.data?.url) {
-        console.log(`✅ Uploaded to ImgBB: ${data.data.url}`);
+        console.log(`Uploaded to ImgBB: ${data.data.url}`);
         return data.data.url;
       }
     }
@@ -269,65 +269,17 @@ async function uploadBase64ToImgBB(base64Data) {
   }
 }
 
-// ========== GENERATE IMAGE FOR WHATSAPP (Pollinations First - Always HTTPS URL) ==========
+// ========== GENERATE IMAGE FOR WHATSAPP ==========
 async function generateImageForWhatsApp(prompt) {
-  let cleanPrompt = prompt.replace(/^(तस्वीर|इमेज|फोटो|Image|img)\s+(बना|जनरेट करो|दिखाओ|बनाओ)\s*/gi, '');
+  let cleanPrompt = prompt.replace(/^(image|img|picture|photo)\s+(generate|create|make|draw)\s*/gi, '');
   cleanPrompt = cleanPrompt.trim();
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
   
-  // PROVIDER 1: Pollinations.ai - Always gives HTTPS URL, WhatsApp compatible
-  console.log(`🎨 Trying Pollinations (best for WhatsApp)...`);
+  // Pollinations.ai - Always gives HTTPS URL
+  console.log(`Trying Pollinations for WhatsApp...`);
   const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=1024&height=1024&seed=${Date.now()}&nologo=true`;
   
-  // Verify URL is accessible
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const checkRes = await fetch(pollinationsUrl, { method: 'HEAD', signal: controller.signal });
-    clearTimeout(timeoutId);
-    if (checkRes.ok) {
-      console.log(`✅ Pollinations URL ready for WhatsApp`);
-      return pollinationsUrl;
-    }
-  } catch (e) {
-    console.log(`⚠️ Pollinations check failed: ${e.message}`);
-  }
-  
-  // PROVIDER 2: OpenAI GPT-Image-1 (for better quality, then upload to ImgBB)
-  if (process.env.OPENAI_API_KEY) {
-    try {
-      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      console.log(`🎨 Trying GPT-Image-1...`);
-      const response = await openai.images.generate({
-        model: "gpt-image-1",
-        prompt: cleanPrompt,
-        n: 1,
-        size: "1024x1024",
-        quality: "auto"
-      });
-      
-      if (response.data && response.data[0]) {
-        // If URL is returned directly
-        if (response.data[0].url) {
-          console.log(`✅ GPT-Image-1 returned URL`);
-          return response.data[0].url;
-        }
-        // If base64 is returned, upload to ImgBB
-        if (response.data[0].b64_json) {
-          console.log(`📦 GPT-Image-1 returned base64, uploading to ImgBB...`);
-          const uploadedUrl = await uploadBase64ToImgBB(response.data[0].b64_json);
-          if (uploadedUrl) {
-            console.log(`✅ Base64 uploaded, URL obtained for WhatsApp`);
-            return uploadedUrl;
-          }
-        }
-      }
-    } catch (e) { console.log(`⚠️ GPT-Image-1 failed: ${e.message}`); }
-  }
-  
-  // PROVIDER 3: Final Pollinations fallback
-  console.log(`🎨 Using Pollinations final fallback...`);
-  return `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=1024&height=1024&seed=${Date.now()}&nologo=true`;
+  return pollinationsUrl;
 }
 
 // ========== WHATSAPP WEBHOOK ENDPOINT ==========
@@ -340,14 +292,14 @@ app.post('/whatsapp-webhook', async (req, res) => {
       return res.status(200).send('OK');
     }
     
-    console.log(`📱 WhatsApp [${senderId}]: ${userMessage}`);
+    console.log(`WhatsApp [${senderId}]: ${userMessage}`);
     
     const sessionId = senderId;
     let conversation = conversations.get(sessionId);
     if (!conversation) {
       const history = await loadConversationFromDB(sessionId, 10);
       conversation = [
-        { role: "system", content: `तुम 'SahcharAI' हो – एक दोस्ताना AI सहायक। हिंदी/अंग्रेजी/हिंग्लिश में बात करो। निर्माता: राम प्रकाश कुमार (सिर्फ पूछने पर बताना)। 2-3 छोटे वाक्यों में जवाब दो। इमोजी 🙏🌿। WhatsApp पर बात हो रही है।` },
+        { role: "system", content: `You are SahcharAI, a friendly AI assistant. Created by Ram Prakash Kumar. Reply in Hindi or Hinglish. Keep responses short (2-3 sentences). Use emojis. WhatsApp conversation.` },
         ...history
       ];
       conversations.set(sessionId, conversation);
@@ -359,39 +311,29 @@ app.post('/whatsapp-webhook', async (req, res) => {
     const isImageRequest = userMessage.match(/(तस्वीर|इमेज|फोटो|पिक्चर|image|img)\s+(बना|जनरेट|बनाओ|दिखाओ)/i);
     
     if (isImageRequest) {
-      console.log(`🎨 Generating image for WhatsApp user...`);
+      console.log(`Generating image for WhatsApp user...`);
       const imageUrl = await generateImageForWhatsApp(userMessage);
       
       if (imageUrl && imageUrl.startsWith('https://')) {
-        // Send text caption first
         await twilioClient.messages.create({
-          body: "🎨 ये रही आपकी तस्वीर:",
+          body: "Here's your image:",
           from: TWILIO_WHATSAPP_NUMBER,
           to: senderId
         });
         
-        // Send image
         try {
           await twilioClient.messages.create({
             from: TWILIO_WHATSAPP_NUMBER,
             to: senderId,
             mediaUrl: [imageUrl]
           });
-          console.log(`✅ Image sent to WhatsApp`);
+          console.log(`Image sent to WhatsApp`);
         } catch (mediaError) {
           console.error(`Failed to send image: ${mediaError.message}`);
-          await twilioClient.messages.create({
-            body: "❌ तस्वीर भेजने में समस्या आई। कृपया पुनः प्रयास करें।",
-            from: TWILIO_WHATSAPP_NUMBER,
-            to: senderId
-          });
         }
-        
-        conversation.push({ role: "assistant", content: "तस्वीर भेज दी गई है। 🎨" });
-        saveConversationToDB(sessionId, userMessage, "Image sent", 'WhatsApp');
       } else {
         await twilioClient.messages.create({
-          body: "❌ इमेज बनाने में समस्या आई। कृपया पुनः प्रयास करें। 🙏",
+          body: "Sorry, couldn't generate the image. Please try again.",
           from: TWILIO_WHATSAPP_NUMBER,
           to: senderId
         });
@@ -416,7 +358,7 @@ app.post('/whatsapp-webhook', async (req, res) => {
       to: senderId
     });
     
-    console.log(`✅ WhatsApp reply sent to ${senderId}`);
+    console.log(`WhatsApp reply sent to ${senderId}`);
     res.status(200).send('OK');
     
   } catch (error) {
@@ -452,15 +394,15 @@ app.get('/whatsapp-webhook', (req, res) => {
 });
 
 // ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v19.0 - WhatsApp Optimized ✅"));
+app.get("/", (req, res) => res.send("SahcharAI Backend v19.0 - WhatsApp Optimized"));
 
-// ==================== 1. SAHCHARAI (Unchanged) ====================
+// ==================== 1. SAHCHARAI ====================
 app.post("/chat", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
   
-  console.log(`📩 Chat [${sid.substring(0, 8)}...]: ${message?.substring(0, 50)}...`);
-  if (!message) return res.status(400).json({ reply: "Message required 🙏" });
+  console.log(`Chat [${sid.substring(0, 8)}...]: ${message?.substring(0, 50)}...`);
+  if (!message) return res.status(400).json({ reply: "Message required" });
 
   try {
     const now = new Date();
@@ -471,7 +413,7 @@ app.post("/chat", async (req, res) => {
     if (!conversation) {
       const history = await loadConversationFromDB(sid, 10);
       conversation = [
-        { role: "system", content: `तुम 'SahcharAI' हो – एक दोस्ताना AI सहायक। हिंदी/अंग्रेजी/हिंग्लिश में बात करो। निर्माता: राम प्रकाश कुमार (सिर्फ पूछने पर बताना, हर बार मत बताना)। 2-3 छोटे वाक्यों में जवाब दो। इमोजी 🙏🌿। वर्तमान समय: ${currentDateTime} IST। यदि कोई नया या अज्ञात विषय पूछे तो web search का उपयोग करो।${imageContext}` },
+        { role: "system", content: `You are SahcharAI, a friendly AI assistant. Reply in Hindi/English/Hinglish. Creator: Ram Prakash Kumar (only when asked). Keep responses short (2-3 sentences). Use emojis. Current time: ${currentDateTime} IST. Use web search for unknown topics.${imageContext}` },
         ...history
       ];
       conversations.set(sid, conversation);
@@ -486,22 +428,22 @@ app.post("/chat", async (req, res) => {
       conversations.set(sid, conversation);
     }
     
-    saveConversationToDB(sid, message, reply, 'SahcharAI (Agent)');
+    saveConversationToDB(sid, message, reply, 'SahcharAI');
     
-    console.log(`✅ Reply [${sid.substring(0, 8)}...]: ${reply.substring(0, 50)}...`);
-    res.json({ reply: reply, provider: "agent" });
+    console.log(`Reply [${sid.substring(0, 8)}...]: ${reply.substring(0, 50)}...`);
+    res.json({ reply: reply });
 
   } catch (error) {
-    console.error("❌ /chat error:", error.message);
-    res.json({ reply: "क्षमा करें, सेवा व्यस्त है। 🙏" });
+    console.error("Chat error:", error.message);
+    res.json({ reply: "Sorry, service is busy. Please try again." });
   }
 });
 
-// ==================== 2. SAHCHARASSISTANT (Unchanged) ====================
+// ==================== 2. SAHCHARASSISTANT ====================
 app.post("/chat-assistant", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
-  if (!message) return res.status(400).json({ error: "Message required 🙏" });
+  if (!message) return res.status(400).json({ error: "Message required" });
 
   try {
     const now = new Date();
@@ -512,7 +454,7 @@ app.post("/chat-assistant", async (req, res) => {
     if (!conversation) {
       const history = await loadConversationFromDB(sid, 10);
       conversation = [
-        { role: "system", content: `तुम 'SahcharAssistant' हो – राम प्रकाश कुमार द्वारा निर्मित। 1-2 वाक्य में जवाब दो। इमोजी 🙏। वर्तमान समय: ${currentDateTime} IST${imageContext}` },
+        { role: "system", content: `You are SahcharAssistant, created by Ram Prakash Kumar. Reply in 1-2 sentences. Use emojis. Current time: ${currentDateTime} IST${imageContext}` },
         ...history
       ];
       conversations.set(sid + "_assistant", conversation);
@@ -532,16 +474,16 @@ app.post("/chat-assistant", async (req, res) => {
     res.json({ reply: result.reply });
 
   } catch (error) {
-    console.error("❌ Assistant error:", error.message);
-    res.json({ reply: "क्षमा करें, सेवा व्यस्त है। 🙏" });
+    console.error("Assistant error:", error.message);
+    res.json({ reply: "Sorry, service is busy. Please try again." });
   }
 });
 
-// ==================== 3. SUPERSAHCHAR (Unchanged) ====================
+// ==================== 3. SUPERSAHCHAR ====================
 app.post("/chat-nvidia", async (req, res) => {
   const sid = getSessionId(req);
   const { message } = req.body;
-  if (!message) return res.status(400).json({ error: "Message required 🙏" });
+  if (!message) return res.status(400).json({ error: "Message required" });
 
   try {
     const now = new Date();
@@ -552,7 +494,7 @@ app.post("/chat-nvidia", async (req, res) => {
     if (!conversation) {
       const history = await loadConversationFromDB(sid, 10);
       conversation = [
-        { role: "system", content: `तुम 'SuperSahchar' हो – एक दोस्ताना AI। user का message दोहराना मत। 1-2 छोटे वाक्य। इमोजी 😊🙏। वर्तमान समय: ${currentDateTime} IST${imageContext}` },
+        { role: "system", content: `You are SuperSahchar, a friendly AI. Don't repeat user's message. Reply in 1-2 short sentences. Use emojis. Current time: ${currentDateTime} IST${imageContext}` },
         ...history
       ];
       conversations.set(sid + "_super", conversation);
@@ -572,26 +514,26 @@ app.post("/chat-nvidia", async (req, res) => {
     res.json({ reply: result.reply });
 
   } catch (error) {
-    console.error("❌ SuperSahchar error:", error.message);
-    res.json({ reply: "नमस्ते! मैं SuperSahchar हूँ। आपकी कैसे मदद कर सकता हूँ? 😊🙏" });
+    console.error("SuperSahchar error:", error.message);
+    res.json({ reply: "Hello! I'm SuperSahchar. How can I help you?" });
   }
 });
 
-// ==================== 4. IMAGE GENERATION FOR APP (Unchanged - GPT-Image-1 First) ====================
+// ==================== 4. IMAGE GENERATION FOR APP ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
-  console.log(`🎨 Image: ${prompt}`);
-  if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है" });
+  console.log(`Image: ${prompt}`);
+  if (!prompt) return res.status(400).json({ error: "Prompt is required" });
 
   let cleanPrompt = prompt.replace(/^(तस्वीर|इमेज|फोटो|Image|img)\s+(बना|जनरेट करो|दिखाओ|बनाओ)\s*/gi, '');
   cleanPrompt = cleanPrompt.trim();
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
   
-  // PROVIDER 1: GPT-Image-1
+  // GPT-Image-1
   if (process.env.OPENAI_API_KEY) {
     try {
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      console.log(`🎨 Trying GPT-Image-1...`);
+      console.log(`Trying GPT-Image-1...`);
       const response = await openai.images.generate({
         model: "gpt-image-1",
         prompt: cleanPrompt,
@@ -602,23 +544,23 @@ app.post("/api/image/generate", async (req, res) => {
       
       if (response.data && response.data[0]) {
         if (response.data[0].url) {
-          console.log(`✅ Image by GPT-Image-1 (URL)`);
+          console.log(`Image by GPT-Image-1 (URL)`);
           return res.json({ imageUrl: response.data[0].url, provider: "gpt-image-1" });
         }
         if (response.data[0].b64_json) {
-          console.log(`✅ Image by GPT-Image-1 (base64)`);
+          console.log(`Image by GPT-Image-1 (base64)`);
           const imageUrl = `data:image/png;base64,${response.data[0].b64_json}`;
           return res.json({ imageUrl: imageUrl, provider: "gpt-image-1" });
         }
       }
-    } catch (e) { console.log(`⚠️ GPT-Image-1 failed: ${e.message}`); }
+    } catch (e) { console.log(`GPT-Image-1 failed: ${e.message}`); }
   }
   
-  // PROVIDER 2: Replicate SDXL
+  // Replicate SDXL
   const replicateToken = process.env.REPLICATE_API_KEY || process.env.REPLICATE_API_KEY_ZEROSCOPE;
   if (replicateToken) {
     try {
-      console.log(`🎨 Trying Replicate SDXL...`);
+      console.log(`Trying Replicate SDXL...`);
       const response = await fetch("https://api.replicate.com/v1/predictions", {
         method: "POST",
         headers: { "Authorization": `Token ${replicateToken}`, "Content-Type": "application/json" },
@@ -643,21 +585,21 @@ app.post("/api/image/generate", async (req, res) => {
         } else if (statusData.status === "failed") break;
       }
       if (imageUrl) {
-        console.log(`✅ Image by Replicate SDXL`);
+        console.log(`Image by Replicate SDXL`);
         return res.json({ imageUrl: imageUrl, provider: "replicate-sdxl" });
       }
-    } catch (e) { console.log(`⚠️ Replicate failed: ${e.message}`); }
+    } catch (e) { console.log(`Replicate failed: ${e.message}`); }
   }
   
-  // PROVIDER 3: Pollinations
-  console.log(`🎨 Using Pollinations fallback...`);
+  // Pollinations
+  console.log(`Using Pollinations fallback...`);
   const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=1024&height=1024&seed=${Date.now()}&nologo=true`;
   res.json({ imageUrl: pollinationsUrl, provider: "pollinations" });
 });
 
 // ==================== 5. IMAGE ANALYSIS ====================
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "कोई इमेज नहीं" });
+  if (!req.file) return res.status(400).json({ error: "No image provided" });
   const { message } = req.body;
   const sid = getSessionId(req);
   
@@ -685,21 +627,21 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
         const analysis = response.choices[0].message.content;
         ctx.lastAnalysis = analysis;
         return res.json({ analysis: analysis });
-      } catch (e) { console.log(`⚠️ Analysis failed: ${e.message}`); }
+      } catch (e) { console.log(`Analysis failed: ${e.message}`); }
     }
     
-    res.json({ analysis: "✅ विश्लेषण पूरा हुआ!" });
+    res.json({ analysis: "Analysis completed!" });
   } catch (error) {
-    console.error("❌ Analysis error:", error.message);
-    res.status(500).json({ error: "विश्लेषण में त्रुटि" });
+    console.error("Analysis error:", error.message);
+    res.status(500).json({ error: "Analysis failed" });
   }
 });
 
 // ==================== 6. VIDEO GENERATION ====================
 app.post("/api/video/generate", async (req, res) => {
   const { prompt } = req.body;
-  console.log(`🎬 Video: ${prompt?.substring(0,50)}...`);
-  if (!prompt) return res.status(400).json({ error: "प्रॉम्प्ट देना जरूरी है 🙏" });
+  console.log(`Video: ${prompt?.substring(0,50)}...`);
+  if (!prompt) return res.status(400).json({ error: "Prompt required" });
   res.json({ videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4", status: "demo", provider: "demo" });
 });
 
@@ -734,7 +676,7 @@ wss.on('connection', (ws, req) => {
   if (!deviceId || deviceId === "default") {
     deviceId = `web-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
   }
-  console.log(`🔌 WebSocket: ${deviceId.substring(0, 8)}...`);
+  console.log(`WebSocket: ${deviceId.substring(0, 8)}...`);
 
   let openai;
   if (process.env.OPENAI_API_KEY) openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -759,10 +701,9 @@ wss.on('connection', (ws, req) => {
       }
     } catch (err) { ws.send(JSON.stringify({ type: 'error', message: err.message })); }
   });
-  ws.on('close', () => console.log(`🔌 WebSocket disconnected: ${deviceId.substring(0, 8)}...`));
+  ws.on('close', () => console.log(`WebSocket disconnected: ${deviceId.substring(0, 8)}...`));
 });
 
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Agent Server v19.0 - WhatsApp Optimized on ${PORT}`));
-```
+server.listen(PORT, () => console.log(`Agent Server v19.0 - WhatsApp Optimized on ${PORT}`));
