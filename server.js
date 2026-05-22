@@ -238,35 +238,56 @@ async function agentChat(messages, sessionId) {
   }
 }
 
-// ========== GENERATE IMAGE FOR WHATSAPP ==========
+// ========== FIXED: SMART IMAGE GENERATION FOR WHATSAPP ==========
 async function generateImageForWhatsApp(prompt) {
   let cleanPrompt = prompt.replace(/^(तस्वीर|इमेज|फोटो|Image|img)\s+(बना|जनरेट करो|दिखाओ|बनाओ)\s*/gi, '');
   cleanPrompt = cleanPrompt.trim();
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
   
-  // Try DALL-E first
+  // PROVIDER 1: Try GPT-Image-1 (OpenAI's latest image model)
   if (process.env.OPENAI_API_KEY) {
     try {
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      console.log(`🎨 Trying GPT-Image-1...`);
       const response = await openai.images.generate({
-        model: "dall-e-3",
+        model: "gpt-image-1",
+        prompt: cleanPrompt,
+        n: 1,
+        size: "1024x1024",
+        quality: "auto"
+      });
+      if (response.data?.[0]?.url) {
+        console.log(`✅ Image by GPT-Image-1`);
+        return response.data[0].url;
+      }
+    } catch (e) { console.log(`⚠️ GPT-Image-1 failed: ${e.message}`); }
+  }
+  
+  // PROVIDER 2: Try DALL-E 2
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      console.log(`🎨 Trying DALL-E 2...`);
+      const response = await openai.images.generate({
+        model: "dall-e-2",
         prompt: cleanPrompt,
         n: 1,
         size: "1024x1024"
       });
       if (response.data?.[0]?.url) {
-        console.log(`✅ Image generated for WhatsApp`);
+        console.log(`✅ Image by DALL-E 2`);
         return response.data[0].url;
       }
-    } catch (e) { console.log(`⚠️ DALL-E failed: ${e.message}`); }
+    } catch (e) { console.log(`⚠️ DALL-E 2 failed: ${e.message}`); }
   }
   
-  // Fallback to Pollinations
+  // PROVIDER 3: Pollinations.ai (Always works)
+  console.log(`🎨 Using Pollinations fallback...`);
   const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=1024&height=1024&seed=${Date.now()}&nologo=true`;
   return pollinationsUrl;
 }
 
-// ========== WHATSAPP WEBHOOK ENDPOINT (with Image Generation) ==========
+// ========== WHATSAPP WEBHOOK ENDPOINT ==========
 app.post('/whatsapp-webhook', async (req, res) => {
   try {
     const userMessage = req.body.Body;
@@ -293,7 +314,6 @@ app.post('/whatsapp-webhook', async (req, res) => {
     
     // Check if user wants to generate image
     const isImageRequest = userMessage.match(/(तस्वीर|इमेज|फोटो|पिक्चर|image|img)\s+(बना|जनरेट|बनाओ|दिखाओ)/i);
-    const isVideoRequest = userMessage.match(/(वीडियो|video)\s+(बना|जनरेट|बनाओ|दिखाओ)/i);
     
     if (isImageRequest) {
       console.log(`🎨 Generating image for WhatsApp user...`);
@@ -312,9 +332,9 @@ app.post('/whatsapp-webhook', async (req, res) => {
           mediaUrl: [imageUrl]
         });
         
-        // Save to conversation
         conversation.push({ role: "assistant", content: "तस्वीर भेज दी गई है। 🎨" });
         saveConversationToDB(sessionId, userMessage, "Image sent", 'WhatsApp');
+        console.log(`✅ Image sent to WhatsApp`);
       } else {
         await twilioClient.messages.create({
           body: "❌ इमेज बनाने में समस्या आई। कृपया पुनः प्रयास करें। 🙏",
@@ -322,21 +342,6 @@ app.post('/whatsapp-webhook', async (req, res) => {
           to: senderId
         });
       }
-      return res.status(200).send('OK');
-    }
-    
-    if (isVideoRequest) {
-      await twilioClient.messages.create({
-        body: "🎬 वीडियो जनरेशन जल्द आ रहा है! अभी के लिए यह डेमो वीडियो देखें:",
-        from: TWILIO_WHATSAPP_NUMBER,
-        to: senderId
-      });
-      
-      await twilioClient.messages.create({
-        from: TWILIO_WHATSAPP_NUMBER,
-        to: senderId,
-        mediaUrl: ['https://www.w3schools.com/html/mov_bbb.mp4']
-      });
       return res.status(200).send('OK');
     }
     
@@ -351,7 +356,6 @@ app.post('/whatsapp-webhook', async (req, res) => {
     
     saveConversationToDB(sessionId, userMessage, botReply, 'WhatsApp');
     
-    // Send reply via Twilio WhatsApp
     await twilioClient.messages.create({
       body: botReply,
       from: TWILIO_WHATSAPP_NUMBER,
@@ -367,7 +371,7 @@ app.post('/whatsapp-webhook', async (req, res) => {
   }
 });
 
-// ========== WHATSAPP SEND MESSAGE ENDPOINT (for testing) ==========
+// ========== WHATSAPP SEND MESSAGE ENDPOINT ==========
 app.post('/api/whatsapp/send', async (req, res) => {
   const { to, message } = req.body;
   if (!to || !message) {
@@ -394,7 +398,7 @@ app.get('/whatsapp-webhook', (req, res) => {
 });
 
 // ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v15.0 - WhatsApp with Image Generation ✅"));
+app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v16.0 - Fixed Image Generation ✅"));
 
 // ==================== 1. SAHCHARAI ====================
 app.post("/chat", async (req, res) => {
@@ -519,7 +523,7 @@ app.post("/chat-nvidia", async (req, res) => {
   }
 });
 
-// ==================== 4. IMAGE GENERATION ====================
+// ==================== 4. IMAGE GENERATION (Fixed) ====================
 app.post("/api/image/generate", async (req, res) => {
   const { prompt } = req.body;
   console.log(`🎨 Image: ${prompt}`);
@@ -529,22 +533,50 @@ app.post("/api/image/generate", async (req, res) => {
   cleanPrompt = cleanPrompt.trim();
   if (cleanPrompt.length === 0) cleanPrompt = prompt;
   
+  // PROVIDER 1: GPT-Image-1
   if (process.env.OPENAI_API_KEY) {
     try {
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      console.log(`🎨 Trying GPT-Image-1...`);
       const response = await openai.images.generate({
-        model: "dall-e-3",
+        model: "gpt-image-1",
+        prompt: cleanPrompt,
+        n: 1,
+        size: "1024x1024",
+        quality: "auto"
+      });
+      if (response.data?.[0]?.url) {
+        console.log(`✅ Image by GPT-Image-1`);
+        return res.json({ imageUrl: response.data[0].url, provider: "gpt-image-1" });
+      }
+      if (response.data?.[0]?.b64_json) {
+        const imageUrl = `data:image/png;base64,${response.data[0].b64_json}`;
+        console.log(`✅ Image by GPT-Image-1 (base64)`);
+        return res.json({ imageUrl: imageUrl, provider: "gpt-image-1" });
+      }
+    } catch (e) { console.log(`⚠️ GPT-Image-1 failed: ${e.message}`); }
+  }
+  
+  // PROVIDER 2: DALL-E 2
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      console.log(`🎨 Trying DALL-E 2...`);
+      const response = await openai.images.generate({
+        model: "dall-e-2",
         prompt: cleanPrompt,
         n: 1,
         size: "1024x1024"
       });
       if (response.data?.[0]?.url) {
-        console.log(`✅ Image by DALL-E`);
-        return res.json({ imageUrl: response.data[0].url, provider: "dall-e" });
+        console.log(`✅ Image by DALL-E 2`);
+        return res.json({ imageUrl: response.data[0].url, provider: "dall-e-2" });
       }
-    } catch (e) { console.log(`⚠️ DALL-E failed: ${e.message}`); }
+    } catch (e) { console.log(`⚠️ DALL-E 2 failed: ${e.message}`); }
   }
   
+  // PROVIDER 3: Pollinations (Always works)
+  console.log(`🎨 Using Pollinations fallback...`);
   const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=1024&height=1024&seed=${Date.now()}&nologo=true`;
   res.json({ imageUrl: pollinationsUrl, provider: "pollinations" });
 });
@@ -658,4 +690,4 @@ wss.on('connection', (ws, req) => {
 
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Agent Server v15.0 - WhatsApp with Image Generation on ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Agent Server v16.0 - Fixed Image Generation on ${PORT}`));
