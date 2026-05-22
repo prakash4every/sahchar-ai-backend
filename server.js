@@ -238,16 +238,26 @@ async function agentChat(messages, sessionId) {
   }
 }
 
-// ========== ANALYZE IMAGE FROM URL (WhatsApp) ==========
+// ========== ANALYZE IMAGE FROM URL (WhatsApp) - FIXED with Twilio Auth ==========
 async function analyzeImageFromUrl(imageUrl, userQuestion) {
   if (!process.env.OPENAI_API_KEY) return "Image analysis not configured.";
   
   try {
-    // Download image
-    const response = await fetch(imageUrl);
+    // Fetch image with Twilio Basic Authentication
+    const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
+    const response = await fetch(imageUrl, {
+      headers: { 'Authorization': `Basic ${auth}` }
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.startsWith('image/')) {
+      console.error(`Invalid content type: ${contentType}`);
+      return "Sorry, I couldn't retrieve a valid image. Please try again.";
+    }
+    
     const buffer = await response.arrayBuffer();
     const base64 = Buffer.from(buffer).toString('base64');
-    const mimeType = response.headers.get('content-type') || 'image/jpeg';
     
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const completion = await openai.chat.completions.create({
@@ -256,7 +266,7 @@ async function analyzeImageFromUrl(imageUrl, userQuestion) {
         { role: "system", content: "You are SahcharAI, a WhatsApp assistant. Analyze images and reply in Hindi/English. Keep it concise." },
         { role: "user", content: [
           { type: "text", text: userQuestion || "What's in this image? Describe briefly." },
-          { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } }
+          { type: "image_url", image_url: { url: `data:${contentType};base64,${base64}` } }
         ]}
       ],
       max_tokens: 300
@@ -292,13 +302,11 @@ app.post('/whatsapp-webhook', async (req, res) => {
     if (numMedia > 0) {
       let analysisResults = [];
       for (let i = 0; i < numMedia; i++) {
-        // ✅ CORRECTED: Use MediaContentType instead of ContentType
         const mediaUrl = req.body[`MediaUrl${i}`];
         const contentType = req.body[`MediaContentType${i}`];
         console.log(`Media ${i}: URL=${mediaUrl}, Type=${contentType}`);
         
         if (mediaUrl && contentType && contentType.startsWith('image/')) {
-          // Analyze image
           const analysis = await analyzeImageFromUrl(mediaUrl, messageText || "Describe this image");
           analysisResults.push(analysis);
         } else {
@@ -307,7 +315,6 @@ app.post('/whatsapp-webhook', async (req, res) => {
       }
       
       const finalReply = analysisResults.join('\n\n');
-      // Save to conversation
       conversation.push({ role: "user", content: messageText || "[Image]" });
       conversation.push({ role: "assistant", content: finalReply });
       if (conversation.length > 22) conversation.splice(1, conversation.length - 21);
@@ -370,7 +377,6 @@ app.post('/whatsapp-webhook', async (req, res) => {
     
   } catch (error) {
     console.error('WhatsApp webhook error:', error);
-    // Send error message to user
     try {
       await twilioClient.messages.create({
         body: "⚠️ Sorry, I encountered an error. Please try again later.",
@@ -381,8 +387,14 @@ app.post('/whatsapp-webhook', async (req, res) => {
     res.status(500).send('Error');
   }
 });
+
+// GET endpoint for webhook verification
+app.get('/whatsapp-webhook', (req, res) => {
+  res.status(200).send('OK');
+});
+
 // ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v20.0 - WhatsApp Image Analysis ✅"));
+app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v20.1 - WhatsApp Image Analysis Fixed ✅"));
 
 // ==================== 1. SAHCHARAI ====================
 app.post("/chat", async (req, res) => {
@@ -671,4 +683,4 @@ wss.on('connection', (ws, req) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Agent Server v20.0 - WhatsApp Ready on ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Agent Server v20.1 - WhatsApp Ready on ${PORT}`));
