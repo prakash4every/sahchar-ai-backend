@@ -268,7 +268,7 @@ async function analyzeImageFromUrl(imageUrl, userQuestion) {
   }
 }
 
-// ========== WHATSAPP WEBHOOK (with image/doc support) ==========
+// ========== WHATSAPP WEBHOOK (FIXED MEDIA HANDLING) ==========
 app.post('/whatsapp-webhook', async (req, res) => {
   try {
     const senderId = req.body.From;
@@ -292,14 +292,17 @@ app.post('/whatsapp-webhook', async (req, res) => {
     if (numMedia > 0) {
       let analysisResults = [];
       for (let i = 0; i < numMedia; i++) {
+        // ✅ CORRECTED: Use MediaContentType instead of ContentType
         const mediaUrl = req.body[`MediaUrl${i}`];
-        const contentType = req.body[`ContentType${i}`];
+        const contentType = req.body[`MediaContentType${i}`];
+        console.log(`Media ${i}: URL=${mediaUrl}, Type=${contentType}`);
+        
         if (mediaUrl && contentType && contentType.startsWith('image/')) {
           // Analyze image
           const analysis = await analyzeImageFromUrl(mediaUrl, messageText || "Describe this image");
           analysisResults.push(analysis);
         } else {
-          analysisResults.push(`📎 Received a file (${contentType}). I can only analyze images at the moment.`);
+          analysisResults.push(`📎 Received a file (${contentType || 'unknown type'}). I can only analyze images at the moment.`);
         }
       }
       
@@ -322,7 +325,6 @@ app.post('/whatsapp-webhook', async (req, res) => {
     const isImageGenRequest = /(तस्वीर|इमेज|फोटो|पिक्चर|image|img)\s+(बना|जनरेट|बनाओ|दिखाओ)/i.test(messageText);
     if (isImageGenRequest) {
       console.log(`🎨 Generating image for WhatsApp user...`);
-      // Extract prompt by removing common Hindi/English verbs
       let prompt = messageText.replace(/(तस्वीर|इमेज|फोटो|image|img)\s+(बना|जनरेट|बनाओ|दिखाओ)/gi, '').trim();
       if (!prompt) prompt = messageText;
       
@@ -368,15 +370,17 @@ app.post('/whatsapp-webhook', async (req, res) => {
     
   } catch (error) {
     console.error('WhatsApp webhook error:', error);
+    // Send error message to user
+    try {
+      await twilioClient.messages.create({
+        body: "⚠️ Sorry, I encountered an error. Please try again later.",
+        from: TWILIO_WHATSAPP_NUMBER,
+        to: req.body.From
+      });
+    } catch(e) {}
     res.status(500).send('Error');
   }
 });
-
-// GET endpoint for webhook verification
-app.get('/whatsapp-webhook', (req, res) => {
-  res.status(200).send('OK');
-});
-
 // ========== HEALTH CHECK ==========
 app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v20.0 - WhatsApp Image Analysis ✅"));
 
