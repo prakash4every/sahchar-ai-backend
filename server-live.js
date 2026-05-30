@@ -4,13 +4,12 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import { randomUUID } from 'crypto';
-import { Readable } from 'stream'; // ✅ इन-मेमोरी स्ट्रीमिंग के लिए आवश्यक
 
 dotenv.config();
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v5.2 (Optimized) on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v5.3 (Ultra Stable) on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 if (!process.env.OPENAI_API_KEY) {
@@ -20,7 +19,7 @@ if (!process.env.OPENAI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req, res) => res.send('Sahchar Live - Ultra Stable v5.2 (Memory Buffered)'));
+app.get('/', (req, res) => res.send('Sahchar Live - Ultra Stable v5.3 (Buffer Fixed)'));
 
 // Convert 16kHz PCM to WAV (Buffer only - No Disk Write)
 function pcmToWav(pcm, rate = 16000) {
@@ -102,15 +101,17 @@ wss.on('connection', (ws, req) => {
     safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
     
     try {
-      // ✅ सुधार: फाइल सिस्टम (fs) का उपयोग बंद, सीधे मेमोरी बफ़र से स्ट्रीम निर्माण
+      // 1. Convert PCM to WAV Buffer
       const wavBuffer = pcmToWav(fullAudio);
-      const audioStream = Readable.from(wavBuffer);
-      audioStream.path = 'speech.wav'; 
       
-      // 1. Transcribe (Whisper)
-      console.log(`📞 [${clientId}] Whisper API (In-Memory)...`);
+      console.log(`📞 [${clientId}] Uploading In-Memory Buffer to Whisper...`);
+      
+      // ✅ फ़िक्स: OpenAI.toFile का उपयोग करके सीधे बफ़र को मान्य फ़ाइल ऑब्जेक्ट में बदलना
+      const fileObject = await OpenAI.toFile(wavBuffer, 'speech.wav', { type: 'audio/wav' });
+      
+      // Transcribe (Whisper API)
       const transcription = await openai.audio.transcriptions.create({
-        file: audioStream,
+        file: fileObject,
         model: 'whisper-1',
         language: 'hi'
       });
@@ -163,7 +164,7 @@ wss.on('connection', (ws, req) => {
         voice: 'nova',
         input: botReply,
         response_format: 'pcm',
-        speed: 1.05 // लाइव फील के लिए मामूली स्पीड अप
+        speed: 1.05
       });
       
       let audioPcm = Buffer.from(await tts.arrayBuffer());
@@ -172,7 +173,7 @@ wss.on('connection', (ws, req) => {
       // Send in chunks (20ms = 640 bytes at 16kHz)
       const chunkSize = 640;
       for (let i = 0; i < audioPcm.length; i += chunkSize) {
-        if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break; // इंटरप्शन होने पर तुरंत लूप ब्रेक
+        if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         safeSend(chunk, true);
         await new Promise(r => setTimeout(r, 19));
@@ -187,7 +188,7 @@ wss.on('connection', (ws, req) => {
       console.log(`✅ [${clientId}] Finished Processing`);
       
     } catch (err) {
-      console.error(`❌ [${clientId}] Error: ${err.message}`);
+      console.error(`❌ [${clientId}] Error during pipeline: ${err.message}`);
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
     } finally {
       isProcessing = false;
@@ -196,7 +197,6 @@ wss.on('connection', (ws, req) => {
   
   ws.on('message', (data, isBinary) => {
     if (!isBinary) {
-      // ✅ सुधार: क्लाइंट से आने वाले 'interrupt' सिग्नल को संभालना
       try {
         const json = JSON.parse(data.toString());
         if (json.type === 'interrupt') {
@@ -215,7 +215,7 @@ wss.on('connection', (ws, req) => {
     packetCount++;
     audioBuffer.push(Buffer.from(data));
     
-    // ✅ सुधार: टाइमर को 800ms से घटाकर 500ms किया ताकि रिस्पॉन्स तुरंत मिले
+    // 500ms साइलेंस थ्रेशोल्ड फॉर फ़ास्ट रिस्पॉन्स
     if (processTimer) clearTimeout(processTimer);
     processTimer = setTimeout(() => {
       if (audioBuffer.length > 0 && !isProcessing && !isBotSpeaking && !isClosing) {
