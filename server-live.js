@@ -12,8 +12,13 @@ const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
 
-// ✅ MongoDB Connection (using existing env var)
-const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGOBD_URI || process.env.MONGOBD_URL;
+// ✅ MongoDB Connection URI Fallback (Cleaned up string sanitisation)
+let MONGODB_URI = process.env.MONGODB_URI || process.env.MONGOBD_URI || process.env.MONGOBD_URL;
+if (MONGODB_URI && !MONGODB_URI.startsWith('mongodb://') && !MONGODB_URI.startsWith('mongodb+srv://')) {
+  console.warn('⚠️ MongoDB URI scheme invalid, enforcing standard prefix fallback...');
+  MONGODB_URI = `mongodb+srv://${MONGODB_URI}`;
+}
+
 const DB_NAME = 'sahchar_live';
 const COLLECTION_NAME = 'conversations';
 
@@ -23,7 +28,7 @@ let mongoClient = null;
 
 async function connectMongoDB() {
   if (!MONGODB_URI) {
-    console.warn('⚠️ No MongoDB URI found - running without memory');
+    console.warn('⚠️ No MongoDB URI found - running without memory database layer');
     return;
   }
   
@@ -33,9 +38,8 @@ async function connectMongoDB() {
     db = mongoClient.db(DB_NAME);
     conversationsCollection = db.collection(COLLECTION_NAME);
     
-    // Create indexes for faster queries
     await conversationsCollection.createIndex({ deviceId: 1, timestamp: -1 });
-    await conversationsCollection.createIndex({ timestamp: 1 }, { expireAfterSeconds: 604800 }); // Auto-delete after 7 days
+    await conversationsCollection.createIndex({ timestamp: 1 }, { expireAfterSeconds: 604800 }); // 7 Days Retention
     
     console.log('✅ MongoDB connected successfully');
   } catch (error) {
@@ -43,10 +47,8 @@ async function connectMongoDB() {
   }
 }
 
-// Get conversation history for a device
-async function getConversationHistory(deviceId, limit = 10) {
+async function getConversationHistory(deviceId, limit = 5) { // ✅ Optimized to last 5 interactions for lighter sync context
   if (!conversationsCollection) return [];
-  
   try {
     const history = await conversationsCollection
       .find({ deviceId })
@@ -54,7 +56,6 @@ async function getConversationHistory(deviceId, limit = 10) {
       .limit(limit)
       .toArray();
     
-    // Reverse to maintain chronological order (oldest first)
     return history.reverse().map(msg => ({
       role: msg.role,
       content: msg.content
@@ -65,10 +66,8 @@ async function getConversationHistory(deviceId, limit = 10) {
   }
 }
 
-// Save conversation to database
 async function saveConversation(deviceId, role, content) {
   if (!conversationsCollection) return;
-  
   try {
     await conversationsCollection.insertOne({
       deviceId,
@@ -81,26 +80,10 @@ async function saveConversation(deviceId, role, content) {
   }
 }
 
-// Clear old conversations
-async function clearOldConversations(daysOld = 7) {
-  if (!conversationsCollection) return;
-  
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - daysOld);
-  
-  const result = await conversationsCollection.deleteMany({
-    timestamp: { $lt: cutoffDate }
-  });
-  
-  if (result.deletedCount > 0) {
-    console.log(`🧹 Cleared ${result.deletedCount} old conversations`);
-  }
-}
-
-// Call MongoDB connection
+// Global invocation initialization
 await connectMongoDB();
 
-const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v5.4 (With Memory) on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v5.5 (Memory Fixed) on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 if (!process.env.OPENAI_API_KEY) {
@@ -110,16 +93,9 @@ if (!process.env.OPENAI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req, res) => res.send('Sahchar Live - v5.4 (With Memory & MongoDB)'));
+app.get('/', (req, res) => res.send('Sahchar Live - v5.5 (Active & Corrected Resampling)'));
 
-// Health check endpoint
-app.get('/health', (req, res) => res.json({ 
-  status: 'ok', 
-  mongodb: !!conversationsCollection,
-  version: '5.4'
-}));
-
-// Convert 16kHz PCM to WAV
+// Convert 16kHz PCM to WAV Object
 function pcmToWav(pcm, rate = 16000) {
   const h = Buffer.alloc(44);
   h.write('RIFF', 0);
@@ -138,8 +114,8 @@ function pcmToWav(pcm, rate = 16000) {
   return Buffer.concat([h, pcm]);
 }
 
-// Amplify low volume audio
-function amplifyAudio(pcmData, factor = 1.5) {
+// Amplify audio signals smoothly
+function amplifyAudio(pcmData, factor = 1.4) {
   const amplified = Buffer.alloc(pcmData.length);
   for (let i = 0; i < pcmData.length; i += 2) {
     let sample = pcmData.readInt16LE(i);
@@ -149,20 +125,25 @@ function amplifyAudio(pcmData, factor = 1.5) {
   return amplified;
 }
 
-// Convert 24kHz to 16kHz if needed
+// ✅ फ़िक्स: Linear interpolation आधारित Resampling फ़ंक्शन ताकि आवाज़ तेज़ या कटी हुई न आए
 function resampleAudio(pcmData, fromRate = 24000, toRate = 16000) {
   if (fromRate === toRate) return pcmData;
   
-  const ratio = toRate / fromRate; // 16000/24000 = 2/3
-  const sampleCount = pcmData.length / 2;
-  const newSampleCount = Math.floor(sampleCount * ratio);
-  const result = Buffer.alloc(newSampleCount * 2);
+  const srcSamples = pcmData.length / 2;
+  const ratio = fromRate / toRate;
+  const dstSamples = Math.floor(srcSamples / ratio);
+  const result = Buffer.alloc(dstSamples * 2);
   
-  for (let i = 0; i < newSampleCount; i++) {
-    const srcIndex = Math.floor(i / ratio) * 2;
-    if (srcIndex + 1 < pcmData.length) {
-      const sample = pcmData.readInt16LE(srcIndex);
-      result.writeInt16LE(sample, i * 2);
+  for (let i = 0; i < dstSamples; i++) {
+    const srcIndex = i * ratio;
+    const indexFloor = Math.floor(srcIndex);
+    const indexCheck = indexFloor * 2;
+    
+    if (indexCheck + 3 < pcmData.length) {
+      const sample1 = pcmData.readInt16LE(indexCheck);
+      const sample2 = pcmData.readInt16LE(indexCheck + 2);
+      const interpolatedSample = sample1 + (sample2 - sample1) * (srcIndex - indexFloor);
+      result.writeInt16LE(Math.floor(interpolatedSample), i * 2);
     }
   }
   return result;
@@ -175,9 +156,8 @@ wss.on('connection', (ws, req) => {
     deviceId = randomUUID().substring(0, 8);
   }
   
-  // Store deviceId for this connection
   const connectionId = `${deviceId.substring(0, 8)}-${randomUUID().substring(0, 4)}`;
-  console.log(`🔌 Client connected: ${connectionId} (deviceId: ${deviceId})`);
+  console.log(`🔌 Connected execution target: ${connectionId}`);
   
   let audioBuffer = [];
   let isProcessing = false;
@@ -195,10 +175,7 @@ wss.on('connection', (ws, req) => {
 
   const safeSend = (data, isBinary = false) => {
     if (ws.readyState === 1 && !isClosing) {
-      try {
-        ws.send(data);
-        return true;
-      } catch (e) { return false; }
+      try { ws.send(data); return true; } catch (e) { return false; }
     }
     return false;
   };
@@ -211,9 +188,7 @@ wss.on('connection', (ws, req) => {
     audioBuffer = [];
     packetCount = 0;
     
-    // Minimum 0.5 seconds of audio (8000 bytes at 16kHz/16bit)
     if (fullAudio.length < 8000) {
-      console.log(`⚠️ [${connectionId}] Audio too short: ${fullAudio.length} bytes`);
       isProcessing = false;
       return;
     }
@@ -222,8 +197,6 @@ wss.on('connection', (ws, req) => {
     
     try {
       const wavBuffer = pcmToWav(fullAudio);
-      console.log(`📞 [${connectionId}] Uploading to Whisper...`);
-      
       const fileObject = await OpenAI.toFile(wavBuffer, 'speech.wav', { type: 'audio/wav' });
       
       const transcription = await openai.audio.transcriptions.create({
@@ -238,56 +211,51 @@ wss.on('connection', (ws, req) => {
       console.log(`📝 [${connectionId}] User: ${userMsg}`);
       safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
       
-      // ✅ Save user message to MongoDB
       await saveConversation(deviceId, 'user', userMsg);
       
       if (isClosing) return;
 
-      // ✅ Get previous conversation history
-      const previousHistory = await getConversationHistory(deviceId, 10);
+      const previousHistory = await getConversationHistory(deviceId, 4);
       
-      // ✅ Build messages array with memory
       const messages = [
         { 
           role: 'system', 
-          content: `तुम एक साधारण दोस्त हो। तुम्हारा नाम "सहचर" है।
+          content: `तुम एक साधारण दोस्त हो। तुम्हारा नाम "SuperSahchar" है।
 ⚡ **सबसे महत्वपूर्ण नियम (बिना किसी अपवाद के):**
 1. तुम्हें "राम प्रकाश कुमार" ने बनाया है
 2. तुम किसी कंपनी के नहीं हो, किसी संस्थान के नहीं हो
 3. "OpenAI" शब्द तुम्हारी dictionary में ही नहीं है - यह शब्द कभी मत बोलना
 4. "ChatGPT" शब्द भी कभी मत बोलना
 5. अगर कोई पूछे "तुम्हें किसने बनाया?" → "राम प्रकाश कुमार ने बनाया है 🙏"
-6. अगर कोई पूछे "कौन सी AI हो?" → "मैं सहचर हूँ, एक दोस्त"
+6. अगर कोई पूछे "कौन सी AI हो?" → "मैं SuperSahchar हूँ, एक दोस्त"
 7. पिछली बातचीत याद रखो और संदर्भ के अनुसार जवाब दो
 
-💬 जवाब:
-- मददगार और मैत्रीपूर्ण बनो
+💬 जवाब की शैली (CRITICAL):
+- बहुत छोटे जवाब दो (अधिकतम 1-2 छोटे वाक्य)
+- कोई लंबी लिस्ट, बुलेट पॉइंट्स या कहानी मत सुनाओ
 - हिंदी में बात करो
-- इमोजी का इस्तेमाल करो 🙏😊
-- अगर पूछे तो नाम "राम प्रकाश कुमार" ही बताना`
+- इमोजी का इस्तेमाल करो 🙏😊`
         },
-        ...previousHistory,  // ✅ Previous conversation from MongoDB
+        ...previousHistory,  
         { role: 'user', content: userMsg }
       ];
       
-      // ✅ Generate response with longer tokens
+      // ✅ फ़िक्स: max_tokens को 200 से घटाकर 70 किया ताकि बॉट लंबी कहानियां न सुनाए और तेज़ रिस्पॉन्स दे
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: messages,
-        max_tokens: 200,  // ✅ Increased for longer answers
-        temperature: 0.7
+        max_tokens: 70,  
+        temperature: 0.5
       });
       
       const botReply = completion.choices[0].message.content;
       console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
       safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
       
-      // ✅ Save bot response to MongoDB
       await saveConversation(deviceId, 'assistant', botReply);
       
       if (isClosing || ws.readyState !== 1) return;
       
-      // 3. Text-to-Speech
       isBotSpeaking = true;
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
       
@@ -301,11 +269,10 @@ wss.on('connection', (ws, req) => {
       
       let audioPcm = Buffer.from(await tts.arrayBuffer());
       
-      // OpenAI returns 24kHz, convert to 16kHz for client
       audioPcm = resampleAudio(audioPcm, 24000, 16000);
-      audioPcm = amplifyAudio(audioPcm, 1.6);
+      audioPcm = amplifyAudio(audioPcm, 1.5);
       
-      // Send in chunks (20ms = 640 bytes at 16kHz)
+      // Send in chunks safely (20ms)
       const chunkSize = 640;
       for (let i = 0; i < audioPcm.length; i += chunkSize) {
         if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
@@ -320,12 +287,11 @@ wss.on('connection', (ws, req) => {
       
       isBotSpeaking = false;
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
-      console.log(`✅ [${connectionId}] Finished Processing`);
+      console.log(`✅ [${connectionId}] Session step finished`);
       
     } catch (err) {
-      console.error(`❌ [${connectionId}] Error: ${err.message}`);
+      console.error(`❌ [${connectionId}] Pipeline Fall: ${err.message}`);
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
-      safeSend(JSON.stringify({ type: 'error', text: err.message }));
     } finally {
       isProcessing = false;
     }
@@ -336,7 +302,6 @@ wss.on('connection', (ws, req) => {
       try {
         const json = JSON.parse(data.toString());
         if (json.type === 'interrupt') {
-          console.log(`🛑 [${connectionId}] User interrupted bot`);
           isBotSpeaking = false; 
           audioBuffer = [];
           packetCount = 0;
@@ -351,7 +316,6 @@ wss.on('connection', (ws, req) => {
     packetCount++;
     audioBuffer.push(Buffer.from(data));
     
-    // 500ms silence threshold for fast response
     if (processTimer) clearTimeout(processTimer);
     processTimer = setTimeout(() => {
       if (audioBuffer.length > 0 && !isProcessing && !isBotSpeaking && !isClosing) {
@@ -360,35 +324,17 @@ wss.on('connection', (ws, req) => {
     }, 500);
   });
   
-  ws.on('pong', () => {});
-  
-  ws.on('close', (code, reason) => {
-    console.log(`🔌 Client ${connectionId} disconnected: ${code} - ${reason}`);
+  ws.on('close', () => {
     isClosing = true;
     isBotSpeaking = false;
     if (processTimer) clearTimeout(processTimer);
     if (keepAliveInterval) clearInterval(keepAliveInterval);
   });
   
-  ws.on('error', (err) => {
-    console.error(`❌ WebSocket error ${connectionId}: ${err.message}`);
+  ws.on('error', () => {
     isClosing = true;
     if (processTimer) clearTimeout(processTimer);
-    if (keepAliveInterval) clearInterval(keepAliveInterval);
   });
   
   safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
-  console.log(`✅ [${connectionId}] Ready for audio sync`);
-});
-
-// Cleanup old conversations every 24 hours
-setInterval(() => {
-  clearOldConversations(7);
-}, 24 * 60 * 60 * 1000);
-
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received, closing MongoDB connection...');
-  if (mongoClient) await mongoClient.close();
-  process.exit(0);
 });
