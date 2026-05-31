@@ -5,15 +5,13 @@ import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import { randomUUID } from 'crypto';
 import { MongoClient } from 'mongodb';
-import { Blob } from 'buffer'; // ✅ इन-मेमोरी Whisper फ़िक्स के लिए आवश्यक
+import { Blob } from 'buffer'; 
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-
-// ✅ रेलवे इंटरनल MongoDB और एक्सटर्नल एनवायरनमेंट वेरिएबल्स का परफेक्ट सिंक
 const MONGODB_URI = 
   process.env.MONGODB_URL || 
   process.env.MONGODB_URI || 
@@ -44,7 +42,7 @@ async function connectMongoDB() {
     conversationsCollection = db.collection(COLLECTION_NAME);
     
     await conversationsCollection.createIndex({ deviceId: 1, timestamp: -1 });
-    await conversationsCollection.createIndex({ timestamp: 1 }, { expireAfterSeconds: 604800 }); // 7 Days Retention
+    await conversationsCollection.createIndex({ timestamp: 1 }, { expireAfterSeconds: 604800 }); 
     
     console.log('✅ MongoDB connected successfully to Sahchar Storage Container!');
   } catch (error) {
@@ -87,7 +85,6 @@ async function saveConversation(deviceId, role, content) {
   }
 }
 
-// डेटाबेस चालू करें
 await connectMongoDB();
 
 const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v5.8 (Resampling Fixed) on ${PORT}`));
@@ -131,8 +128,6 @@ function amplifyAudio(pcmData, factor = 1.3) {
   }
   return amplified;
 }
-
-// Linear Interpolation Resampler (24kHz to 16kHz Down-sampling)
 function resampleAudio(pcmData, fromRate = 24000, toRate = 16000) {
   if (fromRate === toRate) return pcmData;
   
@@ -205,20 +200,18 @@ wss.on('connection', (ws, req) => {
     safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
     
     try {
-      // 1. Convert PCM to WAV Buffer
+      
       const wavBuffer = pcmToWav(fullAudio);
       
       console.log(`📞 [${connectionId}] Constructing Native Blob for Whisper...`);
-      
-      // ✅ सुपर फ़िक्स: बफ़र को सीधे OpenAI.toFile में भेजने के बजाय पहले Native Blob में बदला गया
+    
       const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
       const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
       
-      // Transcribe (Whisper API)
       const transcription = await openai.audio.transcriptions.create({
         file: fileObject,
         model: 'whisper-1',
-        language: 'hi' // यह मॉडल को मजबूर करेगा कि वह सिर्फ शुद्ध हिंदी ही लिखे
+        language: 'hi'
       });
       
       const userMsg = transcription.text.trim();
@@ -285,8 +278,6 @@ wss.on('connection', (ws, req) => {
       
       audioPcm = resampleAudio(audioPcm, 24000, 16000);
       audioPcm = amplifyAudio(audioPcm, 1.3);
-      
-      // ✅ फ़िक्स: ऑडियो की रफ़्तार को शांत और सिंक करने के लिए सटीक 28ms का ट्रांसफर पेस (Pace)
       const chunkSize = 640;
       for (let i = 0; i < audioPcm.length; i += chunkSize) {
         if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
