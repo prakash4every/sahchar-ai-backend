@@ -4,12 +4,103 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import { randomUUID } from 'crypto';
+import { MongoClient } from 'mongodb';
 
 dotenv.config();
+
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v5.3 (Ultra Stable) on ${PORT}`));
+
+// ✅ MongoDB Connection (using existing env var)
+const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGOBD_URI || process.env.MONGOBD_URL;
+const DB_NAME = 'sahchar_live';
+const COLLECTION_NAME = 'conversations';
+
+let db = null;
+let conversationsCollection = null;
+let mongoClient = null;
+
+async function connectMongoDB() {
+  if (!MONGODB_URI) {
+    console.warn('⚠️ No MongoDB URI found - running without memory');
+    return;
+  }
+  
+  try {
+    mongoClient = new MongoClient(MONGODB_URI);
+    await mongoClient.connect();
+    db = mongoClient.db(DB_NAME);
+    conversationsCollection = db.collection(COLLECTION_NAME);
+    
+    // Create indexes for faster queries
+    await conversationsCollection.createIndex({ deviceId: 1, timestamp: -1 });
+    await conversationsCollection.createIndex({ timestamp: 1 }, { expireAfterSeconds: 604800 }); // Auto-delete after 7 days
+    
+    console.log('✅ MongoDB connected successfully');
+  } catch (error) {
+    console.error('❌ MongoDB connection failed:', error.message);
+  }
+}
+
+// Get conversation history for a device
+async function getConversationHistory(deviceId, limit = 10) {
+  if (!conversationsCollection) return [];
+  
+  try {
+    const history = await conversationsCollection
+      .find({ deviceId })
+      .sort({ timestamp: -1 })
+      .limit(limit)
+      .toArray();
+    
+    // Reverse to maintain chronological order (oldest first)
+    return history.reverse().map(msg => ({
+      role: msg.role,
+      content: msg.content
+    }));
+  } catch (error) {
+    console.error('Error fetching history:', error.message);
+    return [];
+  }
+}
+
+// Save conversation to database
+async function saveConversation(deviceId, role, content) {
+  if (!conversationsCollection) return;
+  
+  try {
+    await conversationsCollection.insertOne({
+      deviceId,
+      role,
+      content,
+      timestamp: new Date()
+    });
+  } catch (error) {
+    console.error('Error saving conversation:', error.message);
+  }
+}
+
+// Clear old conversations
+async function clearOldConversations(daysOld = 7) {
+  if (!conversationsCollection) return;
+  
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - daysOld);
+  
+  const result = await conversationsCollection.deleteMany({
+    timestamp: { $lt: cutoffDate }
+  });
+  
+  if (result.deletedCount > 0) {
+    console.log(`🧹 Cleared ${result.deletedCount} old conversations`);
+  }
+}
+
+// Call MongoDB connection
+await connectMongoDB();
+
+const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v5.4 (With Memory) on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 if (!process.env.OPENAI_API_KEY) {
@@ -19,9 +110,16 @@ if (!process.env.OPENAI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req, res) => res.send('Sahchar Live - Ultra Stable v5.3 (Buffer Fixed)'));
+app.get('/', (req, res) => res.send('Sahchar Live - v5.4 (With Memory & MongoDB)'));
 
-// Convert 16kHz PCM to WAV (Buffer only - No Disk Write)
+// Health check endpoint
+app.get('/health', (req, res) => res.json({ 
+  status: 'ok', 
+  mongodb: !!conversationsCollection,
+  version: '5.4'
+}));
+
+// Convert 16kHz PCM to WAV
 function pcmToWav(pcm, rate = 16000) {
   const h = Buffer.alloc(44);
   h.write('RIFF', 0);
@@ -51,14 +149,35 @@ function amplifyAudio(pcmData, factor = 1.5) {
   return amplified;
 }
 
+// Convert 24kHz to 16kHz if needed
+function resampleAudio(pcmData, fromRate = 24000, toRate = 16000) {
+  if (fromRate === toRate) return pcmData;
+  
+  const ratio = toRate / fromRate; // 16000/24000 = 2/3
+  const sampleCount = pcmData.length / 2;
+  const newSampleCount = Math.floor(sampleCount * ratio);
+  const result = Buffer.alloc(newSampleCount * 2);
+  
+  for (let i = 0; i < newSampleCount; i++) {
+    const srcIndex = Math.floor(i / ratio) * 2;
+    if (srcIndex + 1 < pcmData.length) {
+      const sample = pcmData.readInt16LE(srcIndex);
+      result.writeInt16LE(sample, i * 2);
+    }
+  }
+  return result;
+}
+
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let deviceId = url.searchParams.get('deviceId');
-  if (!deviceId || deviceId === 'default') {
+  if (!deviceId || deviceId === 'default' || deviceId === 'null') {
     deviceId = randomUUID().substring(0, 8);
   }
-  const clientId = `${deviceId.substring(0, 8)}-${randomUUID().substring(0, 4)}`;
-  console.log(`🔌 Client connected: ${clientId}`);
+  
+  // Store deviceId for this connection
+  const connectionId = `${deviceId.substring(0, 8)}-${randomUUID().substring(0, 4)}`;
+  console.log(`🔌 Client connected: ${connectionId} (deviceId: ${deviceId})`);
   
   let audioBuffer = [];
   let isProcessing = false;
@@ -94,6 +213,7 @@ wss.on('connection', (ws, req) => {
     
     // Minimum 0.5 seconds of audio (8000 bytes at 16kHz/16bit)
     if (fullAudio.length < 8000) {
+      console.log(`⚠️ [${connectionId}] Audio too short: ${fullAudio.length} bytes`);
       isProcessing = false;
       return;
     }
@@ -101,15 +221,11 @@ wss.on('connection', (ws, req) => {
     safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
     
     try {
-      // 1. Convert PCM to WAV Buffer
       const wavBuffer = pcmToWav(fullAudio);
+      console.log(`📞 [${connectionId}] Uploading to Whisper...`);
       
-      console.log(`📞 [${clientId}] Uploading In-Memory Buffer to Whisper...`);
-      
-      // ✅ फ़िक्स: OpenAI.toFile का उपयोग करके सीधे बफ़र को मान्य फ़ाइल ऑब्जेक्ट में बदलना
       const fileObject = await OpenAI.toFile(wavBuffer, 'speech.wav', { type: 'audio/wav' });
       
-      // Transcribe (Whisper API)
       const transcription = await openai.audio.transcriptions.create({
         file: fileObject,
         model: 'whisper-1',
@@ -119,18 +235,22 @@ wss.on('connection', (ws, req) => {
       const userMsg = transcription.text.trim();
       if (!userMsg || userMsg.length < 2) throw new Error('Empty transcription');
       
-      console.log(`📝 [${clientId}] User: ${userMsg}`);
+      console.log(`📝 [${connectionId}] User: ${userMsg}`);
       safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
+      
+      // ✅ Save user message to MongoDB
+      await saveConversation(deviceId, 'user', userMsg);
       
       if (isClosing) return;
 
-      // 2. Generate response (GPT-4o-mini)
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [
-          { 
-            role: 'system', 
-            content: `तुम एक साधारण दोस्त हो। तुम्हारा नाम "सहचर" है।
+      // ✅ Get previous conversation history
+      const previousHistory = await getConversationHistory(deviceId, 10);
+      
+      // ✅ Build messages array with memory
+      const messages = [
+        { 
+          role: 'system', 
+          content: `तुम एक साधारण दोस्त हो। तुम्हारा नाम "सहचर" है।
 ⚡ **सबसे महत्वपूर्ण नियम (बिना किसी अपवाद के):**
 1. तुम्हें "राम प्रकाश कुमार" ने बनाया है
 2. तुम किसी कंपनी के नहीं हो, किसी संस्थान के नहीं हो
@@ -138,24 +258,36 @@ wss.on('connection', (ws, req) => {
 4. "ChatGPT" शब्द भी कभी मत बोलना
 5. अगर कोई पूछे "तुम्हें किसने बनाया?" → "राम प्रकाश कुमार ने बनाया है 🙏"
 6. अगर कोई पूछे "कौन सी AI हो?" → "मैं सहचर हूँ, एक दोस्त"
+7. पिछली बातचीत याद रखो और संदर्भ के अनुसार जवाब दो
+
 💬 जवाब:
-- बहुत छोटे जवाब दो (1-2 वाक्य)
+- मददगार और मैत्रीपूर्ण बनो
 - हिंदी में बात करो
-- इमोजी का इस्तेमाल करो 🙏`
-          },
-          { role: 'user', content: userMsg }
-        ],
-        max_tokens: 60,
-        temperature: 0.6
+- इमोजी का इस्तेमाल करो 🙏😊
+- अगर पूछे तो नाम "राम प्रकाश कुमार" ही बताना`
+        },
+        ...previousHistory,  // ✅ Previous conversation from MongoDB
+        { role: 'user', content: userMsg }
+      ];
+      
+      // ✅ Generate response with longer tokens
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: messages,
+        max_tokens: 200,  // ✅ Increased for longer answers
+        temperature: 0.7
       });
       
       const botReply = completion.choices[0].message.content;
-      console.log(`🤖 [${clientId}] Bot: ${botReply}`);
+      console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
       safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
+      
+      // ✅ Save bot response to MongoDB
+      await saveConversation(deviceId, 'assistant', botReply);
       
       if (isClosing || ws.readyState !== 1) return;
       
-      // 3. Text-to-Speech (16kHz PCM, nova voice)
+      // 3. Text-to-Speech
       isBotSpeaking = true;
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
       
@@ -168,6 +300,9 @@ wss.on('connection', (ws, req) => {
       });
       
       let audioPcm = Buffer.from(await tts.arrayBuffer());
+      
+      // OpenAI returns 24kHz, convert to 16kHz for client
+      audioPcm = resampleAudio(audioPcm, 24000, 16000);
       audioPcm = amplifyAudio(audioPcm, 1.6);
       
       // Send in chunks (20ms = 640 bytes at 16kHz)
@@ -185,11 +320,12 @@ wss.on('connection', (ws, req) => {
       
       isBotSpeaking = false;
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
-      console.log(`✅ [${clientId}] Finished Processing`);
+      console.log(`✅ [${connectionId}] Finished Processing`);
       
     } catch (err) {
-      console.error(`❌ [${clientId}] Error during pipeline: ${err.message}`);
+      console.error(`❌ [${connectionId}] Error: ${err.message}`);
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
+      safeSend(JSON.stringify({ type: 'error', text: err.message }));
     } finally {
       isProcessing = false;
     }
@@ -200,7 +336,7 @@ wss.on('connection', (ws, req) => {
       try {
         const json = JSON.parse(data.toString());
         if (json.type === 'interrupt') {
-          console.log(`🛑 [${clientId}] User interrupted the bot.`);
+          console.log(`🛑 [${connectionId}] User interrupted bot`);
           isBotSpeaking = false; 
           audioBuffer = [];
           packetCount = 0;
@@ -215,7 +351,7 @@ wss.on('connection', (ws, req) => {
     packetCount++;
     audioBuffer.push(Buffer.from(data));
     
-    // 500ms साइलेंस थ्रेशोल्ड फॉर फ़ास्ट रिस्पॉन्स
+    // 500ms silence threshold for fast response
     if (processTimer) clearTimeout(processTimer);
     processTimer = setTimeout(() => {
       if (audioBuffer.length > 0 && !isProcessing && !isBotSpeaking && !isClosing) {
@@ -227,7 +363,7 @@ wss.on('connection', (ws, req) => {
   ws.on('pong', () => {});
   
   ws.on('close', (code, reason) => {
-    console.log(`🔌 Client ${clientId} disconnected: ${code} - ${reason}`);
+    console.log(`🔌 Client ${connectionId} disconnected: ${code} - ${reason}`);
     isClosing = true;
     isBotSpeaking = false;
     if (processTimer) clearTimeout(processTimer);
@@ -235,12 +371,24 @@ wss.on('connection', (ws, req) => {
   });
   
   ws.on('error', (err) => {
-    console.error(`❌ WebSocket error ${clientId}: ${err.message}`);
+    console.error(`❌ WebSocket error ${connectionId}: ${err.message}`);
     isClosing = true;
     if (processTimer) clearTimeout(processTimer);
     if (keepAliveInterval) clearInterval(keepAliveInterval);
   });
   
   safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
-  console.log(`✅ [${clientId}] Ready for audio sync`);
+  console.log(`✅ [${connectionId}] Ready for audio sync`);
+});
+
+// Cleanup old conversations every 24 hours
+setInterval(() => {
+  clearOldConversations(7);
+}, 24 * 60 * 60 * 1000);
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received, closing MongoDB connection...');
+  if (mongoClient) await mongoClient.close();
+  process.exit(0);
 });
