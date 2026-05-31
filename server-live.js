@@ -161,10 +161,10 @@ wss.on('connection', (ws, req) => {
       
       const tts = await openai.audio.speech.create({
         model: 'tts-1',
-        voice: 'nova',
+        voice: 'alloy',
         input: botReply,
         response_format: 'pcm',
-        speed: 1.05
+        speed: 1.00
       });
       
       let audioPcm = Buffer.from(await tts.arrayBuffer());
