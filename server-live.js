@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import { randomUUID } from 'crypto';
 import { MongoClient } from 'mongodb';
+import { Blob } from 'buffer'; // ✅ इन-मेमोरी Whisper फ़िक्स के लिए आवश्यक
 
 dotenv.config();
 
@@ -28,6 +29,11 @@ let conversationsCollection = null;
 let mongoClient = null;
 
 async function connectMongoDB() {
+  if (!MONGODB_URI) {
+    console.warn('⚠️ No MongoDB URI found - running without memory database layer');
+    return;
+  }
+  
   try {
     mongoClient = new MongoClient(MONGODB_URI, {
       connectTimeoutMS: 5000,
@@ -38,16 +44,16 @@ async function connectMongoDB() {
     conversationsCollection = db.collection(COLLECTION_NAME);
     
     await conversationsCollection.createIndex({ deviceId: 1, timestamp: -1 });
-    await conversationsCollection.createIndex({ timestamp: 1 }, { expireAfterSeconds: 604800 }); 
+    await conversationsCollection.createIndex({ timestamp: 1 }, { expireAfterSeconds: 604800 }); // 7 Days Retention
     
     console.log('✅ MongoDB connected successfully to Sahchar Storage Container!');
   } catch (error) {
-    console.error('❌ MongoDB connection layer failed:', error.message);
+    console.error('❌ MongoDB connection failed:', error.message);
   }
 }
 
 // डेटाबेस से पुरानी यादें निकालना
-async function getConversationHistory(deviceId, limit = 6) {
+async function getConversationHistory(deviceId, limit = 5) {
   if (!conversationsCollection || !deviceId) return [];
   try {
     const history = await conversationsCollection
@@ -84,7 +90,7 @@ async function saveConversation(deviceId, role, content) {
 // डेटाबेस चालू करें
 await connectMongoDB();
 
-const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v5.7 (Resampling Fixed) on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v5.8 (Resampling Fixed) on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 if (!process.env.OPENAI_API_KEY) {
@@ -94,7 +100,7 @@ if (!process.env.OPENAI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req, res) => res.send('Sahchar Live - v5.7 (Memory & Resampling Crystal Clear)'));
+app.get('/', (req, res) => res.send('Sahchar Live - v5.8 (Memory & Native Blob Activated)'));
 
 // Convert 16kHz PCM to WAV Object
 function pcmToWav(pcm, rate = 16000) {
@@ -126,7 +132,7 @@ function amplifyAudio(pcmData, factor = 1.3) {
   return amplified;
 }
 
-// ✅ फ़िक्स: ध्वनि के 'करराने' (Crackling) को रोकने के लिए सटीक Linear Interpolation रीसैंपलर
+// Linear Interpolation Resampler (24kHz to 16kHz Down-sampling)
 function resampleAudio(pcmData, fromRate = 24000, toRate = 16000) {
   if (fromRate === toRate) return pcmData;
   
@@ -154,7 +160,6 @@ wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let rawDeviceId = url.searchParams.get('deviceId');
   
-  // ✅ फ़िक्स: यदि क्लाइंट रीकनेक्ट होते समय null या डिफ़ॉल्ट स्ट्रिंग भेजता है, तो उसे क्लीन करें
   let deviceId = "default_user";
   if (rawDeviceId && rawDeviceId !== 'default' && rawDeviceId !== 'null' && rawDeviceId !== 'undefined') {
     deviceId = rawDeviceId.trim();
@@ -200,13 +205,20 @@ wss.on('connection', (ws, req) => {
     safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
     
     try {
+      // 1. Convert PCM to WAV Buffer
       const wavBuffer = pcmToWav(fullAudio);
-      const fileObject = await OpenAI.toFile(wavBuffer, 'speech.wav', { type: 'audio/wav' });
       
+      console.log(`📞 [${connectionId}] Constructing Native Blob for Whisper...`);
+      
+      // ✅ सुपर फ़िक्स: बफ़र को सीधे OpenAI.toFile में भेजने के बजाय पहले Native Blob में बदला गया
+      const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+      const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
+      
+      // Transcribe (Whisper API)
       const transcription = await openai.audio.transcriptions.create({
         file: fileObject,
         model: 'whisper-1',
-        language: 'hi'
+        language: 'hi' // यह मॉडल को मजबूर करेगा कि वह सिर्फ शुद्ध हिंदी ही लिखे
       });
       
       const userMsg = transcription.text.trim();
@@ -274,13 +286,13 @@ wss.on('connection', (ws, req) => {
       audioPcm = resampleAudio(audioPcm, 24000, 16000);
       audioPcm = amplifyAudio(audioPcm, 1.3);
       
-      // ✅ फ़िक्स: ऑडियो के फास्ट फॉरवर्ड भागने को थामने के लिए सटीक 28ms का ट्रांसफर पेस (Pace)
+      // ✅ फ़िक्स: ऑडियो की रफ़्तार को शांत और सिंक करने के लिए सटीक 28ms का ट्रांसफर पेस (Pace)
       const chunkSize = 640;
       for (let i = 0; i < audioPcm.length; i += chunkSize) {
         if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         safeSend(chunk, true);
-        await new Promise(r => setTimeout(r, 20)); 
+        await new Promise(r => setTimeout(r, 28)); 
       }
       
       if (isBotSpeaking) {
