@@ -280,7 +280,7 @@ wss.on('connection', (ws, req) => {
         if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         safeSend(chunk, true);
-        await new Promise(r => setTimeout(r, 28)); 
+        await new Promise(r => setTimeout(r, 20)); 
       }
       
       if (isBotSpeaking) {
