@@ -127,25 +127,19 @@ function amplifyAudio(pcmData, factor = 1.3) {
     amplified.writeInt16LE(sample, i);
   }
   return amplified;
-}
-function resampleAudio(pcmData, fromRate = 24000, toRate = 16000) {
+}function resampleAudio(pcmData, fromRate = 24000, toRate = 16000) {
   if (fromRate === toRate) return pcmData;
   
+  // Simple decimation: keep 2 out of every 3 samples
   const srcSamples = pcmData.length / 2;
-  const ratio = fromRate / toRate;
-  const dstSamples = Math.floor(srcSamples / ratio);
+  const dstSamples = Math.floor(srcSamples * 2 / 3);
   const result = Buffer.alloc(dstSamples * 2);
   
   for (let i = 0; i < dstSamples; i++) {
-    const srcIndex = i * ratio;
-    const indexFloor = Math.floor(srcIndex);
-    const indexCheck = indexFloor * 2;
-    
-    if (indexCheck + 3 < pcmData.length) {
-      const sample1 = pcmData.readInt16LE(indexCheck);
-      const sample2 = pcmData.readInt16LE(indexCheck + 2);
-      const interpolatedSample = sample1 + (sample2 - sample1) * (srcIndex - indexFloor);
-      result.writeInt16LE(Math.floor(interpolatedSample), i * 2);
+    const srcIndex = Math.floor(i * 1.5) * 2;
+    if (srcIndex + 1 < pcmData.length) {
+      const sample = pcmData.readInt16LE(srcIndex);
+      result.writeInt16LE(sample, i * 2);
     }
   }
   return result;
@@ -277,13 +271,13 @@ wss.on('connection', (ws, req) => {
       let audioPcm = Buffer.from(await tts.arrayBuffer());
       
       audioPcm = resampleAudio(audioPcm, 24000, 16000);
-      audioPcm = amplifyAudio(audioPcm, 1.3);
+      audioPcm = amplifyAudio(audioPcm, 1.5);
       const chunkSize = 640;
       for (let i = 0; i < audioPcm.length; i += chunkSize) {
         if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         safeSend(chunk, true);
-        await new Promise(r => setTimeout(r, 28)); 
+        await new Promise(r => setTimeout(r, 20)); 
       }
       
       if (isBotSpeaking) {
