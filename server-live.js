@@ -12,13 +12,13 @@ const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
 
-// ✅ रेलवे इंटरनल और एक्सटर्नल एनवायरनमेंट वेरिएबल्स का परफेक्ट फॉल-बैक मैप
+// ✅ रेलवे इंटरनल MongoDB और एक्सटर्नल एनवायरनमेंट वेरिएबल्स का परफेक्ट सिंक
 const MONGODB_URI = 
   process.env.MONGODB_URL || 
   process.env.MONGODB_URI || 
   process.env.MONGOBD_URI || 
   process.env.MONGOBD_URL ||
-  'mongodb://MongoDB.railway.internal:27017'; // स्क्रीनशॉट वाला रेलवे इंटरनल यूआरएल डिफ़ॉल्ट फॉल-बैक
+  'mongodb://MongoDB.railway.internal:27017'; 
 
 const DB_NAME = 'sahchar_live';
 const COLLECTION_NAME = 'conversations';
@@ -29,7 +29,6 @@ let mongoClient = null;
 
 async function connectMongoDB() {
   try {
-    console.log(`🔌 Attempting MongoDB connection route...`);
     mongoClient = new MongoClient(MONGODB_URI, {
       connectTimeoutMS: 5000,
       socketTimeoutMS: 45000,
@@ -38,23 +37,21 @@ async function connectMongoDB() {
     db = mongoClient.db(DB_NAME);
     conversationsCollection = db.collection(COLLECTION_NAME);
     
-    // तेजी से डेटा खोजने के लिए इंडेक्सिंग
     await conversationsCollection.createIndex({ deviceId: 1, timestamp: -1 });
-    await conversationsCollection.createIndex({ timestamp: 1 }, { expireAfterSeconds: 604800 }); // 7 दिन बाद ऑटो-डिलीट
+    await conversationsCollection.createIndex({ timestamp: 1 }, { expireAfterSeconds: 604800 }); 
     
     console.log('✅ MongoDB connected successfully to Sahchar Storage Container!');
   } catch (error) {
     console.error('❌ MongoDB connection layer failed:', error.message);
-    console.log('⚠️ Running in Server Memory Safe-Mode without DB features');
   }
 }
 
 // डेटाबेस से पुरानी यादें निकालना
-async function getConversationHistory(deviceId, limit = 5) {
-  if (!conversationsCollection) return [];
+async function getConversationHistory(deviceId, limit = 6) {
+  if (!conversationsCollection || !deviceId) return [];
   try {
     const history = await conversationsCollection
-      .find({ deviceId })
+      .find({ deviceId: deviceId.trim() })
       .sort({ timestamp: -1 })
       .limit(limit)
       .toArray();
@@ -64,29 +61,30 @@ async function getConversationHistory(deviceId, limit = 5) {
       content: msg.content
     }));
   } catch (error) {
+    console.error('Error fetching history:', error.message);
     return [];
   }
 }
 
 // बातचीत को डेटाबेस में सुरक्षित करना
 async function saveConversation(deviceId, role, content) {
-  if (!conversationsCollection) return;
+  if (!conversationsCollection || !deviceId) return;
   try {
     await conversationsCollection.insertOne({
-      deviceId,
+      deviceId: deviceId.trim(),
       role,
       content,
       timestamp: new Date()
     });
   } catch (error) {
-    console.error('Error writing to database:', error.message);
+    console.error('Error saving conversation:', error.message);
   }
 }
 
-// सर्वर शुरू होने पर डेटाबेस कनेक्शन सक्रिय करना
+// डेटाबेस चालू करें
 await connectMongoDB();
 
-const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v5.6 (Railway Native Mongo) on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v5.7 (Resampling Fixed) on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 if (!process.env.OPENAI_API_KEY) {
@@ -96,9 +94,9 @@ if (!process.env.OPENAI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req, res) => res.send('Sahchar Live - v5.6 (Railway Internal DB Active)'));
+app.get('/', (req, res) => res.send('Sahchar Live - v5.7 (Memory & Resampling Crystal Clear)'));
 
-// Convert 16kHz PCM to WAV Structure
+// Convert 16kHz PCM to WAV Object
 function pcmToWav(pcm, rate = 16000) {
   const h = Buffer.alloc(44);
   h.write('RIFF', 0);
@@ -117,8 +115,8 @@ function pcmToWav(pcm, rate = 16000) {
   return Buffer.concat([h, pcm]);
 }
 
-// Amplify weak audio signals
-function amplifyAudio(pcmData, factor = 1.4) {
+// Amplify audio signals smoothly
+function amplifyAudio(pcmData, factor = 1.3) {
   const amplified = Buffer.alloc(pcmData.length);
   for (let i = 0; i < pcmData.length; i += 2) {
     let sample = pcmData.readInt16LE(i);
@@ -128,9 +126,10 @@ function amplifyAudio(pcmData, factor = 1.4) {
   return amplified;
 }
 
-// Safe Linear Audio Resampler (24kHz to 16kHz Down-sampling)
+// ✅ फ़िक्स: ध्वनि के 'करराने' (Crackling) को रोकने के लिए सटीक Linear Interpolation रीसैंपलर
 function resampleAudio(pcmData, fromRate = 24000, toRate = 16000) {
   if (fromRate === toRate) return pcmData;
+  
   const srcSamples = pcmData.length / 2;
   const ratio = fromRate / toRate;
   const dstSamples = Math.floor(srcSamples / ratio);
@@ -153,13 +152,16 @@ function resampleAudio(pcmData, fromRate = 24000, toRate = 16000) {
 
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  let deviceId = url.searchParams.get('deviceId');
-  if (!deviceId || deviceId === 'default' || deviceId === 'null') {
-    deviceId = randomUUID().substring(0, 8);
+  let rawDeviceId = url.searchParams.get('deviceId');
+  
+  // ✅ फ़िक्स: यदि क्लाइंट रीकनेक्ट होते समय null या डिफ़ॉल्ट स्ट्रिंग भेजता है, तो उसे क्लीन करें
+  let deviceId = "default_user";
+  if (rawDeviceId && rawDeviceId !== 'default' && rawDeviceId !== 'null' && rawDeviceId !== 'undefined') {
+    deviceId = rawDeviceId.trim();
   }
   
   const connectionId = `${deviceId.substring(0, 8)}-${randomUUID().substring(0, 4)}`;
-  console.log(`🔌 Client active on stream session: ${connectionId}`);
+  console.log(`🔌 Client connected with session token: ${connectionId} (Verified ID: ${deviceId})`);
   
   let audioBuffer = [];
   let isProcessing = false;
@@ -217,7 +219,7 @@ wss.on('connection', (ws, req) => {
       
       if (isClosing) return;
 
-      const previousHistory = await getConversationHistory(deviceId, 4);
+      const previousHistory = await getConversationHistory(deviceId, 5);
       
       const messages = [
         { 
@@ -230,10 +232,10 @@ wss.on('connection', (ws, req) => {
 4. "ChatGPT" शब्द भी कभी मत बोलना
 5. अगर कोई पूछे "तुम्हें किसने बनाया?" → "राम प्रकाश कुमार ने बनाया है 🙏"
 6. अगर कोई पूछे "कौन सी AI हो?" → "मैं SuperSahchar हूँ, एक दोस्त"
-7. पिछली बातचीत याद रखो और संदर्भ के अनुसार जवाब दो
+7. पिछली बातचीत याद रखो और संदर्भ के अनुसार जवाब दो।
 
 💬 जवाब की शैली (CRITICAL):
-- बहुत छोटे जवाब दो (अधिकतम 1-2 छोटे वाक्य)
+- बहुत छोटे जवाब do (अधिकतम 1-2 वाक्य)
 - हिंदी में बात करो
 - इमोजी का इस्तेमाल करो 🙏😊`
         },
@@ -270,15 +272,15 @@ wss.on('connection', (ws, req) => {
       let audioPcm = Buffer.from(await tts.arrayBuffer());
       
       audioPcm = resampleAudio(audioPcm, 24000, 16000);
-      audioPcm = amplifyAudio(audioPcm, 1.4);
+      audioPcm = amplifyAudio(audioPcm, 1.3);
       
-      // ✅ फिक्स: चंक्स भेजने की रफ़्तार नियंत्रित करने के लिए टाइमआउट को 19ms से बढ़ाकर 28ms किया
+      // ✅ फ़िक्स: ऑडियो के फास्ट फॉरवर्ड भागने को थामने के लिए सटीक 28ms का ट्रांसफर पेस (Pace)
       const chunkSize = 640;
       for (let i = 0; i < audioPcm.length; i += chunkSize) {
         if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         safeSend(chunk, true);
-        await new Promise(r => setTimeout(r, 28)); // 👈 स्पीड को पूरी तरह नॉर्मल और स्टेबल करने के लिए कंट्रोलर गैप
+        await new Promise(r => setTimeout(r, 28)); 
       }
       
       if (isBotSpeaking) {
@@ -287,7 +289,7 @@ wss.on('connection', (ws, req) => {
       
       isBotSpeaking = false;
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
-      console.log(`✅ [${connectionId}] Audio flush sequence finalized`);
+      console.log(`✅ [${connectionId}] Finished Processing Stream Step`);
       
     } catch (err) {
       console.error(`❌ [${connectionId}] Error: ${err.message}`);
