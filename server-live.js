@@ -5,13 +5,15 @@ import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import { randomUUID } from 'crypto';
 import { MongoClient } from 'mongodb';
-import { Blob } from 'buffer'; 
+import { Blob } from 'buffer'; // ✅ Whisper इन-मेमोरी फ़िक्स
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
+
+// ✅ रेलवे इंटरनल MongoDB और वेरिएबल्स का सिंक
 const MONGODB_URI = 
   process.env.MONGODB_URL || 
   process.env.MONGODB_URI || 
@@ -28,10 +30,9 @@ let mongoClient = null;
 
 async function connectMongoDB() {
   if (!MONGODB_URI) {
-    console.warn('⚠️ No MongoDB URI found - running without memory database layer');
+    console.warn('⚠️ No MongoDB URI found - running without memory');
     return;
   }
-  
   try {
     mongoClient = new MongoClient(MONGODB_URI, {
       connectTimeoutMS: 5000,
@@ -87,7 +88,7 @@ async function saveConversation(deviceId, role, content) {
 
 await connectMongoDB();
 
-const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v5.8 (Resampling Fixed) on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v5.9 (Echo Locked) on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 if (!process.env.OPENAI_API_KEY) {
@@ -97,7 +98,7 @@ if (!process.env.OPENAI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req, res) => res.send('Sahchar Live - v5.8 (Memory & Native Blob Activated)'));
+app.get('/', (req, res) => res.send('Sahchar Live - v5.9 (Echo Loop & Pace Fixed)'));
 
 // Convert 16kHz PCM to WAV Object
 function pcmToWav(pcm, rate = 16000) {
@@ -127,19 +128,27 @@ function amplifyAudio(pcmData, factor = 1.3) {
     amplified.writeInt16LE(sample, i);
   }
   return amplified;
-}function resampleAudio(pcmData, fromRate = 24000, toRate = 16000) {
+}
+
+// ✅ फ़िक्स: इको लूप (Echo Loop) और चरचराहट को रोकने के लिए सटीक Linear Interpolation रीसैंपलर
+function resampleAudio(pcmData, fromRate = 24000, toRate = 16000) {
   if (fromRate === toRate) return pcmData;
   
-  // Simple decimation: keep 2 out of every 3 samples
   const srcSamples = pcmData.length / 2;
-  const dstSamples = Math.floor(srcSamples * 2 / 3);
+  const ratio = fromRate / toRate;
+  const dstSamples = Math.floor(srcSamples / ratio);
   const result = Buffer.alloc(dstSamples * 2);
   
   for (let i = 0; i < dstSamples; i++) {
-    const srcIndex = Math.floor(i * 1.5) * 2;
-    if (srcIndex + 1 < pcmData.length) {
-      const sample = pcmData.readInt16LE(srcIndex);
-      result.writeInt16LE(sample, i * 2);
+    const srcIndex = i * ratio;
+    const indexFloor = Math.floor(srcIndex);
+    const indexCheck = indexFloor * 2;
+    
+    if (indexCheck + 3 < pcmData.length) {
+      const sample1 = pcmData.readInt16LE(indexCheck);
+      const sample2 = pcmData.readInt16LE(indexCheck + 2);
+      const interpolatedSample = sample1 + (sample2 - sample1) * (srcIndex - indexFloor);
+      result.writeInt16LE(Math.floor(interpolatedSample), i * 2);
     }
   }
   return result;
@@ -155,7 +164,7 @@ wss.on('connection', (ws, req) => {
   }
   
   const connectionId = `${deviceId.substring(0, 8)}-${randomUUID().substring(0, 4)}`;
-  console.log(`🔌 Client connected with session token: ${connectionId} (Verified ID: ${deviceId})`);
+  console.log(`🔌 Client active: ${connectionId} (Verified ID: ${deviceId})`);
   
   let audioBuffer = [];
   let isProcessing = false;
@@ -194,10 +203,8 @@ wss.on('connection', (ws, req) => {
     safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
     
     try {
-      
       const wavBuffer = pcmToWav(fullAudio);
-      
-      console.log(`📞 [${connectionId}] Constructing Native Blob for Whisper...`);
+      console.log(`📞 [${connectionId}] Uploading Clean Native Blob to Whisper...`);
     
       const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
       const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
@@ -223,7 +230,7 @@ wss.on('connection', (ws, req) => {
       const messages = [
         { 
           role: 'system', 
-          content: `तुम एक साधारण दोस्त हो। तुम्हारा नाम "SuperSahchar" है।
+          content: `तुम एक साधारण दोस्त हो। तुम्हारा नाम "SuperSahchar" hai।
 ⚡ **सबसे महत्वपूर्ण नियम (बिना किसी अपवाद के):**
 1. तुम्हें "राम प्रकाश कुमार" ने बनाया है
 2. तुम किसी कंपनी के नहीं हो, किसी संस्थान के नहीं हो
@@ -234,7 +241,7 @@ wss.on('connection', (ws, req) => {
 7. पिछली बातचीत याद रखो और संदर्भ के अनुसार जवाब दो।
 
 💬 जवाब की शैली (CRITICAL):
-- बहुत छोटे जवाब do (अधिकतम 1-2 वाक्य)
+- बहुत छोटे जवाब दो (अधिकतम 1-2 वाक्य)
 - हिंदी में बात करो
 - इमोजी का इस्तेमाल करो 🙏😊`
         },
@@ -271,13 +278,15 @@ wss.on('connection', (ws, req) => {
       let audioPcm = Buffer.from(await tts.arrayBuffer());
       
       audioPcm = resampleAudio(audioPcm, 24000, 16000);
-      audioPcm = amplifyAudio(audioPcm, 1.5);
+      audioPcm = amplifyAudio(audioPcm, 1.3);
+      
+      // ✅ फ़िक्स: बोट के बहुत तेज़ (Fast) बोलने को पूरी तरह शांत और नॉर्मल करने के लिए 28ms का पेसिंग डिले
       const chunkSize = 640;
       for (let i = 0; i < audioPcm.length; i += chunkSize) {
         if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         safeSend(chunk, true);
-        await new Promise(r => setTimeout(r, 20)); 
+        await new Promise(r => setTimeout(r, 28)); // 👈 28ms पर लॉक, ताकि नॉर्मल TTS स्पीड मिले
       }
       
       if (isBotSpeaking) {
