@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import { randomUUID } from 'crypto';
 import { MongoClient } from 'mongodb';
-import { Blob } from 'buffer'; // ✅ Whisper इन-मेमोरी फ़िक्स
+import { Blob } from 'buffer';
 
 dotenv.config();
 
@@ -195,7 +195,8 @@ wss.on('connection', (ws, req) => {
     audioBuffer = [];
     packetCount = 0;
     
-    if (fullAudio.length < 8000) {
+    // ✅ minimum audio length 4000 rakho, 8000 se ghatta do
+    if (fullAudio.length < 4000) {
       isProcessing = false;
       return;
     }
@@ -209,10 +210,12 @@ wss.on('connection', (ws, req) => {
       const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
       const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
       
+      // ✅ transcription me prompt add karo
       const transcription = await openai.audio.transcriptions.create({
         file: fileObject,
         model: 'whisper-1',
-        language: 'hi'
+        language: 'hi',
+        prompt: 'यह हिंदी बातचीत है। संदर्भ: SuperSahchar एक AI सहायक है जिसे राम प्रकाश कुमार ने बनाया है।'
       });
       
       const userMsg = transcription.text.trim();
@@ -310,7 +313,8 @@ wss.on('connection', (ws, req) => {
       try {
         const json = JSON.parse(data.toString());
         if (json.type === 'interrupt') {
-          isBotSpeaking = false; 
+          isBotSpeaking = false;
+          // ✅ interrupt message me audioBuffer = [] clear karo
           audioBuffer = [];
           packetCount = 0;
           if (processTimer) clearTimeout(processTimer);
@@ -319,17 +323,17 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
-    if (isBotSpeaking || isProcessing || isClosing) return;
-    
+    // ✅ audioBuffer.push() ko isBotSpeaking ke time bhi allow karo, return mat karo
     packetCount++;
     audioBuffer.push(Buffer.from(data));
     
     if (processTimer) clearTimeout(processTimer);
+    // ✅ SILENCE_DURATION = 400 kar do, 500 se ghatta do
     processTimer = setTimeout(() => {
-      if (audioBuffer.length > 0 && !isProcessing && !isBotSpeaking && !isClosing) {
+      if (audioBuffer.length > 0 && !isProcessing && !isClosing) {
         processAudio();
       }
-    }, 500);
+    }, 400);
   });
   
   ws.on('close', () => {
