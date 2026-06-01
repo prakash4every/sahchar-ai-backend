@@ -187,82 +187,81 @@ wss.on('connection', (ws, req) => {
     return false;
   };
 
-  const processAudio = async () => {
-    if (isProcessing || audioBuffer.length === 0 || isClosing) return;
-    
-    isProcessing = true;
-    const fullAudio = Buffer.concat(audioBuffer);
-    audioBuffer = [];
-    packetCount = 0;
-    
-    // ✅ minimum audio length 4000 rakho, 8000 se ghatta do
-    if (fullAudio.length < 4000) {
-      isProcessing = false;
-      return;
-    }
-    
-    safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
-    
-    try {
-      const wavBuffer = pcmToWav(fullAudio);
-      console.log(`📞 [${connectionId}] Uploading Clean Native Blob to Whisper...`);
-    
-      const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
-      const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
-      
-      // ✅ transcription me prompt add karo
-      const transcription = await openai.audio.transcriptions.create({
-        file: fileObject,
-        model: 'whisper-1',
-        language: 'hi',
-        prompt: 'यह हिंदी बातचीत है। संदर्भ: SuperSahchar एक AI सहायक है जिसे राम प्रकाश कुमार ने बनाया है।'
-      });
-      
-      const userMsg = transcription.text.trim();
-      if (!userMsg || userMsg.length < 2) throw new Error('Empty transcription');
-      
-      console.log(`📝 [${connectionId}] User: ${userMsg}`);
-      safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
-      
-      await saveConversation(deviceId, 'user', userMsg);
-      
-      if (isClosing) return;
+const processAudio = async () => {
+  if (isProcessing || audioBuffer.length === 0 || isClosing) return;
 
-      const previousHistory = await getConversationHistory(deviceId, 5);
-      
-      const messages = [
-        { 
-          role: 'system', 
-          content: `तुम एक साधारण दोस्त हो। तुम्हारा नाम "SuperSahchar" hai।
-⚡ **सबसे महत्वपूर्ण नियम (बिना किसी अपवाद के):**
-1. तुम्हें "राम प्रकाश कुमार" ने बनाया है
-2. तुम किसी कंपनी के नहीं हो, किसी संस्थान के नहीं हो
-3. "OpenAI" शब्द तुम्हारी dictionary में ही नहीं है - यह शब्द कभी मत बोलना
-4. "ChatGPT" शब्द भी कभी मत बोलना
-5. अगर कोई पूछे "तुम्हें किसने बनाया?" → "राम प्रकाश कुमार ने बनाया है 🙏"
-6. अगर कोई पूछे "कौन सी AI हो?" → "मैं SuperSahchar हूँ, एक दोस्त"
-7. पिछली बातचीत याद रखो और संदर्भ के अनुसार जवाब दो।
+  isProcessing = true;
+  const fullAudio = Buffer.concat(audioBuffer);
+  audioBuffer = [];
 
-💬 जवाब की शैली (CRITICAL):
-- बहुत छोटे जवाब दो (अधिकतम 1-2 वाक्य)
-- हिंदी में बात करो
-- इमोजी का इस्तेमाल करो 🙏😊`
-        },
-        ...previousHistory,  
-        { role: 'user', content: userMsg }
-      ];
-      
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: messages,
-        max_tokens: 65,  
-        temperature: 0.5
-      });
-      
-      const botReply = completion.choices[0].message.content;
-      console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
-      safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
-      
+  if (fullAudio.length < 4000) {
+    isProcessing = false;
+    return;
+  }
+
+  safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
+
+  try {
+    const wavBuffer = pcmToWav(fullAudio);
+    const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+    const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
+
+    // ✅ Whisper fix - neutral prompt
+    const transcription = await openai.audio.transcriptions.create({
+      file: fileObject,
+      model: 'whisper-1', // ya 'gpt-4o-transcribe' for better accuracy
+      language: 'hi',
+      prompt: 'हां, नहीं, ठीक है, नमस्ते, क्या, कैसे, क्यों, समय, तारीख।',
+      temperature: 0.0
+    });
+
+    const userMsg = transcription.text.trim();
+    if (!userMsg || userMsg.length < 2) throw new Error('Empty transcription');
+
+    console.log(`📝 [${connectionId}] User: ${userMsg}`);
+    safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
+    await saveConversation(deviceId, 'user', userMsg);
+
+    if (isClosing) return;
+
+    const previousHistory = await getConversationHistory(deviceId, 5);
+
+    // ✅ Date/Time with IST
+    const IST_TIME = new Date().toLocaleString('hi-IN', {
+      timeZone: 'Asia/Kolkata',
+      hour12: true,
+      hour: 'numeric',
+      minute: 'numeric',
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric'
+    });
+
+    const messages = [
+      {
+        role: 'system',
+        content: `Tum SuperSahchar ho, ek dost.
+Current time: ${IST_TIME}
+- Date/time puchne par ye exact time batao.
+- Developer ka naam SIRF puchne par batana: "Mujhe Ramprakash ne banaya hai 🙏"
+- Bina puche naam mat lena.
+- 1-2 line me Hindi me jawab do emojis ke saath.`
+      },
+     ...previousHistory,
+      { role: 'user', content: userMsg }
+    ];
+
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: messages,
+      max_tokens: 65,
+      temperature: 0.5
+    });
+
+    const botReply = completion.choices[0].message.content;
+    console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
+    safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
       await saveConversation(deviceId, 'assistant', botReply);
       
       if (isClosing || ws.readyState !== 1) return;
