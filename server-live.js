@@ -268,6 +268,7 @@ wss.on('connection', (ws, req) => {
       if (isClosing || ws.readyState !== 1) return;
       
       isBotSpeaking = true;
+      audioBuffer = [];
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
       
       const tts = await openai.audio.speech.create({
