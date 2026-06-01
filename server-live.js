@@ -13,13 +13,12 @@ const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
 
-// ✅ रेलवे इंटरनल MongoDB और वेरिएबल्स का सिंक
-const MONGODB_URI = 
-  process.env.MONGODB_URL || 
-  process.env.MONGODB_URI || 
-  process.env.MONGOBD_URI || 
+const MONGODB_URI =
+  process.env.MONGODB_URL ||
+  process.env.MONGODB_URI ||
+  process.env.MONGOBD_URI ||
   process.env.MONGOBD_URL ||
-  'mongodb://MongoDB.railway.internal:27017'; 
+  'mongodb://MongoDB.railway.internal:27017';
 
 const DB_NAME = 'sahchar_live';
 const COLLECTION_NAME = 'conversations';
@@ -30,7 +29,7 @@ let mongoClient = null;
 
 async function connectMongoDB() {
   if (!MONGODB_URI) {
-    console.warn('⚠️ No MongoDB URI found - running without memory');
+    console.warn('⚠ No MongoDB URI found - running without memory');
     return;
   }
   try {
@@ -41,26 +40,22 @@ async function connectMongoDB() {
     await mongoClient.connect();
     db = mongoClient.db(DB_NAME);
     conversationsCollection = db.collection(COLLECTION_NAME);
-    
     await conversationsCollection.createIndex({ deviceId: 1, timestamp: -1 });
-    await conversationsCollection.createIndex({ timestamp: 1 }, { expireAfterSeconds: 604800 }); 
-    
+    await conversationsCollection.createIndex({ timestamp: 1 }, { expireAfterSeconds: 604800 });
     console.log('✅ MongoDB connected successfully to Sahchar Storage Container!');
   } catch (error) {
     console.error('❌ MongoDB connection failed:', error.message);
   }
 }
 
-// डेटाबेस से पुरानी यादें निकालना
 async function getConversationHistory(deviceId, limit = 5) {
-  if (!conversationsCollection || !deviceId) return [];
+  if (!conversationsCollection ||!deviceId) return [];
   try {
     const history = await conversationsCollection
-      .find({ deviceId: deviceId.trim() })
-      .sort({ timestamp: -1 })
-      .limit(limit)
-      .toArray();
-    
+     .find({ deviceId: deviceId.trim() })
+     .sort({ timestamp: -1 })
+     .limit(limit)
+     .toArray();
     return history.reverse().map(msg => ({
       role: msg.role,
       content: msg.content
@@ -71,9 +66,8 @@ async function getConversationHistory(deviceId, limit = 5) {
   }
 }
 
-// बातचीत को डेटाबेस में सुरक्षित करना
 async function saveConversation(deviceId, role, content) {
-  if (!conversationsCollection || !deviceId) return;
+  if (!conversationsCollection ||!deviceId) return;
   try {
     await conversationsCollection.insertOne({
       deviceId: deviceId.trim(),
@@ -88,7 +82,7 @@ async function saveConversation(deviceId, role, content) {
 
 await connectMongoDB();
 
-const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v5.9 (Echo Locked) on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v6.0 (Noise Filtered) on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 if (!process.env.OPENAI_API_KEY) {
@@ -98,9 +92,20 @@ if (!process.env.OPENAI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req, res) => res.send('Sahchar Live - v5.9 (Echo Loop & Pace Fixed)'));
+app.get('/', (req, res) => res.send('Sahchar Live - v6.0 (Noise Filtered)'));
 
-// Convert 16kHz PCM to WAV Object
+// ✅ Server-side RMS check for noise filtering
+function calculateRMS(pcmBuffer) {
+  let sum = 0;
+  const count = pcmBuffer.length / 2;
+  if (count === 0) return 0;
+  for (let i = 0; i < pcmBuffer.length; i += 2) {
+    const sample = pcmBuffer.readInt16LE(i);
+    sum += sample * sample;
+  }
+  return Math.sqrt(sum / count) / 32768.0;
+}
+
 function pcmToWav(pcm, rate = 16000) {
   const h = Buffer.alloc(44);
   h.write('RIFF', 0);
@@ -119,7 +124,6 @@ function pcmToWav(pcm, rate = 16000) {
   return Buffer.concat([h, pcm]);
 }
 
-// Amplify audio signals smoothly
 function amplifyAudio(pcmData, factor = 1.3) {
   const amplified = Buffer.alloc(pcmData.length);
   for (let i = 0; i < pcmData.length; i += 2) {
@@ -130,20 +134,16 @@ function amplifyAudio(pcmData, factor = 1.3) {
   return amplified;
 }
 
-// ✅ फ़िक्स: इको लूप (Echo Loop) और चरचराहट को रोकने के लिए सटीक Linear Interpolation रीसैंपलर
 function resampleAudio(pcmData, fromRate = 24000, toRate = 16000) {
   if (fromRate === toRate) return pcmData;
-  
   const srcSamples = pcmData.length / 2;
   const ratio = fromRate / toRate;
   const dstSamples = Math.floor(srcSamples / ratio);
   const result = Buffer.alloc(dstSamples * 2);
-  
   for (let i = 0; i < dstSamples; i++) {
     const srcIndex = i * ratio;
     const indexFloor = Math.floor(srcIndex);
     const indexCheck = indexFloor * 2;
-    
     if (indexCheck + 3 < pcmData.length) {
       const sample1 = pcmData.readInt16LE(indexCheck);
       const sample2 = pcmData.readInt16LE(indexCheck + 2);
@@ -157,119 +157,133 @@ function resampleAudio(pcmData, fromRate = 24000, toRate = 16000) {
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let rawDeviceId = url.searchParams.get('deviceId');
-  
+
   let deviceId = "default_user";
-  if (rawDeviceId && rawDeviceId !== 'default' && rawDeviceId !== 'null' && rawDeviceId !== 'undefined') {
+  if (rawDeviceId && rawDeviceId!== 'default' && rawDeviceId!== 'null' && rawDeviceId!== 'undefined') {
     deviceId = rawDeviceId.trim();
   }
-  
+
   const connectionId = `${deviceId.substring(0, 8)}-${randomUUID().substring(0, 4)}`;
   console.log(`🔌 Client active: ${connectionId} (Verified ID: ${deviceId})`);
-  
+
   let audioBuffer = [];
   let isProcessing = false;
   let isBotSpeaking = false;
-  let packetCount = 0;
   let isClosing = false;
   let keepAliveInterval = null;
   let processTimer = null;
 
   keepAliveInterval = setInterval(() => {
-    if (ws.readyState === 1 && !isClosing) {
+    if (ws.readyState === 1 &&!isClosing) {
       try { ws.ping(); } catch (e) {}
     }
   }, 10000);
 
   const safeSend = (data, isBinary = false) => {
-    if (ws.readyState === 1 && !isClosing) {
+    if (ws.readyState === 1 &&!isClosing) {
       try { ws.send(data); return true; } catch (e) { return false; }
     }
     return false;
   };
 
-const processAudio = async () => {
-  if (isProcessing || audioBuffer.length === 0 || isClosing) return;
+  const processAudio = async () => {
+    if (isProcessing || audioBuffer.length === 0 || isClosing) return;
 
-  isProcessing = true;
-  const fullAudio = Buffer.concat(audioBuffer);
-  audioBuffer = [];
+    isProcessing = true;
+    const fullAudio = Buffer.concat(audioBuffer);
+    audioBuffer = [];
 
-  if (fullAudio.length < 4000) {
-    isProcessing = false;
-    return;
-  }
+    // ✅ 1. Minimum length check: 250ms
+    if (fullAudio.length < 8000) {
+      isProcessing = false;
+      return;
+    }
 
-  safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
+    // ✅ 2. Server-side noise filter: RMS threshold
+    const rms = calculateRMS(fullAudio);
+    const MIN_SPEECH_RMS = 0.01; // Fan noise usually < 0.008
+    if (rms < MIN_SPEECH_RMS) {
+      console.log(`🔇 [${connectionId}] Dropped noise: RMS ${rms.toFixed(4)}`);
+      isProcessing = false;
+      return;
+    }
 
-  try {
-    const wavBuffer = pcmToWav(fullAudio);
-    const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
-    const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
+    safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
 
-    // ✅ Whisper fix - neutral prompt
-    const transcription = await openai.audio.transcriptions.create({
-      file: fileObject,
-      model: 'whisper-1', // ya 'gpt-4o-transcribe' for better accuracy
-      language: 'hi',
-      prompt: 'हां, नहीं, ठीक है, नमस्ते, क्या, कैसे, क्यों, समय, तारीख।',
-      temperature: 0.0
-    });
+    try {
+      const wavBuffer = pcmToWav(fullAudio);
+      const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+      const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
 
-    const userMsg = transcription.text.trim();
-    if (!userMsg || userMsg.length < 2) throw new Error('Empty transcription');
+      // ✅ 3. Whisper fix: Neutral prompt + higher temperature for noise
+      const transcription = await openai.audio.transcriptions.create({
+        file: fileObject,
+        model: 'whisper-1',
+        language: 'hi',
+        prompt: '', // Empty prompt = no bias
+        temperature: 0.2 // 0.0 se 0.2 kar diya, noise me hallucinate kam karega
+      });
 
-    console.log(`📝 [${connectionId}] User: ${userMsg}`);
-    safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
-    await saveConversation(deviceId, 'user', userMsg);
+      const userMsg = transcription.text.trim();
 
-    if (isClosing) return;
+      // ✅ 4. Hallucination filter
+      const repeatedPattern = /(.{2,})\1{4,}/; // "पड़पड़पड़" ya "अपने अपने अपने" detect
+      if (!userMsg || userMsg.length < 2 || repeatedPattern.test(userMsg)) {
+        console.log(`🚫 [${connectionId}] Rejected hallucination: ${userMsg}`);
+        throw new Error('Hallucination detected');
+      }
 
-    const previousHistory = await getConversationHistory(deviceId, 5);
+      console.log(`📝 [${connectionId}] User: ${userMsg} | RMS: ${rms.toFixed(4)}`);
+      safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
+      await saveConversation(deviceId, 'user', userMsg);
 
-    // ✅ Date/Time with IST
-    const IST_TIME = new Date().toLocaleString('hi-IN', {
-      timeZone: 'Asia/Kolkata',
-      hour12: true,
-      hour: 'numeric',
-      minute: 'numeric',
-      weekday: 'long',
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric'
-    });
+      if (isClosing) return;
 
-    const messages = [
-      {
-        role: 'system',
-        content: `Tum SuperSahchar ho, ek dost.
+      const previousHistory = await getConversationHistory(deviceId, 5);
+
+      const IST_TIME = new Date().toLocaleString('hi-IN', {
+        timeZone: 'Asia/Kolkata',
+        hour12: true,
+        hour: 'numeric',
+        minute: 'numeric',
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
+      });
+
+      const messages = [
+        {
+          role: 'system',
+          content: `Tum SuperSahchar ho, ek dost.
 Current time: ${IST_TIME}
 - Date/time puchne par ye exact time batao.
 - Developer ka naam SIRF puchne par batana: "Mujhe Ramprakash ne banaya hai 🙏"
 - Bina puche naam mat lena.
 - 1-2 line me Hindi me jawab do emojis ke saath.`
-      },
-     ...previousHistory,
-      { role: 'user', content: userMsg }
-    ];
+        },
+       ...previousHistory,
+        { role: 'user', content: userMsg }
+      ];
 
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: messages,
-      max_tokens: 65,
-      temperature: 0.5
-    });
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: messages,
+        max_tokens: 65,
+        temperature: 0.5
+      });
 
-    const botReply = completion.choices[0].message.content;
-    console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
-    safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
+      const botReply = completion.choices[0].message.content;
+      console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
+      safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
       await saveConversation(deviceId, 'assistant', botReply);
-      
-      if (isClosing || ws.readyState !== 1) return;
-      
+
+      if (isClosing || ws.readyState!== 1) return;
+
       isBotSpeaking = true;
-      audioBuffer = [];
+      audioBuffer = []; // Clear buffer before TTS
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
-      
+
       const tts = await openai.audio.speech.create({
         model: 'tts-1',
         voice: 'echo',
@@ -277,29 +291,27 @@ Current time: ${IST_TIME}
         response_format: 'pcm',
         speed: 1.00
       });
-      
+
       let audioPcm = Buffer.from(await tts.arrayBuffer());
-      
       audioPcm = resampleAudio(audioPcm, 24000, 16000);
       audioPcm = amplifyAudio(audioPcm, 1.3);
-      
-      // ✅ फ़िक्स: बोट के बहुत तेज़ (Fast) बोलने को पूरी तरह शांत और नॉर्मल करने के लिए 28ms का पेसिंग डिले
+
       const chunkSize = 640;
       for (let i = 0; i < audioPcm.length; i += chunkSize) {
-        if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
+        if (isClosing || ws.readyState!== 1 ||!isBotSpeaking) break;
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         safeSend(chunk, true);
-        await new Promise(r => setTimeout(r, 28)); // 👈 28ms पर लॉक, ताकि नॉर्मल TTS स्पीड मिले
+        await new Promise(r => setTimeout(r, 28));
       }
-      
+
       if (isBotSpeaking) {
         safeSend(JSON.stringify({ type: 'audio_done' }));
       }
-      
+
       isBotSpeaking = false;
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
       console.log(`✅ [${connectionId}] Finished Processing Stream Step`);
-      
+
     } catch (err) {
       console.error(`❌ [${connectionId}] Error: ${err.message}`);
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
@@ -307,47 +319,42 @@ Current time: ${IST_TIME}
       isProcessing = false;
     }
   };
-  
+
   ws.on('message', (data, isBinary) => {
     if (!isBinary) {
       try {
         const json = JSON.parse(data.toString());
         if (json.type === 'interrupt') {
           isBotSpeaking = false;
-          // ✅ interrupt message me audioBuffer = [] clear karo
           audioBuffer = [];
-          packetCount = 0;
           if (processTimer) clearTimeout(processTimer);
         }
       } catch (e) {}
       return;
     }
 
-    // ✅ audioBuffer.push() ko isBotSpeaking ke time bhi allow karo, return mat karo
-    packetCount++;
     audioBuffer.push(Buffer.from(data));
-    
+
     if (processTimer) clearTimeout(processTimer);
-    // ✅ SILENCE_DURATION = 400 kar do, 500 se ghatta do
     processTimer = setTimeout(() => {
-      if (audioBuffer.length > 0 && !isProcessing && !isClosing) {
+      if (audioBuffer.length > 0 &&!isProcessing &&!isClosing) {
         processAudio();
       }
     }, 400);
   });
-  
+
   ws.on('close', () => {
     isClosing = true;
     isBotSpeaking = false;
     if (processTimer) clearTimeout(processTimer);
     if (keepAliveInterval) clearInterval(keepAliveInterval);
   });
-  
+
   ws.on('error', () => {
     isClosing = true;
     if (processTimer) clearTimeout(processTimer);
   });
-  
+
   safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
 });
 
