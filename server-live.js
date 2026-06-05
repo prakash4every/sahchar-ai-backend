@@ -347,7 +347,7 @@ wss.on('connection', (ws, req) => {
       if (audioBuffer.length > 0 && !isProcessing && !isClosing) {
         processAudio();
       }
-    }, 400);
+    }, 800);
   });
 
   ws.on('close', () => {
