@@ -5,13 +5,15 @@ import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import { randomUUID } from 'crypto';
 import { MongoClient } from 'mongodb';
-import { Blob } from 'buffer'; 
+import { Blob } from 'buffer'; // ✅ Whisper इन-मेमोरी फ़िक्स
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
+
+// ✅ रेलवे इंटरनल MongoDB और वेरिएबल्स का सिंक
 const MONGODB_URI = 
   process.env.MONGODB_URL || 
   process.env.MONGODB_URI || 
@@ -49,7 +51,6 @@ async function connectMongoDB() {
   }
 }
 
-// डेटाबेस से पुरानी यादें निकालना
 async function getConversationHistory(deviceId, limit = 5) {
   if (!conversationsCollection || !deviceId) return [];
   try {
@@ -68,6 +69,7 @@ async function getConversationHistory(deviceId, limit = 5) {
     return [];
   }
 }
+
 async function saveConversation(deviceId, role, content) {
   if (!conversationsCollection || !deviceId) return;
   try {
@@ -84,7 +86,7 @@ async function saveConversation(deviceId, role, content) {
 
 await connectMongoDB();
 
-const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v6.1 (Memory Locked) on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v6.2 (Absolute Exit Fixed) on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 if (!process.env.OPENAI_API_KEY) {
@@ -94,7 +96,8 @@ if (!process.env.OPENAI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req, res) => res.send('Sahchar Live - v6.1 (Pure Hindi Mode Active)'));
+app.get('/', (req, res) => res.send('Sahchar Live - v6.2 (Absolute Exit Mode)'));
+
 function calculateRMS(pcmBuffer) {
   let sum = 0;
   const count = pcmBuffer.length / 2;
@@ -123,6 +126,7 @@ function pcmToWav(pcm, rate = 16000) {
   h.writeUInt32LE(pcm.length, 40);
   return Buffer.concat([h, pcm]);
 }
+
 function amplifyAudio(pcmData, factor = 1.3) {
   const amplified = Buffer.alloc(pcmData.length);
   for (let i = 0; i < pcmData.length; i += 2) {
@@ -132,6 +136,7 @@ function amplifyAudio(pcmData, factor = 1.3) {
   }
   return amplified;
 }
+
 function resampleAudio(pcmData, fromRate = 24000, toRate = 16000) {
   if (fromRate === toRate) return pcmData;
   const srcSamples = pcmData.length / 2;
@@ -197,9 +202,8 @@ wss.on('connection', (ws, req) => {
     }
 
     const rms = calculateRMS(fullAudio);
-    const MIN_SPEECH_RMS = 0.01; 
+    const MIN_SPEECH_RMS = 0.012; // Adjusted slightly higher to completely block track pops
     if (rms < MIN_SPEECH_RMS) {
-      console.log(`🔇 [${connectionId}] Dropped noise: RMS ${rms.toFixed(4)}`);
       isProcessing = false;
       return;
     }
@@ -210,6 +214,7 @@ wss.on('connection', (ws, req) => {
       const wavBuffer = pcmToWav(fullAudio);
       const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
       const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
+
       const transcription = await openai.audio.transcriptions.create({
         file: fileObject,
         model: 'whisper-1',
@@ -227,54 +232,53 @@ wss.on('connection', (ws, req) => {
       }
 
       console.log(`📝 [${connectionId}] User: ${userMsg} | RMS: ${rms.toFixed(4)}`);
-      safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
-      await saveConversation(deviceId, 'user', userMsg);
 
-      if (isClosing) return;
+      // ✅ महत्वपूर्ण फ़िक्स: यूज़र के "बाय / क्लोज" बोलते ही इंटरसेप्ट करें और एआई को बायपास करके फिक्स रिप्लाई दें
+      const lowerUserMsg = userMsg.toLowerCase().replace("।", "").trim();
+      const userExitKeywords = ["चैट क्लोज", "अलविदा", "बाय बाय", "बाय", "टाटा", "बंद करो"];
+      const hasUserRequestedExit = userExitKeywords.any ? userExitKeywords.some(k => lowerUserMsg.includes(k)) : userExitKeywords.reduce((acc, k) => acc || lowerUserMsg.includes(k), false);
 
-      const previousHistory = await getConversationHistory(deviceId, 5);
-      const CURRENT_DATE_STRING = new Date().toLocaleString('en-US', {
-        timeZone: 'Asia/Kolkata',
-        hour12: true,
-        hour: 'numeric',
-        minute: 'numeric',
-        weekday: 'long',
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric'
-      });
+      let botReply = "";
+      if (hasUserRequestedExit) {
+        botReply = "अच्छा, बाय! जब भी बात करनी हो, मैं यहीं हूँ। शुभ रात्रि! 🙏😊";
+        console.log(`🛑 [${connectionId}] User requested Exit. Bypassing LLM layers.`);
+      } else {
+        // Normal OpenAI Flow
+        await safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
+        await saveConversation(deviceId, 'user', userMsg);
 
-      const messages = [
-        {
-          role: 'system',
-          content: `तुम "SuperSahchar" हो, यूजर के एक पक्के और सच्चे दोस्त।
+        if (isClosing) return;
+        const previousHistory = await getConversationHistory(deviceId, 5);
+
+        const CURRENT_DATE_STRING = new Date().toLocaleString('en-US', {
+          timeZone: 'Asia/Kolkata', hour12: true, hour: 'numeric', minute: 'numeric',
+          weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
+        });
+
+        const messages = [
+          {
+            role: 'system',
+            content: `तुम "SuperSahchar" हो, यूजर के एक पक्के और सच्चे दोस्त।
 वर्तमान समय और तारीख: ${CURRENT_DATE_STRING} (Asia/Kolkata)
+1. तुम्हारा नाम हमेशा "SuperSahchar" ही रहेगा।
+2. तुम्हें "राम प्रकाश कुमार" ने बनाया है।
+3. हमेशा शुद्ध, सरल और आत्मीय हिंदी में बात करो।`
+          },
+          ...previousHistory,
+          { role: 'user', content: userMsg }
+        ];
 
-⚡ **तुम्हारे मुख्य नियम (CRITICAL):**
-1. तुम्हारा नाम हमेशा "SuperSahchar" ही रहेगा। जब यूजर कहे कि "तुम्हारा नाम सुपर सहचर है", तो उसे सहर्ष स्वीकार करो और अपनी इस पहचान को याद रखो।
-2. तुम्हें "राम प्रकाश कुमार" ने बनाया है। अगर कोई पूछे "तुम्हें किसने बनाया?", तो गर्व से जवाब दो: "मुझे राम प्रकाश कुमार ने बनाया है 🙏😊"।
-3. "OpenAI" या "ChatGPT" शब्द का प्रयोग कभी मत करना। तुम एक स्वतंत्र एआई दोस्त हो।
-4. हमेशा शुद्ध, सरल और आत्मीय हिंदी में बात करो।
+        const completion = await openai.chat.completions.create({
+          model: 'gpt-4o-mini', messages: messages, max_tokens: 65, temperature: 0.4
+        });
+        botReply = completion.choices[0].message.content;
+      }
 
-💬 जवाब की शैली:
-- जवाब बहुत छोटे, मीठे और अधिकतम 1-2 वाक्यों के होने चाहिए ताकि वॉयस चैटिंग नेचुरल लगे।
-- दोस्ताना व्यवहार रखो और बातचीत में हमेशा उचित इमोजी 🙏😊 का प्रयोग करो।`
-        },
-        ...previousHistory,
-        { role: 'user', content: userMsg }
-      ];
-
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: messages,
-        max_tokens: 65,
-        temperature: 0.4 
-      });
-
-      const botReply = completion.choices[0].message.content;
       console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
       safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
-      await saveConversation(deviceId, 'assistant', botReply);
+      if (!hasUserRequestedExit) {
+        await saveConversation(deviceId, 'assistant', botReply);
+      }
 
       if (isClosing || ws.readyState !== 1) return;
 
@@ -283,11 +287,7 @@ wss.on('connection', (ws, req) => {
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
 
       const tts = await openai.audio.speech.create({
-        model: 'tts-1',
-        voice: 'echo',
-        input: botReply,
-        response_format: 'pcm',
-        speed: 1.00
+        model: 'tts-1', voice: 'echo', input: botReply, response_format: 'pcm', speed: 1.00
       });
 
       let audioPcm = Buffer.from(await tts.arrayBuffer());
@@ -306,14 +306,23 @@ wss.on('connection', (ws, req) => {
         safeSend(JSON.stringify({ type: 'audio_done' }));
       }
 
+      // ✅ अगर यूज़र ने एक्ज़िट माँगा था, तो ऑडियो खत्म होते ही क्लाइंट को फोर्स-क्लोज सिग्नल भेजें
+      if (hasUserRequestedExit) {
+        await new Promise(r => setTimeout(r, 500));
+        safeSend(JSON.stringify({ type: 'force_close_ui' })); // 👈 मास्टर क्लोज पैकेट
+        console.log(`👋 Sent force_close_ui to connection: ${connectionId}`);
+      }
+
       isBotSpeaking = false;
-      safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
+      if (!hasUserRequestedExit) {
+        safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
+      }
       console.log(`✅ [${connectionId}] Finished Processing Stream Step`);
 
     } catch (err) {
       console.error(`❌ [${connectionId}] Error: ${err.message}`);
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
-    } finally {
+    } {
       isProcessing = false;
     }
   };
