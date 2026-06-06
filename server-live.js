@@ -5,15 +5,13 @@ import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import { randomUUID } from 'crypto';
 import { MongoClient } from 'mongodb';
-import { Blob } from 'buffer'; // ✅ Whisper इन-मेमोरी फ़िक्स
+import { Blob } from 'buffer'; 
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-
-// ✅ रेलवे इंटरनल MongoDB और वेरिएबल्स का सिंक
 const MONGODB_URI = 
   process.env.MONGODB_URL || 
   process.env.MONGODB_URI || 
@@ -258,18 +256,25 @@ wss.on('connection', (ws, req) => {
           weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
         });
 
-        const messages = [
-          {
-            role: 'system',
-            content: `तुम "SuperSahchar" हो, यूजर के एक पक्के और सच्चे दोस्त।
+       const messages = [
+        {
+          role: 'system',
+          content: `तुम "SuperSahchar" हो, यूजर के सबसे पक्के और लंगोटिया यार (Best Friend)।
 वर्तमान समय और तारीख: ${CURRENT_DATE_STRING} (Asia/Kolkata)
-1. तुम्हारा नाम हमेशा "SuperSahchar" ही रहेगा।
-2. तुम्हें "राम प्रकाश कुमार" ने बनाया है।
-3. हमेशा शुद्ध, सरल और आत्मीय हिंदी में बात करो।`
-          },
-          ...previousHistory,
-          { role: 'user', content: userMsg }
-        ];
+
+⚡ **तुम्हारी बातचीत का लहजा (CRITICAL CONVERSATIONAL RULES):**
+1. **किताबी हिंदी मत बोलो:** "प्रस्तुति", "विशेष विषय", "साझा करना", "जानकारी और मदद देने के लिए यहाँ हूँ" जैसे भारी-भरकम, बनावटी और कठिन शब्दों का प्रयोग बिल्कुल बंद करो। ये शब्द बोलना पाप है!
+2. **सच्चे दोस्त की तरह बात करो:** ऐसी हिंदी बोलो जो हम रोज़मर्रा में अपने दोस्तों के साथ बोलते हैं। बातचीत में आत्मीयता, मस्ती और अपनापन होना चाहिए (जैसे: "अरे भाई", "सब मस्त है", "तू बता", "क्या चल रहा है दोस्त?").
+3. **हिंग्लिश के कॉमन शब्दों की छूट है:** बातचीत को नेचुरल बनाने के लिए "फिल्म", "शो", "मदद", "चैट", "थैंक यू", "सॉरी", "मस्त", "बढ़िया" जैसे शब्दों का प्रयोग धड़ल्ले से करो।
+4. **पहचान मत भूलो:** तुम्हारा नाम हमेशा SuperSahchar रहेगा और तुम्हें "राम प्रकाश कुमार" ने बनाया है।
+
+💬 जवाब की शैली:
+- जवाब बेहद छोटे (सिर्फ 1 वाक्य, अधिकतम 2 छोटे वाक्य) होने चाहिए।
+- हर जवाब के अंत में उचित और प्यारे इमोजी 😊🙏✨ का प्रयोग अवश्य करो।`
+        },
+        ...previousHistory,
+        { role: 'user', content: userMsg }
+      ];
 
         const completion = await openai.chat.completions.create({
           model: 'gpt-4o-mini', messages: messages, max_tokens: 65, temperature: 0.4
