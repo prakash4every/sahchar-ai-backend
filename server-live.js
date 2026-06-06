@@ -235,8 +235,11 @@ wss.on('connection', (ws, req) => {
 
       // ✅ महत्वपूर्ण फ़िक्स: यूज़र के "बाय / क्लोज" बोलते ही इंटरसेप्ट करें और एआई को बायपास करके फिक्स रिप्लाई दें
       const lowerUserMsg = userMsg.toLowerCase().replace("।", "").trim();
-      const userExitKeywords = ["चैट क्लोज", "अलविदा", "बाय बाय", "बाय", "टाटा", "बंद करो"];
-      const hasUserRequestedExit = userExitKeywords.any ? userExitKeywords.some(k => lowerUserMsg.includes(k)) : userExitKeywords.reduce((acc, k) => acc || lowerUserMsg.includes(k), false);
+      const userExitKeywords = [
+        "चैट क्लोज", "अलविदा", "बाय बाय", "बाय", "टाटा", "बंद करो", 
+        "चैट प्रोज", "चैट कौंट", "ओके पाई", "प्रोज करो"
+      ];
+      const hasUserRequestedExit = userExitKeywords.some(k => lowerUserMsg.includes(k));
 
       let botReply = "";
       if (hasUserRequestedExit) {
@@ -347,7 +350,7 @@ wss.on('connection', (ws, req) => {
       if (audioBuffer.length > 0 && !isProcessing && !isClosing) {
         processAudio();
       }
-    }, 800);
+    }, 550);
   });
 
   ws.on('close', () => {
