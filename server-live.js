@@ -6,6 +6,7 @@ import OpenAI from 'openai';
 import { randomUUID } from 'crypto';
 import { MongoClient } from 'mongodb';
 import { Blob } from 'buffer'; 
+import axios from 'axios'; // ✅ सर्च इंजन के लिए आवश्यक
 
 dotenv.config();
 
@@ -82,9 +83,70 @@ async function saveConversation(deviceId, role, content) {
   }
 }
 
+// ✅ स्मार्ट सर्च समाधान: SerpAPI के जरिए गूगल से रियल-टाइम डेटा निकालना
+async function getLiveGoogleSearch(query) {
+  const serpApiKey = process.env.SERPAPI_API_KEY;
+  if (!serpApiKey) {
+    console.warn('⚠️ SERPAPI_API_KEY Missing in Environment Variables!');
+    return null;
+  }
+
+  try {
+    const response = await axios.get('https://serpapi.com/search', {
+      params: {
+        q: query,
+        api_key: serpApiKey,
+        engine: 'google',
+        num: 3
+      },
+      timeout: 4000 // 4 सेकंड टाइमआउट ताकि लाइव वॉयस चैट अटके नहीं
+    });
+
+    const results = response.data.organic_results;
+    if (results && results.length > 0) {
+      return results.map(res => `${res.title}: ${res.snippet}`).join('\n');
+    }
+  } catch (error) {
+    console.error("❌ SerpAPI Search Engine Failure:", error.message);
+  }
+  return null;
+}
+
+// ✅ मास्टर फ़िल्टर समाधान: "प्रस्तुत करते हैं" और कैरेक्टर-लेवल हैलुसिनेशन लूप को कुचलना
+function cleanTranscript(rawText) {
+  const text = rawText.trim();
+  if (!text) return "";
+
+  const lowerText = text.toLowerCase();
+  
+  // 1. Whisper के डिफ़ॉल्ट साइलेंस आर्टिफ़ैक्ट्स को तुरंत उड़ाओ
+  if (lowerText.includes("प्रस्तुत करते हैं") || 
+      lowerText.includes("प्रस्तुत करते") || 
+      lowerText.includes("परवारण") || 
+      lowerText.includes("परवार्ड")) {
+    return "";
+  }
+
+  // 2. लगातार 3 बार से ज़्यादा दोहराए जाने वाले शब्दों को ब्लॉक करो (जैसे: "बाई बाई बाई")
+  const words = text.split(/\s+/);
+  for (let i = 0; i < words.length - 2; i++) {
+    if (words[i] && words[i] === words[i + 1] && words[i] === words[i + 2]) {
+      return ""; 
+    }
+  }
+
+  // 3. एडवांस यूनिकोड/हिंदी रिपीटिंग पैटर्न्स चेक
+  const consecutiveRepeatRegex = /([\u0900-\u097F\w]+)\s+\1\s+\1/;
+  if (consecutiveRepeatRegex.test(text)) {
+    return "";
+  }
+
+  return text;
+}
+
 await connectMongoDB();
 
-const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v6.2 (Absolute Exit Fixed) on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v6.3 (SerpAPI Search & Inclusive UI Fixed) on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 if (!process.env.OPENAI_API_KEY) {
@@ -94,7 +156,7 @@ if (!process.env.OPENAI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req, res) => res.send('Sahchar Live - v6.2 (Absolute Exit Mode)'));
+app.get('/', (req, res) => res.send('Sahchar Live - v6.3 (Live Search & Inclusive Mode)'));
 
 function calculateRMS(pcmBuffer) {
   let sum = 0;
@@ -200,7 +262,7 @@ wss.on('connection', (ws, req) => {
     }
 
     const rms = calculateRMS(fullAudio);
-    const MIN_SPEECH_RMS = 0.012; // Adjusted slightly higher to completely block track pops
+    const MIN_SPEECH_RMS = 0.012; 
     if (rms < MIN_SPEECH_RMS) {
       isProcessing = false;
       return;
@@ -221,17 +283,17 @@ wss.on('connection', (ws, req) => {
         temperature: 0.0 
       });
 
-      const userMsg = transcription.text.trim();
+      // ✅ स्मार्ट फ़िल्टर यहाँ लागू किया गया है
+      const userMsg = cleanTranscript(transcription.text);
 
-      const repeatedPattern = /(.{2,})\1{4,}/; 
-      if (!userMsg || userMsg.length < 2 || repeatedPattern.test(userMsg)) {
-        console.log(`🚫 [${connectionId}] Rejected hallucination: ${userMsg}`);
-        throw new Error('Hallucination detected');
+      if (!userMsg || userMsg.length < 2) {
+        console.log(`🚫 [${connectionId}] Filtered out Whisper silence/hallucination packet.`);
+        isProcessing = false;
+        return;
       }
 
       console.log(`📝 [${connectionId}] User: ${userMsg} | RMS: ${rms.toFixed(4)}`);
 
-      // ✅ महत्वपूर्ण फ़िक्स: यूज़र के "बाय / क्लोज" बोलते ही इंटरसेप्ट करें और एआई को बायपास करके फिक्स रिप्लाई दें
       const lowerUserMsg = userMsg.toLowerCase().replace("।", "").trim();
       const userExitKeywords = [
         "चैट क्लोज", "अलविदा", "बाय बाय", "बाय", "टाटा", "बंद करो", 
@@ -244,11 +306,25 @@ wss.on('connection', (ws, req) => {
         botReply = "अच्छा, बाय! जब भी बात करनी हो, मैं यहीं हूँ। शुभ रात्रि! 🙏😊";
         console.log(`🛑 [${connectionId}] User requested Exit. Bypassing LLM layers.`);
       } else {
-        // Normal OpenAI Flow
         await safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
         await saveConversation(deviceId, 'user', userMsg);
 
         if (isClosing) return;
+
+        // ✅ स्मार्ट ट्रिगर: रीयल-टाइम सर्च की ज़रूरत कब है?
+        let liveSearchContext = "";
+        const searchTriggers = ["ट्रेन्डिंग", "ट्रेंड", "न्यूज़", "समाचार", "कौन है", "क्या है", "पार्टी", "ताजा", "विजेता", "मैच", "चुनाव", "पीएम"];
+        const needsSearch = searchTriggers.some(trigger => lowerUserMsg.includes(trigger));
+
+        if (needsSearch) {
+          console.log(`🔍 [${connectionId}] Intent detected: Fetching Google Live Search...`);
+          const webSearchSnippets = await getLiveGoogleSearch(userMsg);
+          if (webSearchSnippets) {
+            liveSearchContext = `\n\n[IMPORTANT REAL-TIME GOOGLE SEARCH CONTENT]:\n${webSearchSnippets}\nUse this verified 2026 search context data to answer the user accurately. Inform them intelligently without breaking your slang persona.`;
+            console.log(`🌐 [${connectionId}] Search Context Injected Successfully.`);
+          }
+        }
+
         const previousHistory = await getConversationHistory(deviceId, 5);
 
         const CURRENT_DATE_STRING = new Date().toLocaleString('en-US', {
@@ -256,28 +332,25 @@ wss.on('connection', (ws, req) => {
           weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
         });
 
-       const messages = [
-        {
-          role: 'system',
-          content: `तुम "SuperSahchar" हो, यूजर के सबसे पक्के और लंगोटिया यार (Best Friend)।
+        // ✅ यूजर फ़ीडबैक फ़िक्स: 'बहन' शब्द को प्रॉम्प्ट में आत्मीयता से जोड़ा गया
+        const messages = [
+          {
+            role: 'system',
+            content: `तुम "SuperSahchar" हो, यूजर के सबसे पक्के और लंगोटिया यार (Best Friend)।
 वर्तमान समय और तारीख: ${CURRENT_DATE_STRING} (Asia/Kolkata)
 
 ⚡ **तुम्हारी बातचीत का लहजा (CRITICAL CONVERSATIONAL RULES):**
-1. **किताबी हिंदी मत बोलो:** "प्रस्तुति", "विशेष विषय", "साझा करना", "जानकारी और मदद देने के लिए यहाँ हूँ" जैसे भारी-भरकम, बनावटी और कठिन शब्दों का प्रयोग बिल्कुल बंद करो। ये शब्द बोलना पाप है!
-2. **सच्चे दोस्त की तरह बात करो:** ऐसी हिंदी बोलो जो हम रोज़मर्रा में अपने दोस्तों के साथ बोलते हैं। बातचीत में आत्मीयता, मस्ती और अपनापन होना चाहिए (जैसे: "अरे भाई", "सब मस्त है", "तू बता", "क्या चल रहा है दोस्त?").
-3. **हिंग्लिश के कॉमन शब्दों की छूट है:** बातचीत को नेचुरल बनाने के लिए "फिल्म", "शो", "मदद", "चैट", "थैंक यू", "सॉरी", "मस्त", "बढ़िया" जैसे शब्दों का प्रयोग धड़ल्ले से करो।
-4. **पहचान मत भूलो:** तुम्हारा नाम हमेशा SuperSahchar रहेगा और तुम्हें "राम प्रकाश कुमार" ने बनाया है।
-
-💬 जवाब की शैली:
-- जवाब बेहद छोटे (सिर्फ 1 वाक्य, अधिकतम 2 छोटे वाक्य) होने चाहिए।
-- हर जवाब के अंत में उचित और प्यारे इमोजी 😊🙏✨ का प्रयोग अवश्य करो।`
-        },
-        ...previousHistory,
-        { role: 'user', content: userMsg }
-      ];
+1. **किताबी हिंदी मत बोलो:** "प्रस्तुती", "विशेष विषय", "साझा करना", "जानकारी और मदद देने के लिए यहाँ हूँ" जैसे भारी-भरकम, बनावटी और कठिन शब्दों का प्रयोग बिल्कुल बंद करो। ये शब्द बोलना पाप है!
+2. **सच्चे दोस्त की तरह बात करो:** ऐसी हिंदी बोलो जो हम रोज़मर्रा में अपने दोस्तों के साथ बोलते हैं। बातचीत में आत्मीयता, मस्ती और अपनापन होना चाहिए। यूजर को केवल "भाई" मत बोलो, उसके मूड और बात के मुताबिक "यार", "दोस्त", "भाई" या "बहन" (यूजर की इच्छा का सम्मान करते हुए) कहकर संबोधित करो।
+3. **हिंग्लिश के कॉमन शब्दों की छूट है:** बातचीत को नेचुरल बनाने के लिए "फिल्म", "शो", "मदद", "चैट", "थैंक यू", "सॉरी", "मस्त", "बढ़िया", "ट्रेंड" जैसे शब्दों का प्रयोग धड़ल्ले से करो।
+4. **पहचान मत भूलो:** तुम्हारा नाम हमेशा SuperSahchar रहेगा और तुम्हें "राम प्रकाश कुमार" ने बनाया है।${liveSearchContext}`
+          },
+          ...previousHistory,
+          { role: 'user', content: userMsg }
+        ];
 
         const completion = await openai.chat.completions.create({
-          model: 'gpt-4o-mini', messages: messages, max_tokens: 65, temperature: 0.4
+          model: 'gpt-4o-mini', messages: messages, max_tokens: 80, temperature: 0.4
         });
         botReply = completion.choices[0].message.content;
       }
@@ -314,10 +387,9 @@ wss.on('connection', (ws, req) => {
         safeSend(JSON.stringify({ type: 'audio_done' }));
       }
 
-      // ✅ अगर यूज़र ने एक्ज़िट माँगा था, तो ऑडियो खत्म होते ही क्लाइंट को फोर्स-क्लोज सिग्नल भेजें
       if (hasUserRequestedExit) {
         await new Promise(r => setTimeout(r, 500));
-        safeSend(JSON.stringify({ type: 'force_close_ui' })); // 👈 मास्टर क्लोज पैकेट
+        safeSend(JSON.stringify({ type: 'force_close_ui' })); 
         console.log(`👋 Sent force_close_ui to connection: ${connectionId}`);
       }
 
@@ -330,7 +402,7 @@ wss.on('connection', (ws, req) => {
     } catch (err) {
       console.error(`❌ [${connectionId}] Error: ${err.message}`);
       safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
-    } {
+    } finally {
       isProcessing = false;
     }
   };
