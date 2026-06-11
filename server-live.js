@@ -107,22 +107,33 @@ function cleanTranscript(rawText) {
   if (!text) return "";
 
   const lowerText = text.toLowerCase();
-  if (text === "हूँ दोस्त।" || text === "हूं दोस्त।") {
+  
+  // 1. व्हिस्पर के डिफ़ॉल्ट साइलेंस आर्टिफ़ैक्ट्स और इनिशियल प्रॉम्प्ट के अवशेषों को रोकना
+  if (lowerText === "हूँ दोस्त।" || lowerText === "हूं दोस्त।" || lowerText === "दोस्त।") {
     console.log("⚠️ Whisper Hallucination Filtered: हूँ दोस्त।");
     return "";
   }
-  if (lowerText.includes("प्रस्तुत करते हैं") || lowerText.includes("प्रस्तुत करते")) {
-    console.log("⚠️ Whisper Silence Bug Filtered: प्रस्तुत करते हैं");
+  
+  if (lowerText.includes("प्रस्तुत करते हैं") || lowerText.includes("प्रस्तुत करते") || lowerText.includes("परवारण")) {
+    console.log("⚠️ Whisper Silence Bug Filtered");
+    return "";
+  }
+  const consecutiveRepeatRegex = /([\u0900-\u097F\w]+)\s+\1\s+\1/;
+  if (consecutiveRepeatRegex.test(text)) {
+    const parts = text.split(/[,।?]\s*/);
+    if (parts.length > 1 && parts[0].trim().length > 1) {
+      return parts[0].trim(); 
+    }
     return "";
   }
 
   return text;
 }
-  const consecutiveRepeatRegex = /([\u0900-\u097F\w\s,।?]+)\1{2,}/;
+const consecutiveRepeatRegex = /([\u0900-\u097F\w\s,।?]+)\1{2,}/;
   if (consecutiveRepeatRegex.test(text)) {
     const parts = text.split(/[,।?]\s*/);
     if (parts.length > 2 && parts[0] === parts[1]) {
-      return parts[0]; // पहले शुद्ध हिस्से को बचाओ, लूप को काटो
+      return parts[0];
     }
   }
 
@@ -240,7 +251,7 @@ wss.on('connection', (ws, req) => {
         file: fileObject,
         model: 'whisper-1',
         language: 'hi',
-        prompt: 'आम बोलचाल की हिंदी, यार दोस्त की बातचीत।', // ✅ फिक्स: न्यूट्रल प्रॉम्प्ट ताकि "हूँ दोस्त" हैलुसिनेशन बंद हो
+        prompt: 'आम बोलचाल की हिंदी, यार दोस्त की बातचीत।', 
         temperature: 0.0 
       });
 
