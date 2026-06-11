@@ -102,6 +102,7 @@ async function getLiveGoogleSearch(query) {
   return null;
 }
 
+// ✅ फिक्स: सिंटैक्स एरर और ब्रैकेट की सारी गड़बड़ियां पूरी तरह साफ
 function cleanTranscript(rawText) {
   let text = rawText.trim();
   if (!text) return "";
@@ -118,6 +119,8 @@ function cleanTranscript(rawText) {
     console.log("⚠️ Whisper Silence Bug Filtered");
     return "";
   }
+
+  // 2. एडवांस यूनिकोड रिपीटिंग पैटर्न्स चेक (कचरा और रिपीट लूप काटना)
   const consecutiveRepeatRegex = /([\u0900-\u097F\w]+)\s+\1\s+\1/;
   if (consecutiveRepeatRegex.test(text)) {
     const parts = text.split(/[,।?]\s*/);
@@ -125,16 +128,6 @@ function cleanTranscript(rawText) {
       return parts[0].trim(); 
     }
     return "";
-  }
-
-  return text;
-}
-const consecutiveRepeatRegex = /([\u0900-\u097F\w\s,।?]+)\1{2,}/;
-  if (consecutiveRepeatRegex.test(text)) {
-    const parts = text.split(/[,।?]\s*/);
-    if (parts.length > 2 && parts[0] === parts[1]) {
-      return parts[0];
-    }
   }
 
   return text;
@@ -307,7 +300,6 @@ wss.on('connection', (ws, req) => {
           model: 'gpt-4o-mini', messages: messages, max_tokens: 80, temperature: 0.4
         });
         
-        // ✅ फिक्स: न्यू-लाइन ब्रेकर्स को पूरी तरह हटाना ताकि ऑडियो प्लेबैक थ्रॉटल न हो
         botReply = completion.choices[0].message.content.replace(/\n+/g, ' ').trim();
       }
 
@@ -334,7 +326,7 @@ wss.on('connection', (ws, req) => {
         if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         safeSend(chunk, true);
-        await new Promise(r => setTimeout(r, 20)); // ✅ थोड़ा तेज़ रेंडरिंग ताकि एंड्रॉइड बफ़र खाली न बैठे
+        await new Promise(r => setTimeout(r, 20)); 
       }
 
       if (isBotSpeaking) safeSend(JSON.stringify({ type: 'audio_done' }));
