@@ -102,14 +102,14 @@ async function getLiveGoogleSearch(query) {
   return null;
 }
 
-// ✅ फिक्स: सिंटैक्स एरर और ब्रैकेट की सारी गड़बड़ियां पूरी तरह साफ
+// ✅ फ़ंक्शन की सीमा यहाँ साफ़ है और नीचे कोई तैरता हुआ कोड नहीं है
 function cleanTranscript(rawText) {
   let text = rawText.trim();
   if (!text) return "";
 
   const lowerText = text.toLowerCase();
   
-  // 1. व्हिस्पर के डिफ़ॉल्ट साइलेंस आर्टिफ़ैक्ट्स और इनिशियल प्रॉम्प्ट के अवशेषों को रोकना
+  // 1. व्हिस्पर के डिफ़ॉल्ट साइलेंस आर्टिफ़ैक्ट्स रोकना
   if (lowerText === "हूँ दोस्त।" || lowerText === "हूं दोस्त।" || lowerText === "दोस्त।") {
     console.log("⚠️ Whisper Hallucination Filtered: हूँ दोस्त।");
     return "";
@@ -120,7 +120,7 @@ function cleanTranscript(rawText) {
     return "";
   }
 
-  // 2. एडवांस यूनिकोड रिपीटिंग पैटर्न्स चेक (कचरा और रिपीट लूप काटना)
+  // 2. एडवांस यूनिकोड रिपीटिंग पैटर्न्स चेक (कचरा लूप काटना)
   const consecutiveRepeatRegex = /([\u0900-\u097F\w]+)\s+\1\s+\1/;
   if (consecutiveRepeatRegex.test(text)) {
     const parts = text.split(/[,।?]\s*/);
