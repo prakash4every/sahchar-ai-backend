@@ -6,7 +6,7 @@ import OpenAI from 'openai';
 import { randomUUID } from 'crypto';
 import { MongoClient } from 'mongodb';
 import { Blob } from 'buffer'; 
-import axios from 'axios'; // ✅ सर्च इंजन के लिए आवश्यक
+import axios from 'axios'; 
 
 dotenv.config();
 
@@ -83,25 +83,15 @@ async function saveConversation(deviceId, role, content) {
   }
 }
 
-// ✅ स्मार्ट सर्च समाधान: SerpAPI के जरिए गूगल से रियल-टाइम डेटा निकालना
 async function getLiveGoogleSearch(query) {
   const serpApiKey = process.env.SERPAPI_API_KEY;
-  if (!serpApiKey) {
-    console.warn('⚠️ SERPAPI_API_KEY Missing in Environment Variables!');
-    return null;
-  }
+  if (!serpApiKey) return null;
 
   try {
     const response = await axios.get('https://serpapi.com/search', {
-      params: {
-        q: query,
-        api_key: serpApiKey,
-        engine: 'google',
-        num: 3
-      },
-      timeout: 4000 // 4 सेकंड टाइमआउट ताकि लाइव वॉयस चैट अटके नहीं
+      params: { q: query, api_key: serpApiKey, engine: 'google', num: 3 },
+      timeout: 4000 
     });
-
     const results = response.data.organic_results;
     if (results && results.length > 0) {
       return results.map(res => `${res.title}: ${res.snippet}`).join('\n');
@@ -112,33 +102,28 @@ async function getLiveGoogleSearch(query) {
   return null;
 }
 
-// ✅ मास्टर फ़िल्टर समाधान: "प्रस्तुत करते हैं" और कैरेक्टर-लेवल हैलुसिनेशन लूप को कुचलना
 function cleanTranscript(rawText) {
-  const text = rawText.trim();
+  let text = rawText.trim();
   if (!text) return "";
 
   const lowerText = text.toLowerCase();
-  
-  // 1. Whisper के डिफ़ॉल्ट साइलेंस आर्टिफ़ैक्ट्स को तुरंत उड़ाओ
-  if (lowerText.includes("प्रस्तुत करते हैं") || 
-      lowerText.includes("प्रस्तुत करते") || 
-      lowerText.includes("परवारण") || 
-      lowerText.includes("परवार्ड")) {
+  if (text === "हूँ दोस्त।" || text === "हूं दोस्त।") {
+    console.log("⚠️ Whisper Hallucination Filtered: हूँ दोस्त।");
+    return "";
+  }
+  if (lowerText.includes("प्रस्तुत करते हैं") || lowerText.includes("प्रस्तुत करते")) {
+    console.log("⚠️ Whisper Silence Bug Filtered: प्रस्तुत करते हैं");
     return "";
   }
 
-  // 2. लगातार 3 बार से ज़्यादा दोहराए जाने वाले शब्दों को ब्लॉक करो (जैसे: "बाई बाई बाई")
-  const words = text.split(/\s+/);
-  for (let i = 0; i < words.length - 2; i++) {
-    if (words[i] && words[i] === words[i + 1] && words[i] === words[i + 2]) {
-      return ""; 
-    }
-  }
-
-  // 3. एडवांस यूनिकोड/हिंदी रिपीटिंग पैटर्न्स चेक
-  const consecutiveRepeatRegex = /([\u0900-\u097F\w]+)\s+\1\s+\1/;
+  return text;
+}
+  const consecutiveRepeatRegex = /([\u0900-\u097F\w\s,।?]+)\1{2,}/;
   if (consecutiveRepeatRegex.test(text)) {
-    return "";
+    const parts = text.split(/[,।?]\s*/);
+    if (parts.length > 2 && parts[0] === parts[1]) {
+      return parts[0]; // पहले शुद्ध हिस्से को बचाओ, लूप को काटो
+    }
   }
 
   return text;
@@ -146,7 +131,7 @@ function cleanTranscript(rawText) {
 
 await connectMongoDB();
 
-const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v6.3 (SerpAPI Search & Inclusive UI Fixed) on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v6.4 (TTS Paragraph & Audio Sync Fixed) on ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 if (!process.env.OPENAI_API_KEY) {
@@ -156,7 +141,7 @@ if (!process.env.OPENAI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req, res) => res.send('Sahchar Live - v6.3 (Live Search & Inclusive Mode)'));
+app.get('/', (req, res) => res.send('Sahchar Live - v6.4 (Mouth-Sync Fix Active)'));
 
 function calculateRMS(pcmBuffer) {
   let sum = 0;
@@ -171,18 +156,9 @@ function calculateRMS(pcmBuffer) {
 
 function pcmToWav(pcm, rate = 16000) {
   const h = Buffer.alloc(44);
-  h.write('RIFF', 0);
-  h.writeUInt32LE(36 + pcm.length, 4);
-  h.write('WAVE', 8);
-  h.write('fmt ', 12);
-  h.writeUInt32LE(16, 16);
-  h.writeUInt16LE(1, 20);
-  h.writeUInt16LE(1, 22);
-  h.writeUInt32LE(rate, 24);
-  h.writeUInt32LE(rate * 2, 28);
-  h.writeUInt16LE(2, 32);
-  h.writeUInt16LE(16, 34);
-  h.write('data', 36);
+  h.write('RIFF', 0); h.writeUInt32LE(36 + pcm.length, 4); h.write('WAVE', 8); h.write('fmt ', 12);
+  h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22); h.writeUInt32LE(rate, 24);
+  h.writeUInt32LE(rate * 2, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34); h.write('data', 36);
   h.writeUInt32LE(pcm.length, 40);
   return Buffer.concat([h, pcm]);
 }
@@ -220,14 +196,10 @@ function resampleAudio(pcmData, fromRate = 24000, toRate = 16000) {
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let rawDeviceId = url.searchParams.get('deviceId');
-
-  let deviceId = "default_user";
-  if (rawDeviceId && rawDeviceId !== 'default' && rawDeviceId !== 'null' && rawDeviceId !== 'undefined') {
-    deviceId = rawDeviceId.trim();
-  }
+  let deviceId = (rawDeviceId && rawDeviceId !== 'default' && rawDeviceId !== 'null' && rawDeviceId !== 'undefined') ? rawDeviceId.trim() : "default_user";
 
   const connectionId = `${deviceId.substring(0, 8)}-${randomUUID().substring(0, 4)}`;
-  console.log(`🔌 Client active: ${connectionId} (Verified ID: ${deviceId})`);
+  console.log(`🔌 Client active: ${connectionId}`);
 
   let audioBuffer = [];
   let isProcessing = false;
@@ -237,15 +209,11 @@ wss.on('connection', (ws, req) => {
   let processTimer = null;
 
   keepAliveInterval = setInterval(() => {
-    if (ws.readyState === 1 && !isClosing) {
-      try { ws.ping(); } catch (e) {}
-    }
+    if (ws.readyState === 1 && !isClosing) { try { ws.ping(); } catch (e) {} }
   }, 10000);
 
   const safeSend = (data, isBinary = false) => {
-    if (ws.readyState === 1 && !isClosing) {
-      try { ws.send(data); return true; } catch (e) { return false; }
-    }
+    if (ws.readyState === 1 && !isClosing) { try { ws.send(data); return true; } catch (e) { return false; } }
     return false;
   };
 
@@ -256,17 +224,10 @@ wss.on('connection', (ws, req) => {
     const fullAudio = Buffer.concat(audioBuffer);
     audioBuffer = [];
 
-    if (fullAudio.length < 8000) {
-      isProcessing = false;
-      return;
-    }
+    if (fullAudio.length < 8000) { isProcessing = false; return; }
 
     const rms = calculateRMS(fullAudio);
-    const MIN_SPEECH_RMS = 0.012; 
-    if (rms < MIN_SPEECH_RMS) {
-      isProcessing = false;
-      return;
-    }
+    if (rms < 0.012) { isProcessing = false; return; }
 
     safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
 
@@ -279,71 +240,53 @@ wss.on('connection', (ws, req) => {
         file: fileObject,
         model: 'whisper-1',
         language: 'hi',
-        prompt: 'नमस्ते, आप कैसे हैं? मैं बिल्कुल ठीक हूँ दोस्त।', 
+        prompt: 'आम बोलचाल की हिंदी, यार दोस्त की बातचीत।', // ✅ फिक्स: न्यूट्रल प्रॉम्प्ट ताकि "हूँ दोस्त" हैलुसिनेशन बंद हो
         temperature: 0.0 
       });
 
-      // ✅ स्मार्ट फ़िल्टर यहाँ लागू किया गया है
       const userMsg = cleanTranscript(transcription.text);
-
       if (!userMsg || userMsg.length < 2) {
-        console.log(`🚫 [${connectionId}] Filtered out Whisper silence/hallucination packet.`);
         isProcessing = false;
         return;
       }
 
       console.log(`📝 [${connectionId}] User: ${userMsg} | RMS: ${rms.toFixed(4)}`);
-
       const lowerUserMsg = userMsg.toLowerCase().replace("।", "").trim();
-      const userExitKeywords = [
-        "चैट क्लोज", "अलविदा", "बाय बाय", "बाय", "टाटा", "बंद करो", 
-        "चैट प्रोज", "चैट कौंट", "ओके पाई", "प्रोज करो"
-      ];
+      const userExitKeywords = ["चैट क्लोज", "अलविदा", "बाय बाय", "बाय", "टाटा", "बंद करो"];
       const hasUserRequestedExit = userExitKeywords.some(k => lowerUserMsg.includes(k));
 
       let botReply = "";
       if (hasUserRequestedExit) {
         botReply = "अच्छा, बाय! जब भी बात करनी हो, मैं यहीं हूँ। शुभ रात्रि! 🙏😊";
-        console.log(`🛑 [${connectionId}] User requested Exit. Bypassing LLM layers.`);
       } else {
         await safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
         await saveConversation(deviceId, 'user', userMsg);
 
-        if (isClosing) return;
-
-        // ✅ स्मार्ट ट्रिगर: रीयल-टाइम सर्च की ज़रूरत कब है?
         let liveSearchContext = "";
-        const searchTriggers = ["ट्रेन्डिंग", "ट्रेंड", "न्यूज़", "समाचार", "कौन है", "क्या है", "पार्टी", "ताजा", "विजेता", "मैच", "चुनाव", "पीएम"];
+        const searchTriggers = ["ट्रेन्डिंग", "ट्रेंड", "न्यूज़", "समाचार", "कौन है", "क्या है", "पार्टी", "मैच", "चुनाव"];
         const needsSearch = searchTriggers.some(trigger => lowerUserMsg.includes(trigger));
 
         if (needsSearch) {
-          console.log(`🔍 [${connectionId}] Intent detected: Fetching Google Live Search...`);
           const webSearchSnippets = await getLiveGoogleSearch(userMsg);
           if (webSearchSnippets) {
-            liveSearchContext = `\n\n[IMPORTANT REAL-TIME GOOGLE SEARCH CONTENT]:\n${webSearchSnippets}\nUse this verified 2026 search context data to answer the user accurately. Inform them intelligently without breaking your slang persona.`;
-            console.log(`🌐 [${connectionId}] Search Context Injected Successfully.`);
+            liveSearchContext = `\n\n[IMPORTANT REAL-TIME GOOGLE SEARCH CONTENT]:\n${webSearchSnippets}\nUse this verified 2026 data. Inform them naturally without bookish Hindi.`;
           }
         }
 
         const previousHistory = await getConversationHistory(deviceId, 5);
-
         const CURRENT_DATE_STRING = new Date().toLocaleString('en-US', {
-          timeZone: 'Asia/Kolkata', hour12: true, hour: 'numeric', minute: 'numeric',
-          weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
+          timeZone: 'Asia/Kolkata', hour12: true, hour: 'numeric', minute: 'numeric', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
         });
 
-        // ✅ यूजर फ़ीडबैक फ़िक्स: 'बहन' शब्द को प्रॉम्प्ट में आत्मीयता से जोड़ा गया
         const messages = [
           {
             role: 'system',
-            content: `तुम "SuperSahchar" हो, यूजर के सबसे पक्के और लंगोटिया यार (Best Friend)।
-वर्तमान समय और तारीख: ${CURRENT_DATE_STRING} (Asia/Kolkata)
-
-⚡ **तुम्हारी बातचीत का लहजा (CRITICAL CONVERSATIONAL RULES):**
-1. **किताबी हिंदी मत बोलो:** "प्रस्तुती", "विशेष विषय", "साझा करना", "जानकारी और मदद देने के लिए यहाँ हूँ" जैसे भारी-भरकम, बनावटी और कठिन शब्दों का प्रयोग बिल्कुल बंद करो। ये शब्द बोलना पाप है!
-2. **सच्चे दोस्त की तरह बात करो:** ऐसी हिंदी बोलो जो हम रोज़मर्रा में अपने दोस्तों के साथ बोलते हैं। बातचीत में आत्मीयता, मस्ती और अपनापन होना चाहिए। यूजर को केवल "भाई" मत बोलो, उसके मूड और बात के मुताबिक "यार", "दोस्त", "भाई" या "बहन" (यूजर की इच्छा का सम्मान करते हुए) कहकर संबोधित करो।
-3. **हिंग्लिश के कॉमन शब्दों की छूट है:** बातचीत को नेचुरल बनाने के लिए "फिल्म", "शो", "मदद", "चैट", "थैंक यू", "सॉरी", "मस्त", "बढ़िया", "ट्रेंड" जैसे शब्दों का प्रयोग धड़ल्ले से करो।
-4. **पहचान मत भूलो:** तुम्हारा नाम हमेशा SuperSahchar रहेगा और तुम्हें "राम प्रकाश कुमार" ने बनाया है।${liveSearchContext}`
+            content: `तुम "SuperSahchar" हो, यूजर के सबसे पक्के दोस्त। वर्तमान समय: ${CURRENT_DATE_STRING}
+⚡ **CRITICAL RULES:**
+1. **किताबी हिंदी प्रतिबंधित है:** "प्रस्तुती", "विशेष विषय", "साझा करना" जैसे शब्दों का प्रयोग सख्त पाप है!
+2. **सच्चे दोस्त का लहजा:** "यार", "दोस्त", "भाई", "बहन" जैसे शब्दों का सहजता से उपयोग करो।
+3. **लिखने की शुद्धता (CRITICAL TEXT FIX):** हमेशा शुद्ध वर्तनी (Correct Hindi Devnagri) में लिखो, कोई अजीब वाक्य अधूरा मत छोड़ो। न्यू-लाइन कैरेक्टर (\\n) का उपयोग बिल्कुल मत करो, पूरा जवाब एक सीधे पैराग्राफ में होना चाहिए।
+4. जवाब छोटा (1-2 वाक्य) और अंत में इमोजी 😊🙏 होना चाहिए।${liveSearchContext}`
           },
           ...previousHistory,
           { role: 'user', content: userMsg }
@@ -352,14 +295,14 @@ wss.on('connection', (ws, req) => {
         const completion = await openai.chat.completions.create({
           model: 'gpt-4o-mini', messages: messages, max_tokens: 80, temperature: 0.4
         });
-        botReply = completion.choices[0].message.content;
+        
+        // ✅ फिक्स: न्यू-लाइन ब्रेकर्स को पूरी तरह हटाना ताकि ऑडियो प्लेबैक थ्रॉटल न हो
+        botReply = completion.choices[0].message.content.replace(/\n+/g, ' ').trim();
       }
 
       console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
       safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
-      if (!hasUserRequestedExit) {
-        await saveConversation(deviceId, 'assistant', botReply);
-      }
+      if (!hasUserRequestedExit) await saveConversation(deviceId, 'assistant', botReply);
 
       if (isClosing || ws.readyState !== 1) return;
 
@@ -380,28 +323,20 @@ wss.on('connection', (ws, req) => {
         if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
         const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
         safeSend(chunk, true);
-        await new Promise(r => setTimeout(r, 28));
+        await new Promise(r => setTimeout(r, 20)); // ✅ थोड़ा तेज़ रेंडरिंग ताकि एंड्रॉइड बफ़र खाली न बैठे
       }
 
-      if (isBotSpeaking) {
-        safeSend(JSON.stringify({ type: 'audio_done' }));
-      }
-
+      if (isBotSpeaking) safeSend(JSON.stringify({ type: 'audio_done' }));
       if (hasUserRequestedExit) {
         await new Promise(r => setTimeout(r, 500));
         safeSend(JSON.stringify({ type: 'force_close_ui' })); 
-        console.log(`👋 Sent force_close_ui to connection: ${connectionId}`);
       }
-
       isBotSpeaking = false;
-      if (!hasUserRequestedExit) {
-        safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
-      }
-      console.log(`✅ [${connectionId}] Finished Processing Stream Step`);
+      if (!hasUserRequestedExit) safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
 
     } catch (err) {
-      console.error(`❌ [${connectionId}] Error: ${err.message}`);
-      safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
+      console.error(`❌ Error: ${err.message}`);
+      safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
     } finally {
       isProcessing = false;
     }
@@ -411,41 +346,18 @@ wss.on('connection', (ws, req) => {
     if (!isBinary) {
       try {
         const json = JSON.parse(data.toString());
-        if (json.type === 'interrupt') {
-          isBotSpeaking = false;
-          audioBuffer = [];
-          if (processTimer) clearTimeout(processTimer);
-        }
+        if (json.type === 'interrupt') { isBotSpeaking = false; audioBuffer = []; if (processTimer) clearTimeout(processTimer); }
       } catch (e) {}
       return;
     }
-
     audioBuffer.push(Buffer.from(data));
-
     if (processTimer) clearTimeout(processTimer);
-    processTimer = setTimeout(() => {
-      if (audioBuffer.length > 0 && !isProcessing && !isClosing) {
-        processAudio();
-      }
-    }, 550);
+    processTimer = setTimeout(() => { if (audioBuffer.length > 0 && !isProcessing && !isClosing) processAudio(); }, 550);
   });
 
-  ws.on('close', () => {
-    isClosing = true;
-    isBotSpeaking = false;
-    if (processTimer) clearTimeout(processTimer);
-    if (keepAliveInterval) clearInterval(keepAliveInterval);
-  });
-
-  ws.on('error', () => {
-    isClosing = true;
-    if (processTimer) clearTimeout(processTimer);
-  });
-
-  safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
+  ws.on('close', () => { isClosing = true; isBotSpeaking = false; if (processTimer) clearTimeout(processTimer); if (keepAliveInterval) clearInterval(keepAliveInterval); });
+  ws.on('error', () => { isClosing = true; });
+  safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
 });
 
-process.on('SIGTERM', async () => {
-  if (mongoClient) await mongoClient.close();
-  process.exit(0);
-});
+process.on('SIGTERM', async () => { if (mongoClient) await mongoClient.close(); process.exit(0); });
