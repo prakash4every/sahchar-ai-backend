@@ -252,11 +252,11 @@ wss.on('connection', (ws, req) => {
       const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
       const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
 
-      const transcription = await openai.audio.transcriptions.create({
+     const transcription = await openai.audio.transcriptions.create({
         file: fileObject,
         model: 'whisper-1',
         language: 'hi',
-        prompt: 'आम बोलचाल की हिंदी, यार दोस्त की बातचीत।', 
+        prompt: 'नमस्ते।',
         temperature: 0.0 
       });
 
