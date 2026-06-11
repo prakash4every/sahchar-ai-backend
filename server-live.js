@@ -245,7 +245,11 @@ wss.on('connection', (ws, req) => {
     if (fullAudio.length < 8000) { isProcessing = false; return; }
 
     const rms = calculateRMS(fullAudio);
-    if (rms < 0.012) { isProcessing = false; return; }
+    const MIN_SPEECH_RMS = 0.030; 
+    if (rms < MIN_SPEECH_RMS) {
+      isProcessing = false;
+      return;
+    }
 
     safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
 
