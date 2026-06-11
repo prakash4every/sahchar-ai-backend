@@ -101,11 +101,15 @@ async function getLiveGoogleSearch(query) {
   }
   return null;
 }
+
+// ✅ फ़ंक्शन की बाउंड्री को 100% सटीक लॉक किया गया है
 function cleanTranscript(rawText) {
   let text = rawText.trim();
   if (!text) return "";
 
   const lowerText = text.toLowerCase();
+  
+  // 1. व्हिस्पर के डिफ़ॉल्ट साइलेंस आर्टिफ़ैक्ट्स और लीक रोकना
   if (
     lowerText.includes("आम बोलचाल") || 
     lowerText.includes("दोस्त की बातचीत") || 
@@ -117,21 +121,12 @@ function cleanTranscript(rawText) {
     console.log("⚠️ Whisper Prompt Leak/Hallucination Filtered");
     return "";
   }
+  
   if (lowerText.includes("प्रस्तुत") || lowerText.includes("परवारण") || lowerText.includes("परवार्ड")) {
     console.log("⚠️ Whisper Silence/Presentation Bug Filtered");
     return "";
   }
-  const consecutiveRepeatRegex = /([\u0900-\u097F\w]+)\s+\1\s+\1/;
-  if (consecutiveRepeatRegex.test(text)) {
-    const parts = text.split(/[,।?]\s*/);
-    if (parts.length > 1 && parts[0].trim().length > 1) {
-      return parts[0].trim(); 
-    }
-    return "";
-  }
 
-  return text;
-}
   // 2. एडवांस यूनिकोड रिपीटिंग पैटर्न्स चेक (कचरा लूप काटना)
   const consecutiveRepeatRegex = /([\u0900-\u097F\w]+)\s+\1\s+\1/;
   if (consecutiveRepeatRegex.test(text)) {
@@ -252,11 +247,11 @@ wss.on('connection', (ws, req) => {
       const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
       const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
 
-     const transcription = await openai.audio.transcriptions.create({
+      const transcription = await openai.audio.transcriptions.create({
         file: fileObject,
         model: 'whisper-1',
         language: 'hi',
-        prompt: 'नमस्ते।',
+        prompt: 'नमस्ते।', 
         temperature: 0.0 
       });
 
