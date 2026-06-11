@@ -101,25 +101,37 @@ async function getLiveGoogleSearch(query) {
   }
   return null;
 }
-
-// ✅ फ़ंक्शन की सीमा यहाँ साफ़ है और नीचे कोई तैरता हुआ कोड नहीं है
 function cleanTranscript(rawText) {
   let text = rawText.trim();
   if (!text) return "";
 
   const lowerText = text.toLowerCase();
-  
-  // 1. व्हिस्पर के डिफ़ॉल्ट साइलेंस आर्टिफ़ैक्ट्स रोकना
-  if (lowerText === "हूँ दोस्त।" || lowerText === "हूं दोस्त।" || lowerText === "दोस्त।") {
-    console.log("⚠️ Whisper Hallucination Filtered: हूँ दोस्त।");
+  if (
+    lowerText.includes("आम बोलचाल") || 
+    lowerText.includes("दोस्त की बातचीत") || 
+    lowerText.includes("बात्चाल") ||
+    lowerText === "हूँ दोस्त।" || 
+    lowerText === "हूं दोस्त।" || 
+    lowerText === "दोस्त।"
+  ) {
+    console.log("⚠️ Whisper Prompt Leak/Hallucination Filtered");
     return "";
   }
-  
-  if (lowerText.includes("प्रस्तुत करते हैं") || lowerText.includes("प्रस्तुत करते") || lowerText.includes("परवारण")) {
-    console.log("⚠️ Whisper Silence Bug Filtered");
+  if (lowerText.includes("प्रस्तुत") || lowerText.includes("परवारण") || lowerText.includes("परवार्ड")) {
+    console.log("⚠️ Whisper Silence/Presentation Bug Filtered");
+    return "";
+  }
+  const consecutiveRepeatRegex = /([\u0900-\u097F\w]+)\s+\1\s+\1/;
+  if (consecutiveRepeatRegex.test(text)) {
+    const parts = text.split(/[,।?]\s*/);
+    if (parts.length > 1 && parts[0].trim().length > 1) {
+      return parts[0].trim(); 
+    }
     return "";
   }
 
+  return text;
+}
   // 2. एडवांस यूनिकोड रिपीटिंग पैटर्न्स चेक (कचरा लूप काटना)
   const consecutiveRepeatRegex = /([\u0900-\u097F\w]+)\s+\1\s+\1/;
   if (consecutiveRepeatRegex.test(text)) {
