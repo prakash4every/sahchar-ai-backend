@@ -102,14 +102,13 @@ async function getLiveGoogleSearch(query) {
   return null;
 }
 
-// ✅ फ़ंक्शन की बाउंड्री को 100% सटीक लॉक किया गया है
 function cleanTranscript(rawText) {
   let text = rawText.trim();
   if (!text) return "";
 
   const lowerText = text.toLowerCase();
   
-  // 1. व्हिस्पर के डिफ़ॉल्ट साइलेंस आर्टिफ़ैक्ट्स और लीक रोकना
+  // 1. व्हिस्पर प्रॉम्प्ट लीक और बेसिक्स को ब्लॉक करें
   if (
     lowerText.includes("आम बोलचाल") || 
     lowerText.includes("दोस्त की बातचीत") || 
@@ -118,18 +117,27 @@ function cleanTranscript(rawText) {
     lowerText === "हूं दोस्त।" || 
     lowerText === "दोस्त।"
   ) {
-    console.log("⚠️ Whisper Prompt Leak/Hallucination Filtered");
+    console.log("⚠️ Whisper Prompt Leak Filtered");
     return "";
   }
   
-  if (lowerText.includes("प्रस्तुत") || lowerText.includes("परवारण") || lowerText.includes("परवार्ड")) {
-    console.log("⚠️ Whisper Silence/Presentation Bug Filtered");
+  // 2. "प्रस्तुत", "प्रस्तुप्प", "प्रस्तुप" का कोई भी रूप आए तो सीधे ब्लॉक करें (Regex Match)
+  if (/प्रस्तु/i.test(lowerText) || lowerText.includes("परवारण") || lowerText.includes("परवार्ड")) {
+    console.log("⚠️ Whisper Silence Bug Filtered (प्रस्तुत वेरिएंट)");
     return "";
   }
 
-  // 2. एडवांस यूनिकोड रिपीटिंग पैटर्न्स चेक (कचरा लूप काटना)
-  const consecutiveRepeatRegex = /([\u0900-\u097F\w]+)\s+\1\s+\1/;
-  if (consecutiveRepeatRegex.test(text)) {
+  // 3. कैरेक्टर लेवल लूपिंग डिटेक्शन (जैसे: वावावावावा, हहाहाहाहा, अअअअअ)
+  // अगर कोई भी अक्षर लगातार 4 बार से ज़्यादा दोहराया जाए तो कचरा मानो
+  const charRepeatRegex = /([\u0900-\u097F\w])\1{3,}/;
+  if (charRepeatRegex.test(text)) {
+    console.log("⚠️ Whisper Character Loop Filtered (भावावावाव...)");
+    return "";
+  }
+
+  // 4. शब्दों का रिपीटिंग पैटर्न चेक (जैसे: बाई बाई बाई)
+  const wordRepeatRegex = /([\u0900-\u097F\w]+)\s+\1\s+\1/;
+  if (wordRepeatRegex.test(text)) {
     const parts = text.split(/[,।?]\s*/);
     if (parts.length > 1 && parts[0].trim().length > 1) {
       return parts[0].trim(); 
@@ -139,7 +147,6 @@ function cleanTranscript(rawText) {
 
   return text;
 }
-
 await connectMongoDB();
 
 const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v6.4 (TTS Paragraph & Audio Sync Fixed) on ${PORT}`));
