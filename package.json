@@ -1,7 +1,7 @@
 {
   "name": "sahchar-ai-backend",
   "version": "14.0.0",
-  "description": "सहचर AI – बुद्ध-चरित चैटबॉट का बैकएंड (REST API + Live Audio WebSocket + WhatsApp Integration + Web Search)",
+  "description": "सहचर AI चैटबॉट का बैकएंड (REST API + Live Audio WebSocket + WhatsApp Integration + Web Search)",
   "main": "server.js",
   "type": "module",
   "scripts": {
