@@ -203,7 +203,7 @@ async function smartTranscription(fileObject) {
     return null;
 }
 
-// ✅ SMART TTS - FIXED: PCM को सीधे भेजें
+// ✅ SMART TTS
 async function smartTTS(text) {
     console.log(`🔊 TTS Request: "${text.substring(0, 50)}..."`);
     console.log(`🔑 ElevenLabs Key: ${process.env.ELEVENLABS_API_KEY ? '✅ Set' : '❌ Missing'}`);
@@ -433,16 +433,25 @@ function calculateRMS(pcmBuffer) {
 }
 
 function pcmToWav(pcm, rate = 16000) {
-  const h = Buffer.alloc(44);
-  h.write('RIFF', 0); h.writeUInt32LE(36 + pcm.length, 4); h.write('WAVE', 8); h.write('fmt ', 12);
-  h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22); h.writeUInt32LE(rate, 24);
-  h.writeUInt32LE(rate * 2, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34); h.write('data', 36);
-  h.writeUInt32LE(pcm.length, 40);
-  return Buffer.concat([h, pcm]);
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(rate, 24);
+  header.writeUInt32LE(rate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
 }
 
 // ============================================================
-// ✅ FIXED: WebSocket with PROPER AUDIO STREAMING
+// ✅ FIXED: WebSocket with WAV STREAMING (Most Compatible)
 // ============================================================
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -475,7 +484,7 @@ wss.on('connection', (ws, req) => {
     return false;
   };
 
-const processAudio = async () => {
+  const processAudio = async () => {
     if (isProcessing || audioBuffer.length === 0 || isClosing) return;
 
     isProcessing = true;
@@ -574,37 +583,37 @@ const processAudio = async () => {
           isProcessing = false;
           return;
       }
-// ============================================================
-// ✅ FIXED: PCM DIRECT STREAMING WITH PROPER TIMING
-// ============================================================
 
-console.log(`📦 PCM size: ${audioPcm.length} bytes`);
-
-// ✅ 16kHz PCM का चंक साइज़: 640 बाइट्स = 20ms
-const CHUNK_SIZE = 640;
-const CHUNK_DELAY_MS = 25; // ✅ 20ms से 25ms करें (ज्यादा स्टेबल)
-
-let totalSent = 0;
-for (let i = 0; i < audioPcm.length; i += CHUNK_SIZE) {
-    if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
-    
-    const chunk = audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length));
-    
-    // ✅ PCM को WAV में बदलें (ताकि क्लाइंट सही से प्ले करे)
-    // या फिर PCM को ही भेजें लेकिन सही टाइमिंग के साथ
-    const success = safeSend(chunk, true);
-    if (!success) {
-        console.warn('⚠️ Failed to send audio chunk at offset', i);
-        break;
-    }
-    
-    totalSent += chunk.length;
-    
-    // ✅ थोड़ा ज्यादा डिले (क्लाइंट को प्रोसेस करने का टाइम दें)
-    await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
-}
-
-console.log(`✅ Sent ${totalSent} bytes of PCM audio`);
+      // ============================================================
+      // ✅ FIXED: PCM को WAV में बदलकर भेजें
+      // ============================================================
+      
+      // PCM को WAV में बदलें
+      const wavAudio = pcmToWav(audioPcm, 16000);
+      console.log(`📦 WAV size: ${wavAudio.length} bytes (PCM: ${audioPcm.length} bytes)`);
+      
+      // ✅ WAV को चंक्स में भेजें (सही टाइमिंग के साथ)
+      const CHUNK_SIZE = 1024; // बड़े चंक्स बेहतर हैं
+      const CHUNK_DELAY_MS = 15; // थोड़ा कम डिले (क्योंकि हेडर के साथ चंक्स भेज रहे हैं)
+      
+      let totalSent = 0;
+      for (let i = 0; i < wavAudio.length; i += CHUNK_SIZE) {
+          if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
+          
+          const chunk = wavAudio.subarray(i, Math.min(i + CHUNK_SIZE, wavAudio.length));
+          
+          // ✅ Binary mode में भेजें
+          const success = safeSend(chunk, true);
+          if (!success) {
+              console.warn('⚠️ Failed to send WAV chunk at offset', i);
+              break;
+          }
+          
+          totalSent += chunk.length;
+          await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
+      }
+      
+      console.log(`✅ Sent ${totalSent} bytes of WAV audio`);
 
       if (isBotSpeaking) {
           safeSend(JSON.stringify({ type: 'audio_done' }));
@@ -627,7 +636,7 @@ console.log(`✅ Sent ${totalSent} bytes of PCM audio`);
     } finally {
       isProcessing = false;
     }
-};
+  };
 
   ws.on('message', (data, isBinary) => {
     if (!isBinary) {
