@@ -76,7 +76,7 @@ const providers = {
 };
 
 // ✅ SMART CHAT (Groq Primary - Fixed Format)
-async function smartChat(messages, preferAudio = false) {
+async function smartChat(messages, preferAudio = true) {
     const priorityOrder = ['groq', 'deepseek', 'kimi', 'gemini'];
     const orderedProviders = preferAudio ? ['groq', 'deepseek', 'kimi', 'gemini'] : priorityOrder;
 
