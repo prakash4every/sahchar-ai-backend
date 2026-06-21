@@ -205,7 +205,7 @@ async function smartTranscription(fileObject) {
     return null;
 }
 
-// ✅ SMART TTS (ElevenLabs Direct PCM - Fixed)
+// ✅ SMART TTS (ElevenLabs Direct PCM - No amplification)
 async function smartTTS(text) {
     const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
     const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
@@ -238,54 +238,11 @@ async function smartTTS(text) {
             let pcmData = Buffer.from(response.data);
             console.log(`✅ ElevenLabs PCM generated: ${pcmData.length} bytes`);
             
-            // ✅ Safe amplification
-            const factor = 1.5;
-            const amplified = Buffer.alloc(pcmData.length);
-            for (let i = 0; i < pcmData.length; i += 2) {
-                if (i + 1 < pcmData.length) {
-                    let sample = pcmData.readInt16LE(i);
-                    sample = Math.min(32767, Math.max(-32768, Math.round(sample * factor)));
-                    amplified.writeInt16LE(sample, i);
-                }
-            }
-            
-            console.log(`✅ Amplified PCM: ${amplified.length} bytes`);
-            return amplified;
+            // ✅ Return raw PCM (no amplification)
+            return pcmData;
             
         } catch (error) {
             console.error('❌ ElevenLabs TTS failed:', error.message);
-            if (error.response) {
-                console.error('Status:', error.response.status);
-                console.error('Data:', error.response.data);
-            }
-            // Try without amplification if error
-            try {
-                const response2 = await axios.post(
-                    `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-                    {
-                        text: text,
-                        model_id: 'eleven_monolingual_v1',
-                        voice_settings: {
-                            stability: 0.5,
-                            similarity_boost: 0.75
-                        },
-                        output_format: 'pcm_16000'
-                    },
-                    {
-                        headers: {
-                            'xi-api-key': elevenLabsKey,
-                            'Content-Type': 'application/json'
-                        },
-                        responseType: 'arraybuffer',
-                        timeout: 15000
-                    }
-                );
-                const pcmData2 = Buffer.from(response2.data);
-                console.log(`✅ ElevenLabs PCM (raw) generated: ${pcmData2.length} bytes`);
-                return pcmData2;
-            } catch (e2) {
-                console.error('❌ ElevenLabs retry failed:', e2.message);
-            }
         }
     }
 
@@ -616,6 +573,7 @@ wss.on('connection', (ws, req) => {
         botReply = chatResult ? chatResult.reply : "सभी सेवाएं व्यस्त हैं। 🙏";
         console.log(`🤖 Provider: ${chatResult?.provider || 'none'}`);
       }
+
 console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
 safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
 if (!hasUserRequestedExit) await saveConversation(deviceId, 'assistant', botReply);
@@ -635,9 +593,8 @@ if (!audioPcm) {
     return;
 }
 
-// ✅ FIX: Direct use - no resample needed
+// ✅ FIX: Direct use - NO resample, NO amplify (smartTTS already returns clean PCM)
 let processedAudio = audioPcm;
-processedAudio = amplifyAudio(processedAudio, 1.3);
 
 const chunkSize = 640;
 for (let i = 0; i < processedAudio.length; i += chunkSize) {
