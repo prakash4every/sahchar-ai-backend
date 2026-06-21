@@ -464,6 +464,7 @@ wss.on('connection', (ws, req) => {
   let audioBuffer = [];
   let isProcessing = false;
   let isBotSpeaking = false;
+  let isAudioStreaming = false;
   let isClosing = false;
   let keepAliveInterval = null;
   let processTimer = null;
@@ -596,28 +597,27 @@ wss.on('connection', (ws, req) => {
       const CHUNK_SIZE = 1024;
       const CHUNK_DELAY_MS = 20;
       
+      isAudioStreaming = true;
       let totalSent = 0;
       for (let i = 0; i < wavAudio.length; i += CHUNK_SIZE) {
-          if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
+          if (isClosing || ws.readyState !== 1) break;
           
           const chunk = wavAudio.subarray(i, Math.min(i + CHUNK_SIZE, wavAudio.length));
           safeSend(chunk, true);
           totalSent += chunk.length;
           await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
       }
+      isAudioStreaming = false;
+      isBotSpeaking = false;
       
       console.log(`✅ Sent ${totalSent} bytes of WAV audio`);
 
-      if (isBotSpeaking) {
-          safeSend(JSON.stringify({ type: 'audio_done' }));
-      }
+      safeSend(JSON.stringify({ type: 'audio_done' }));
       
       if (hasUserRequestedExit) {
           await new Promise(r => setTimeout(r, 500));
           safeSend(JSON.stringify({ type: 'force_close_ui' })); 
       }
-      
-      isBotSpeaking = false;
       if (!hasUserRequestedExit) {
           safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
       }
@@ -635,7 +635,7 @@ wss.on('connection', (ws, req) => {
     if (!isBinary) {
       try {
         const json = JSON.parse(data.toString());
-        if (json.type === 'interrupt') { 
+        if (json.type === 'interrupt' && !isAudioStreaming) { 
           isBotSpeaking = false; 
           audioBuffer = []; 
           if (processTimer) clearTimeout(processTimer); 
