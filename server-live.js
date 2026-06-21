@@ -122,106 +122,108 @@ async function smartChat(messages, preferAudio = false) {
   return null;
 }
 
-// ✅ SMART TRANSCRIPTION (with fallbacks) - FIXED
+// ✅ SMART TRANSCRIPTION (with fallbacks) - FIXED// ✅ SMART TRANSCRIPTION (with fallbacks) - FIXED
 async function smartTranscription(fileObject) {
-  // 1. Try OpenAI Whisper
-  const openaiKey = process.env.OPENAI_API_KEY;
-  if (openaiKey) {
-    try {
-      console.log('🔄 Trying OpenAI Whisper...');
-      const openai = new OpenAI({ apiKey: openaiKey });
-      const transcription = await openai.audio.transcriptions.create({
-        file: fileObject,
-        model: 'whisper-1',
-        language: 'hi',
-        prompt: 'नमस्ते।',
-        temperature: 0.0
-      });
-      const text = transcription.text;
-      if (text) {
-        console.log(`✅ OpenAI Whisper: ${text}`);
-        return text;
-      }
-    } catch (error) {
-      console.error('❌ OpenAI Whisper failed:', error.message);
-    }
-  }
-
-  // 2. Try Groq Whisper (free) - FIXED
-  const groqKey = process.env.GROQ_API_KEY;
-  if (groqKey) {
-    try {
-      console.log('🔄 Trying Groq Whisper fallback...');
-      
-      // Read file as buffer
-      const audioBuffer = await fileObject.arrayBuffer();
-      const buffer = Buffer.from(audioBuffer);
-      
-      // Create FormData
-      const formData = new FormData();
-      const blob = new Blob([buffer], { type: 'audio/wav' });
-      formData.append('file', blob, 'speech.wav');
-      formData.append('model', 'whisper-large-v3-turbo');
-      formData.append('language', 'hi');
-      formData.append('response_format', 'json');
-
-      // Use FormData headers
-      const response = await axios.post(
-        'https://api.groq.com/openai/v1/audio/transcriptions',
-        formData,
-        {
-          headers: {
-            'Authorization': `Bearer ${groqKey}`,
-            ...formData.getHeaders()
-          },
-          timeout: 15000
+    // 1. Try OpenAI Whisper
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (openaiKey) {
+        try {
+            console.log('🔄 Trying OpenAI Whisper...');
+            const openai = new OpenAI({ apiKey: openaiKey });
+            const transcription = await openai.audio.transcriptions.create({
+                file: fileObject,
+                model: 'whisper-1',
+                language: 'hi',
+                prompt: 'नमस्ते।',
+                temperature: 0.0
+            });
+            const text = transcription.text;
+            if (text) {
+                console.log(`✅ OpenAI Whisper: ${text}`);
+                return text;
+            }
+        } catch (error) {
+            console.error('❌ OpenAI Whisper failed:', error.message);
         }
-      );
-      const transcript = response.data.text;
-      if (transcript) {
-        console.log(`✅ Groq Whisper: ${transcript}`);
-        return transcript;
-      }
-    } catch (error) {
-      console.error('❌ Groq Whisper failed:', error.message);
     }
-  }
 
-  // 3. Try Deepgram (if available)
-  const deepgramKey = process.env.DEEPGRAM_API_KEY || process.env.DEEPGRAM_API_KEY1;
-  if (deepgramKey) {
-    try {
-      console.log('🔄 Trying Deepgram fallback...');
-      const audioBuffer = await fileObject.arrayBuffer();
-      const buffer = Buffer.from(audioBuffer);
-      
-      const response = await axios.post(
-        'https://api.deepgram.com/v1/listen',
-        buffer,
-        {
-          headers: {
-            'Authorization': `Token ${deepgramKey}`,
-            'Content-Type': 'audio/wav'
-          },
-          params: {
-            model: 'nova-2-general',
-            language: 'hi'
-          },
-          timeout: 15000
+    // 2. Try Groq Whisper (using form-data package)
+    const groqKey = process.env.GROQ_API_KEY;
+    if (groqKey) {
+        try {
+            console.log('🔄 Trying Groq Whisper fallback...');
+            
+            // ✅ Read file as buffer
+            const audioBuffer = await fileObject.arrayBuffer();
+            const buffer = Buffer.from(audioBuffer);
+            
+            // ✅ Use form-data package (already imported)
+            const formData = new FormData();
+            formData.append('file', buffer, {
+                filename: 'speech.wav',
+                contentType: 'audio/wav'
+            });
+            formData.append('model', 'whisper-large-v3-turbo');
+            formData.append('language', 'hi');
+            formData.append('response_format', 'json');
+
+            const response = await axios.post(
+                'https://api.groq.com/openai/v1/audio/transcriptions',
+                formData,
+                {
+                    headers: {
+                        'Authorization': `Bearer ${groqKey}`,
+                        ...formData.getHeaders()
+                    },
+                    timeout: 15000
+                }
+            );
+            const transcript = response.data.text;
+            if (transcript) {
+                console.log(`✅ Groq Whisper: ${transcript}`);
+                return transcript;
+            }
+        } catch (error) {
+            console.error('❌ Groq Whisper failed:', error.message);
+            console.error('❌ Error details:', error.response?.data || error);
         }
-      );
-      const transcript = response.data.results?.channels?.[0]?.alternatives?.[0]?.transcript;
-      if (transcript) {
-        console.log(`✅ Deepgram: ${transcript}`);
-        return transcript;
-      }
-    } catch (error) {
-      console.error('❌ Deepgram failed:', error.message);
     }
-  }
 
-  console.error('❌ All transcription providers failed');
-  return null;
+    // 3. Try Deepgram (if available)
+    const deepgramKey = process.env.DEEPGRAM_API_KEY || process.env.DEEPGRAM_API_KEY1;
+    if (deepgramKey) {
+        try {
+            console.log('🔄 Trying Deepgram fallback...');
+            const audioBuffer = await fileObject.arrayBuffer();
+            const buffer = Buffer.from(audioBuffer);
+            
+            const response = await axios.post(
+                'https://api.deepgram.com/v1/listen',
+                buffer,
+                {
+                    headers: {
+                        'Authorization': `Token ${deepgramKey}`,
+                        'Content-Type': 'audio/wav'
+                    },
+                    params: {
+                        model: 'nova-2-general',
+                        language: 'hi'
+                    },
+                    timeout: 15000
+                }
+            );
+            const transcript = response.data.results?.channels?.[0]?.alternatives?.[0]?.transcript;
+            if (transcript) {
+                console.log(`✅ Deepgram: ${transcript}`);
+                return transcript;
+            }
+        } catch (error) {
+            console.error('❌ Deepgram failed:', error.message);
+        }
+    }
+
+    console.error('❌ All transcription providers failed');
+    return null;
 }
 
 // ✅ SMART TTS
