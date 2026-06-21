@@ -7,11 +7,8 @@ import { randomUUID } from 'crypto';
 import { MongoClient } from 'mongodb';
 import { Blob } from 'buffer'; 
 import axios from 'axios'; 
-import FormData from 'form-data';  // ✅ Add this
-import fs from 'fs';  // ✅ Add this
-
+import FormData from 'form-data';
 dotenv.config();
-
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
