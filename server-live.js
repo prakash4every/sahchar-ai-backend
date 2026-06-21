@@ -27,13 +27,13 @@ let db = null;
 let conversationsCollection = null;
 let mongoClient = null;
 
-// ✅ PROVIDER CONFIGURATION
+// ✅ PROVIDER CONFIGURATION (Updated Models)
 const providers = {
   groq: {
     name: 'Groq',
     key: process.env.GROQ_API_KEY,
     url: 'https://api.groq.com/openai/v1/chat/completions',
-    model: 'llama-3.1-70b-versatile',
+    model: 'llama-3.3-70b-versatile',  // ✅ Updated
     chat: true,
     audio: false,
     whisper: true
@@ -68,7 +68,7 @@ const providers = {
   gemini: {
     name: 'Gemini',
     key: process.env.GEMINI_API_KEY,
-    url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
+    url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',  // ✅ Updated
     chat: true,
     audio: false,
     whisper: false
@@ -86,12 +86,13 @@ async function smartChat(messages, preferAudio = false) {
 
         try {
             console.log(`🔄 Trying ${provider.name}...`);
-            console.log(`📝 Messages: ${JSON.stringify(messages).substring(0, 200)}...`);
             
-            let response;
-            
+            const formattedMessages = messages.map(m => ({
+                role: m.role || 'user',
+                content: m.content || ''
+            }));
+
             if (provider.name === 'Gemini') {
-                // Gemini format
                 const geminiResponse = await axios.post(
                     `${provider.url}?key=${provider.key}`,
                     {
@@ -104,14 +105,7 @@ async function smartChat(messages, preferAudio = false) {
                 const reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
                 if (reply) return { reply, provider: provider.name };
             } else {
-                // ✅ OpenAI-compatible APIs (Groq, DeepSeek, Kimi)
-                // Ensure messages format is correct
-                const formattedMessages = messages.map(m => ({
-                    role: m.role || 'user',
-                    content: m.content || ''
-                }));
-
-                response = await axios.post(
+                const response = await axios.post(
                     provider.url,
                     {
                         model: provider.model,
@@ -127,13 +121,10 @@ async function smartChat(messages, preferAudio = false) {
                         timeout: 15000 
                     }
                 );
-                
                 const reply = response.data.choices?.[0]?.message?.content;
                 if (reply) {
                     console.log(`✅ ${provider.name} success!`);
                     return { reply, provider: provider.name };
-                } else {
-                    console.error(`⚠️ ${provider.name} returned no content`);
                 }
             }
         } catch (error) {
@@ -149,7 +140,7 @@ async function smartChat(messages, preferAudio = false) {
 
 // ✅ SMART TRANSCRIPTION (Groq Whisper Primary)
 async function smartTranscription(fileObject) {
-    // 1. Try Groq Whisper (Fast & Free)
+    // 1. Try Groq Whisper
     const groqKey = process.env.GROQ_API_KEY;
     if (groqKey) {
         try {
@@ -210,46 +201,12 @@ async function smartTranscription(fileObject) {
         }
     }
 
-    // 3. Try Deepgram (Last Resort)
-    const deepgramKey = process.env.DEEPGRAM_API_KEY || process.env.DEEPGRAM_API_KEY1;
-    if (deepgramKey) {
-        try {
-            console.log('🔄 Trying Deepgram...');
-            const audioBuffer = await fileObject.arrayBuffer();
-            const buffer = Buffer.from(audioBuffer);
-            
-            const response = await axios.post(
-                'https://api.deepgram.com/v1/listen',
-                buffer,
-                {
-                    headers: {
-                        'Authorization': `Token ${deepgramKey}`,
-                        'Content-Type': 'audio/wav'
-                    },
-                    params: {
-                        model: 'nova-2-general',
-                        language: 'hi'
-                    },
-                    timeout: 15000
-                }
-            );
-            const transcript = response.data.results?.channels?.[0]?.alternatives?.[0]?.transcript;
-            if (transcript) {
-                console.log(`✅ Deepgram: ${transcript}`);
-                return transcript;
-            }
-        } catch (error) {
-            console.error('❌ Deepgram failed:', error.message);
-        }
-    }
-
     console.error('❌ All transcription providers failed');
     return null;
 }
 
-// ✅ SMART TTS (ElevenLabs Primary, OpenAI Fallback)
+// ✅ SMART TTS (ElevenLabs Primary)
 async function smartTTS(text) {
-    // 1. Try ElevenLabs (Primary)
     const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
     const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
 
@@ -278,20 +235,13 @@ async function smartTTS(text) {
             
             const audioData = Buffer.from(response.data);
             console.log(`✅ ElevenLabs TTS generated: ${audioData.length} bytes`);
-            
-            // Convert MP3 to PCM (16kHz, mono)
-            // For simplicity, we're returning raw audio
-            // In production, use ffmpeg to convert
             return audioData;
         } catch (error) {
             console.error('❌ ElevenLabs TTS failed:', error.message);
-            if (error.response) {
-                console.error('Status:', error.response.status);
-            }
         }
     }
 
-    // 2. Try OpenAI TTS (Fallback)
+    // Fallback: OpenAI TTS
     const openaiKey = process.env.OPENAI_API_KEY;
     if (openaiKey) {
         try {
