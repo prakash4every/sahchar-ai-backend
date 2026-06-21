@@ -7,6 +7,8 @@ import { randomUUID } from 'crypto';
 import { MongoClient } from 'mongodb';
 import { Blob } from 'buffer'; 
 import axios from 'axios'; 
+import FormData from 'form-data';  // ✅ Add this
+import fs from 'fs';  // ✅ Add this
 
 dotenv.config();
 
@@ -123,7 +125,7 @@ async function smartChat(messages, preferAudio = false) {
   return null;
 }
 
-// ✅ SMART TRANSCRIPTION (with fallbacks)
+// ✅ SMART TRANSCRIPTION (with fallbacks) - FIXED
 async function smartTranscription(fileObject) {
   // 1. Try OpenAI Whisper
   const openaiKey = process.env.OPENAI_API_KEY;
@@ -148,15 +150,25 @@ async function smartTranscription(fileObject) {
     }
   }
 
-  // 2. Try Groq Whisper (free)
+  // 2. Try Groq Whisper (free) - FIXED
   const groqKey = process.env.GROQ_API_KEY;
   if (groqKey) {
     try {
       console.log('🔄 Trying Groq Whisper fallback...');
-      const formData = new FormData();
-      formData.append('file', fileObject);
-      formData.append('model', 'whisper-large-v3-turbo');
       
+      // Read file as buffer
+      const audioBuffer = await fileObject.arrayBuffer();
+      const buffer = Buffer.from(audioBuffer);
+      
+      // Create FormData
+      const formData = new FormData();
+      const blob = new Blob([buffer], { type: 'audio/wav' });
+      formData.append('file', blob, 'speech.wav');
+      formData.append('model', 'whisper-large-v3-turbo');
+      formData.append('language', 'hi');
+      formData.append('response_format', 'json');
+
+      // Use FormData headers
       const response = await axios.post(
         'https://api.groq.com/openai/v1/audio/transcriptions',
         formData,
@@ -183,18 +195,20 @@ async function smartTranscription(fileObject) {
   if (deepgramKey) {
     try {
       console.log('🔄 Trying Deepgram fallback...');
-      const formData = new FormData();
-      formData.append('audio', fileObject);
-      formData.append('model', 'nova-2-general');
-      formData.append('language', 'hi');
+      const audioBuffer = await fileObject.arrayBuffer();
+      const buffer = Buffer.from(audioBuffer);
       
       const response = await axios.post(
         'https://api.deepgram.com/v1/listen',
-        formData,
+        buffer,
         {
           headers: {
             'Authorization': `Token ${deepgramKey}`,
-            ...formData.getHeaders()
+            'Content-Type': 'audio/wav'
+          },
+          params: {
+            model: 'nova-2-general',
+            language: 'hi'
           },
           timeout: 15000
         }
@@ -234,7 +248,6 @@ async function smartTTS(text) {
       console.error('❌ OpenAI TTS failed:', error.message);
     }
   }
-  
   console.error('❌ No TTS provider available');
   return null;
 }
@@ -487,7 +500,6 @@ wss.on('connection', (ws, req) => {
       const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
       const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
 
-      // ✅ SMART TRANSCRIPTION
       const userMsg = await smartTranscription(fileObject);
       if (!userMsg || userMsg.length < 2) {
         console.log('⚠️ Empty transcription, skipping');
