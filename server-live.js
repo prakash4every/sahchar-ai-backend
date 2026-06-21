@@ -8,7 +8,9 @@ import { MongoClient } from 'mongodb';
 import { Blob } from 'buffer'; 
 import axios from 'axios'; 
 import FormData from 'form-data';
+
 dotenv.config();
+
 const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 10000;
@@ -73,91 +75,65 @@ const providers = {
   }
 };
 
-// ✅ SMART CHAT
+// ✅ SMART CHAT (Groq Primary)
 async function smartChat(messages, preferAudio = false) {
-  const priorityOrder = ['groq', 'openai', 'deepseek', 'kimi', 'gemini'];
-  const orderedProviders = preferAudio ? ['openai', 'groq', 'deepseek', 'kimi', 'gemini'] : priorityOrder;
+    const priorityOrder = ['groq', 'deepseek', 'kimi', 'gemini'];
+    const orderedProviders = preferAudio ? ['groq', 'deepseek', 'kimi', 'gemini'] : priorityOrder;
 
-  for (const providerName of orderedProviders) {
-    const provider = providers[providerName];
-    if (!provider || !provider.key || !provider.chat) continue;
+    for (const providerName of orderedProviders) {
+        const provider = providers[providerName];
+        if (!provider || !provider.key || !provider.chat) continue;
 
-    try {
-      console.log(`🔄 Trying ${provider.name}...`);
-      let response;
-      
-      if (provider.name === 'Gemini') {
-        const geminiResponse = await axios.post(
-          `${provider.url}?key=${provider.key}`,
-          {
-            contents: [{
-              parts: [{ text: messages.map(m => `${m.role}: ${m.content}`).join('\n') }]
-            }]
-          },
-          { timeout: 15000 }
-        );
-        const reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (reply) return { reply, provider: provider.name };
-      } else {
-        response = await axios.post(
-          provider.url,
-          {
-            model: provider.model,
-            messages: messages,
-            max_tokens: 80,
-            temperature: 0.4
-          },
-          { 
-            headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' },
-            timeout: 15000 
-          }
-        );
-        const reply = response.data.choices?.[0]?.message?.content;
-        if (reply) return { reply, provider: provider.name };
-      }
-    } catch (error) {
-      console.error(`❌ ${provider.name} failed:`, error.message);
-    }
-  }
-  return null;
-}
-
-// ✅ SMART TRANSCRIPTION (with fallbacks) - FIXED// ✅ SMART TRANSCRIPTION (with fallbacks) - FIXED
-async function smartTranscription(fileObject) {
-    // 1. Try OpenAI Whisper
-    const openaiKey = process.env.OPENAI_API_KEY;
-    if (openaiKey) {
         try {
-            console.log('🔄 Trying OpenAI Whisper...');
-            const openai = new OpenAI({ apiKey: openaiKey });
-            const transcription = await openai.audio.transcriptions.create({
-                file: fileObject,
-                model: 'whisper-1',
-                language: 'hi',
-                prompt: 'नमस्ते।',
-                temperature: 0.0
-            });
-            const text = transcription.text;
-            if (text) {
-                console.log(`✅ OpenAI Whisper: ${text}`);
-                return text;
+            console.log(`🔄 Trying ${provider.name}...`);
+            let response;
+            
+            if (provider.name === 'Gemini') {
+                const geminiResponse = await axios.post(
+                    `${provider.url}?key=${provider.key}`,
+                    {
+                        contents: [{
+                            parts: [{ text: messages.map(m => `${m.role}: ${m.content}`).join('\n') }]
+                        }]
+                    },
+                    { timeout: 15000 }
+                );
+                const reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (reply) return { reply, provider: provider.name };
+            } else {
+                response = await axios.post(
+                    provider.url,
+                    {
+                        model: provider.model,
+                        messages: messages,
+                        max_tokens: 80,
+                        temperature: 0.4
+                    },
+                    { 
+                        headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' },
+                        timeout: 15000 
+                    }
+                );
+                const reply = response.data.choices?.[0]?.message?.content;
+                if (reply) return { reply, provider: provider.name };
             }
         } catch (error) {
-            console.error('❌ OpenAI Whisper failed:', error.message);
+            console.error(`❌ ${provider.name} failed:`, error.message);
         }
     }
+    return null;
+}
 
-    // 2. Try Groq Whisper (using form-data package)
+// ✅ SMART TRANSCRIPTION (Groq Whisper Primary)
+async function smartTranscription(fileObject) {
+    // 1. Try Groq Whisper (Fast & Free)
     const groqKey = process.env.GROQ_API_KEY;
     if (groqKey) {
         try {
-            console.log('🔄 Trying Groq Whisper fallback...');
-            
-            // ✅ Read file as buffer
+            console.log('🔄 Trying Groq Whisper...');
             const audioBuffer = await fileObject.arrayBuffer();
             const buffer = Buffer.from(audioBuffer);
             
-            // ✅ Use form-data package (already imported)
             const formData = new FormData();
             formData.append('file', buffer, {
                 filename: 'speech.wav',
@@ -185,15 +161,37 @@ async function smartTranscription(fileObject) {
             }
         } catch (error) {
             console.error('❌ Groq Whisper failed:', error.message);
-            console.error('❌ Error details:', error.response?.data || error);
         }
     }
 
-    // 3. Try Deepgram (if available)
+    // 2. Try OpenAI Whisper (Fallback)
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (openaiKey) {
+        try {
+            console.log('🔄 Trying OpenAI Whisper...');
+            const openai = new OpenAI({ apiKey: openaiKey });
+            const transcription = await openai.audio.transcriptions.create({
+                file: fileObject,
+                model: 'whisper-1',
+                language: 'hi',
+                prompt: 'नमस्ते।',
+                temperature: 0.0
+            });
+            const text = transcription.text;
+            if (text) {
+                console.log(`✅ OpenAI Whisper: ${text}`);
+                return text;
+            }
+        } catch (error) {
+            console.error('❌ OpenAI Whisper failed:', error.message);
+        }
+    }
+
+    // 3. Try Deepgram (Last Resort)
     const deepgramKey = process.env.DEEPGRAM_API_KEY || process.env.DEEPGRAM_API_KEY1;
     if (deepgramKey) {
         try {
-            console.log('🔄 Trying Deepgram fallback...');
+            console.log('🔄 Trying Deepgram...');
             const audioBuffer = await fileObject.arrayBuffer();
             const buffer = Buffer.from(audioBuffer);
             
@@ -226,29 +224,73 @@ async function smartTranscription(fileObject) {
     return null;
 }
 
-// ✅ SMART TTS
+// ✅ SMART TTS (ElevenLabs Primary, OpenAI Fallback)
 async function smartTTS(text) {
-  const openaiKey = process.env.OPENAI_API_KEY;
-  if (openaiKey) {
-    try {
-      console.log('🔄 Trying OpenAI TTS...');
-      const openai = new OpenAI({ apiKey: openaiKey });
-      const response = await openai.audio.speech.create({
-        model: 'tts-1',
-        voice: 'echo',
-        input: text,
-        response_format: 'pcm',
-        speed: 1.00
-      });
-      const audio = Buffer.from(await response.arrayBuffer());
-      console.log(`✅ TTS generated: ${audio.length} bytes`);
-      return audio;
-    } catch (error) {
-      console.error('❌ OpenAI TTS failed:', error.message);
+    // 1. Try ElevenLabs (Primary)
+    const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
+    const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
+
+    if (elevenLabsKey) {
+        try {
+            console.log('🔄 Trying ElevenLabs TTS...');
+            const response = await axios.post(
+                `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+                {
+                    text: text,
+                    model_id: 'eleven_monolingual_v1',
+                    voice_settings: {
+                        stability: 0.5,
+                        similarity_boost: 0.75
+                    }
+                },
+                {
+                    headers: {
+                        'xi-api-key': elevenLabsKey,
+                        'Content-Type': 'application/json'
+                    },
+                    responseType: 'arraybuffer',
+                    timeout: 15000
+                }
+            );
+            
+            const audioData = Buffer.from(response.data);
+            console.log(`✅ ElevenLabs TTS generated: ${audioData.length} bytes`);
+            
+            // Convert MP3 to PCM (16kHz, mono)
+            // For simplicity, we're returning raw audio
+            // In production, use ffmpeg to convert
+            return audioData;
+        } catch (error) {
+            console.error('❌ ElevenLabs TTS failed:', error.message);
+            if (error.response) {
+                console.error('Status:', error.response.status);
+            }
+        }
     }
-  }
-  console.error('❌ No TTS provider available');
-  return null;
+
+    // 2. Try OpenAI TTS (Fallback)
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (openaiKey) {
+        try {
+            console.log('🔄 Trying OpenAI TTS...');
+            const openai = new OpenAI({ apiKey: openaiKey });
+            const response = await openai.audio.speech.create({
+                model: 'tts-1',
+                voice: 'echo',
+                input: text,
+                response_format: 'pcm',
+                speed: 1.00
+            });
+            const audio = Buffer.from(await response.arrayBuffer());
+            console.log(`✅ OpenAI TTS generated: ${audio.length} bytes`);
+            return audio;
+        } catch (error) {
+            console.error('❌ OpenAI TTS failed:', error.message);
+        }
+    }
+
+    console.warn('⚠️ No TTS provider available');
+    return null;
 }
 
 // ✅ MongoDB Connection
@@ -369,7 +411,7 @@ function cleanTranscript(rawText) {
 await connectMongoDB();
 
 const server = app.listen(PORT, () => {
-  console.log(`✅ Live Audio Server v6.5 (Smart Multi-Provider) on ${PORT}`);
+  console.log(`✅ Live Audio Server v6.5 (ElevenLabs TTS + Groq) on ${PORT}`);
   
   setInterval(() => {
     console.log(JSON.stringify({
@@ -393,7 +435,7 @@ if (availableProviders.length === 0) {
   process.exit(1);
 }
 
-app.get('/', (req, res) => res.send('Sahchar Live - v6.5 (Smart Multi-Provider)'));
+app.get('/', (req, res) => res.send('Sahchar Live - v6.5 (ElevenLabs TTS + Groq)'));
 app.get('/health', (req, res) => res.json({ 
   status: 'ok', 
   version: '6.5',
@@ -566,7 +608,8 @@ wss.on('connection', (ws, req) => {
 
       const audioPcm = await smartTTS(botReply);
       if (!audioPcm) {
-        console.error('❌ TTS failed, skipping audio');
+        console.warn('⚠️ TTS failed, sending text-only response');
+        safeSend(JSON.stringify({ type: 'audio_done' }));
         isBotSpeaking = false;
         isProcessing = false;
         return;
