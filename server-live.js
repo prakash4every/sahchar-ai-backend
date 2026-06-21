@@ -616,44 +616,44 @@ wss.on('connection', (ws, req) => {
         botReply = chatResult ? chatResult.reply : "सभी सेवाएं व्यस्त हैं। 🙏";
         console.log(`🤖 Provider: ${chatResult?.provider || 'none'}`);
       }
+console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
+safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
+if (!hasUserRequestedExit) await saveConversation(deviceId, 'assistant', botReply);
 
-      console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
-      safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
-      if (!hasUserRequestedExit) await saveConversation(deviceId, 'assistant', botReply);
+if (isClosing || ws.readyState !== 1) return;
 
-      if (isClosing || ws.readyState !== 1) return;
+isBotSpeaking = true;
+audioBuffer = []; 
+safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
 
-      isBotSpeaking = true;
-      audioBuffer = []; 
-      safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
+const audioPcm = await smartTTS(botReply);
+if (!audioPcm) {
+    console.warn('⚠️ TTS failed, sending text-only response');
+    safeSend(JSON.stringify({ type: 'audio_done' }));
+    isBotSpeaking = false;
+    isProcessing = false;
+    return;
+}
 
-      const audioPcm = await smartTTS(botReply);
-      if (!audioPcm) {
-        console.warn('⚠️ TTS failed, sending text-only response');
-        safeSend(JSON.stringify({ type: 'audio_done' }));
-        isBotSpeaking = false;
-        isProcessing = false;
-        return;
-      }
+// ✅ FIX: Direct use - no resample needed
+let processedAudio = audioPcm;
+processedAudio = amplifyAudio(processedAudio, 1.3);
 
-      let processedAudio = resampleAudio(audioPcm, 24000, 16000);
-      processedAudio = amplifyAudio(processedAudio, 1.3);
+const chunkSize = 640;
+for (let i = 0; i < processedAudio.length; i += chunkSize) {
+    if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
+    const chunk = processedAudio.subarray(i, Math.min(i + chunkSize, processedAudio.length));
+    safeSend(chunk, true);
+    await new Promise(r => setTimeout(r, 20)); 
+}
 
-      const chunkSize = 640;
-      for (let i = 0; i < processedAudio.length; i += chunkSize) {
-        if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
-        const chunk = processedAudio.subarray(i, Math.min(i + chunkSize, processedAudio.length));
-        safeSend(chunk, true);
-        await new Promise(r => setTimeout(r, 20)); 
-      }
-
-      if (isBotSpeaking) safeSend(JSON.stringify({ type: 'audio_done' }));
-      if (hasUserRequestedExit) {
-        await new Promise(r => setTimeout(r, 500));
-        safeSend(JSON.stringify({ type: 'force_close_ui' })); 
-      }
-      isBotSpeaking = false;
-      if (!hasUserRequestedExit) safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
+if (isBotSpeaking) safeSend(JSON.stringify({ type: 'audio_done' }));
+if (hasUserRequestedExit) {
+    await new Promise(r => setTimeout(r, 500));
+    safeSend(JSON.stringify({ type: 'force_close_ui' })); 
+}
+isBotSpeaking = false;
+if (!hasUserRequestedExit) safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
 
     } catch (err) {
       console.error(`❌ Error: ${err.message}`);
