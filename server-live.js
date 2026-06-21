@@ -574,35 +574,37 @@ const processAudio = async () => {
           isProcessing = false;
           return;
       }
+// ============================================================
+// ✅ FIXED: PCM DIRECT STREAMING WITH PROPER TIMING
+// ============================================================
 
-      // ============================================================
-      // ✅ FIXED: PCM DIRECT STREAMING (NO WAV CONVERSION)
-      // ============================================================
-      
-      console.log(`📦 PCM size: ${audioPcm.length} bytes`);
-      
-      // ✅ 16kHz PCM का चंक साइज़: 640 बाइट्स = 20ms
-      const CHUNK_SIZE = 640;
-      const CHUNK_DELAY_MS = 20;
-      
-      let totalSent = 0;
-      for (let i = 0; i < audioPcm.length; i += CHUNK_SIZE) {
-          if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
-          
-          const chunk = audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length));
-          
-          // ✅ सीधा PCM भेजें (Binary Mode)
-          const success = safeSend(chunk, true);
-          if (!success) {
-              console.warn('⚠️ Failed to send audio chunk at offset', i);
-              break;
-          }
-          
-          totalSent += chunk.length;
-          await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
-      }
-      
-      console.log(`✅ Sent ${totalSent} bytes of PCM audio`);
+console.log(`📦 PCM size: ${audioPcm.length} bytes`);
+
+// ✅ 16kHz PCM का चंक साइज़: 640 बाइट्स = 20ms
+const CHUNK_SIZE = 640;
+const CHUNK_DELAY_MS = 25; // ✅ 20ms से 25ms करें (ज्यादा स्टेबल)
+
+let totalSent = 0;
+for (let i = 0; i < audioPcm.length; i += CHUNK_SIZE) {
+    if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
+    
+    const chunk = audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length));
+    
+    // ✅ PCM को WAV में बदलें (ताकि क्लाइंट सही से प्ले करे)
+    // या फिर PCM को ही भेजें लेकिन सही टाइमिंग के साथ
+    const success = safeSend(chunk, true);
+    if (!success) {
+        console.warn('⚠️ Failed to send audio chunk at offset', i);
+        break;
+    }
+    
+    totalSent += chunk.length;
+    
+    // ✅ थोड़ा ज्यादा डिले (क्लाइंट को प्रोसेस करने का टाइम दें)
+    await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
+}
+
+console.log(`✅ Sent ${totalSent} bytes of PCM audio`);
 
       if (isBotSpeaking) {
           safeSend(JSON.stringify({ type: 'audio_done' }));
