@@ -26,7 +26,7 @@ let db = null;
 let conversationsCollection = null;
 let mongoClient = null;
 
-// ✅ SMART PROVIDER CONFIGURATION
+// ✅ PROVIDER CONFIGURATION
 const providers = {
   groq: {
     name: 'Groq',
@@ -34,7 +34,8 @@ const providers = {
     url: 'https://api.groq.com/openai/v1/chat/completions',
     model: 'llama-3.1-70b-versatile',
     chat: true,
-    audio: false
+    audio: false,
+    whisper: true
   },
   openai: {
     name: 'OpenAI',
@@ -42,7 +43,8 @@ const providers = {
     url: 'https://api.openai.com/v1/chat/completions',
     model: 'gpt-4o-mini',
     chat: true,
-    audio: true  // Whisper + TTS
+    audio: true,
+    whisper: true
   },
   deepseek: {
     name: 'DeepSeek',
@@ -50,7 +52,8 @@ const providers = {
     url: 'https://api.deepseek.com/v1/chat/completions',
     model: 'deepseek-chat',
     chat: true,
-    audio: false
+    audio: false,
+    whisper: false
   },
   kimi: {
     name: 'Kimi',
@@ -58,26 +61,23 @@ const providers = {
     url: 'https://api.moonshot.cn/v1/chat/completions',
     model: 'moonshot-v1-8k',
     chat: true,
-    audio: false
+    audio: false,
+    whisper: false
   },
   gemini: {
     name: 'Gemini',
     key: process.env.GEMINI_API_KEY,
     url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
     chat: true,
-    audio: false
+    audio: false,
+    whisper: false
   }
 };
 
-// ✅ SMART CHAT FUNCTION
+// ✅ SMART CHAT
 async function smartChat(messages, preferAudio = false) {
-  // Priority: Groq → OpenAI → DeepSeek → Kimi → Gemini
   const priorityOrder = ['groq', 'openai', 'deepseek', 'kimi', 'gemini'];
-  
-  // If audio is needed, prioritize OpenAI (has Whisper + TTS)
-  const orderedProviders = preferAudio 
-    ? ['openai', 'groq', 'deepseek', 'kimi', 'gemini']
-    : priorityOrder;
+  const orderedProviders = preferAudio ? ['openai', 'groq', 'deepseek', 'kimi', 'gemini'] : priorityOrder;
 
   for (const providerName of orderedProviders) {
     const provider = providers[providerName];
@@ -88,7 +88,6 @@ async function smartChat(messages, preferAudio = false) {
       let response;
       
       if (provider.name === 'Gemini') {
-        // Gemini API format
         const geminiResponse = await axios.post(
           `${provider.url}?key=${provider.key}`,
           {
@@ -101,7 +100,6 @@ async function smartChat(messages, preferAudio = false) {
         const reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
         if (reply) return { reply, provider: provider.name };
       } else {
-        // OpenAI-compatible APIs (Groq, DeepSeek, Kimi)
         response = await axios.post(
           provider.url,
           {
@@ -122,56 +120,123 @@ async function smartChat(messages, preferAudio = false) {
       console.error(`❌ ${provider.name} failed:`, error.message);
     }
   }
-  
   return null;
 }
 
-// ✅ SMART AUDIO PROVIDER (OpenAI Whisper)
+// ✅ SMART TRANSCRIPTION (with fallbacks)
 async function smartTranscription(fileObject) {
+  // 1. Try OpenAI Whisper
   const openaiKey = process.env.OPENAI_API_KEY;
-  if (!openaiKey) {
-    console.warn('⚠️ OpenAI key missing, transcription disabled');
-    return null;
+  if (openaiKey) {
+    try {
+      console.log('🔄 Trying OpenAI Whisper...');
+      const openai = new OpenAI({ apiKey: openaiKey });
+      const transcription = await openai.audio.transcriptions.create({
+        file: fileObject,
+        model: 'whisper-1',
+        language: 'hi',
+        prompt: 'नमस्ते।',
+        temperature: 0.0
+      });
+      const text = transcription.text;
+      if (text) {
+        console.log(`✅ OpenAI Whisper: ${text}`);
+        return text;
+      }
+    } catch (error) {
+      console.error('❌ OpenAI Whisper failed:', error.message);
+    }
   }
-  
-  try {
-    const openai = new OpenAI({ apiKey: openaiKey });
-    const transcription = await openai.audio.transcriptions.create({
-      file: fileObject,
-      model: 'whisper-1',
-      language: 'hi',
-      prompt: 'नमस्ते।',
-      temperature: 0.0
-    });
-    return transcription.text;
-  } catch (error) {
-    console.error('❌ Whisper failed:', error.message);
-    return null;
+
+  // 2. Try Groq Whisper (free)
+  const groqKey = process.env.GROQ_API_KEY;
+  if (groqKey) {
+    try {
+      console.log('🔄 Trying Groq Whisper fallback...');
+      const formData = new FormData();
+      formData.append('file', fileObject);
+      formData.append('model', 'whisper-large-v3-turbo');
+      
+      const response = await axios.post(
+        'https://api.groq.com/openai/v1/audio/transcriptions',
+        formData,
+        {
+          headers: {
+            'Authorization': `Bearer ${groqKey}`,
+            ...formData.getHeaders()
+          },
+          timeout: 15000
+        }
+      );
+      const transcript = response.data.text;
+      if (transcript) {
+        console.log(`✅ Groq Whisper: ${transcript}`);
+        return transcript;
+      }
+    } catch (error) {
+      console.error('❌ Groq Whisper failed:', error.message);
+    }
   }
+
+  // 3. Try Deepgram (if available)
+  const deepgramKey = process.env.DEEPGRAM_API_KEY || process.env.DEEPGRAM_API_KEY1;
+  if (deepgramKey) {
+    try {
+      console.log('🔄 Trying Deepgram fallback...');
+      const formData = new FormData();
+      formData.append('audio', fileObject);
+      formData.append('model', 'nova-2-general');
+      formData.append('language', 'hi');
+      
+      const response = await axios.post(
+        'https://api.deepgram.com/v1/listen',
+        formData,
+        {
+          headers: {
+            'Authorization': `Token ${deepgramKey}`,
+            ...formData.getHeaders()
+          },
+          timeout: 15000
+        }
+      );
+      const transcript = response.data.results?.channels?.[0]?.alternatives?.[0]?.transcript;
+      if (transcript) {
+        console.log(`✅ Deepgram: ${transcript}`);
+        return transcript;
+      }
+    } catch (error) {
+      console.error('❌ Deepgram failed:', error.message);
+    }
+  }
+
+  console.error('❌ All transcription providers failed');
+  return null;
 }
 
-// ✅ SMART TTS PROVIDER (OpenAI TTS)
+// ✅ SMART TTS
 async function smartTTS(text) {
   const openaiKey = process.env.OPENAI_API_KEY;
-  if (!openaiKey) {
-    console.warn('⚠️ OpenAI key missing, TTS disabled');
-    return null;
+  if (openaiKey) {
+    try {
+      console.log('🔄 Trying OpenAI TTS...');
+      const openai = new OpenAI({ apiKey: openaiKey });
+      const response = await openai.audio.speech.create({
+        model: 'tts-1',
+        voice: 'echo',
+        input: text,
+        response_format: 'pcm',
+        speed: 1.00
+      });
+      const audio = Buffer.from(await response.arrayBuffer());
+      console.log(`✅ TTS generated: ${audio.length} bytes`);
+      return audio;
+    } catch (error) {
+      console.error('❌ OpenAI TTS failed:', error.message);
+    }
   }
   
-  try {
-    const openai = new OpenAI({ apiKey: openaiKey });
-    const response = await openai.audio.speech.create({
-      model: 'tts-1',
-      voice: 'echo',
-      input: text,
-      response_format: 'pcm',
-      speed: 1.00
-    });
-    return Buffer.from(await response.arrayBuffer());
-  } catch (error) {
-    console.error('❌ TTS failed:', error.message);
-    return null;
-  }
+  console.error('❌ No TTS provider available');
+  return null;
 }
 
 // ✅ MongoDB Connection
@@ -288,7 +353,7 @@ function cleanTranscript(rawText) {
   return text;
 }
 
-// ✅ SERVER START
+// ✅ START SERVER
 await connectMongoDB();
 
 const server = app.listen(PORT, () => {
@@ -308,7 +373,6 @@ const server = app.listen(PORT, () => {
 
 const wss = new WebSocketServer({ server });
 
-// ✅ Check if at least one provider is available
 const availableProviders = Object.values(providers).filter(p => p.key);
 console.log(`✅ Available providers: ${availableProviders.map(p => p.name).join(', ')}`);
 
@@ -426,6 +490,7 @@ wss.on('connection', (ws, req) => {
       // ✅ SMART TRANSCRIPTION
       const userMsg = await smartTranscription(fileObject);
       if (!userMsg || userMsg.length < 2) {
+        console.log('⚠️ Empty transcription, skipping');
         isProcessing = false;
         return;
       }
@@ -473,10 +538,9 @@ wss.on('connection', (ws, req) => {
           { role: 'user', content: userMsg }
         ];
 
-        // ✅ SMART CHAT
         const chatResult = await smartChat(messages, true);
         botReply = chatResult ? chatResult.reply : "सभी सेवाएं व्यस्त हैं। 🙏";
-        console.log(`🤖 Using provider: ${chatResult?.provider || 'none'}`);
+        console.log(`🤖 Provider: ${chatResult?.provider || 'none'}`);
       }
 
       console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
@@ -489,7 +553,6 @@ wss.on('connection', (ws, req) => {
       audioBuffer = []; 
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
 
-      // ✅ SMART TTS
       const audioPcm = await smartTTS(botReply);
       if (!audioPcm) {
         console.error('❌ TTS failed, skipping audio');
