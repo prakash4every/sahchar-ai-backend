@@ -207,6 +207,9 @@ async function smartTranscription(fileObject) {
 
 // ✅ SMART TTS (ElevenLabs Direct PCM - No amplification)
 async function smartTTS(text) {
+  console.log(`🔊 TTS Request: "${text.substring(0, 50)}..."`);
+    console.log(`🔑 ElevenLabs Key: ${process.env.ELEVENLABS_API_KEY ? '✅ Set' : '❌ Missing'}`);
+    console.log(`🔑 OpenAI Key: ${process.env.OPENAI_API_KEY ? '✅ Set' : '❌ Missing'}`);
     const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
     const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
 
