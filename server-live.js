@@ -75,7 +75,7 @@ const providers = {
   }
 };
 
-// ✅ SMART CHAT (Groq Primary)
+// ✅ SMART CHAT (Groq Primary - Fixed Format)
 async function smartChat(messages, preferAudio = false) {
     const priorityOrder = ['groq', 'deepseek', 'kimi', 'gemini'];
     const orderedProviders = preferAudio ? ['groq', 'deepseek', 'kimi', 'gemini'] : priorityOrder;
@@ -86,9 +86,12 @@ async function smartChat(messages, preferAudio = false) {
 
         try {
             console.log(`🔄 Trying ${provider.name}...`);
+            console.log(`📝 Messages: ${JSON.stringify(messages).substring(0, 200)}...`);
+            
             let response;
             
             if (provider.name === 'Gemini') {
+                // Gemini format
                 const geminiResponse = await axios.post(
                     `${provider.url}?key=${provider.key}`,
                     {
@@ -101,24 +104,44 @@ async function smartChat(messages, preferAudio = false) {
                 const reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
                 if (reply) return { reply, provider: provider.name };
             } else {
+                // ✅ OpenAI-compatible APIs (Groq, DeepSeek, Kimi)
+                // Ensure messages format is correct
+                const formattedMessages = messages.map(m => ({
+                    role: m.role || 'user',
+                    content: m.content || ''
+                }));
+
                 response = await axios.post(
                     provider.url,
                     {
                         model: provider.model,
-                        messages: messages,
-                        max_tokens: 80,
-                        temperature: 0.4
+                        messages: formattedMessages,
+                        max_tokens: 100,
+                        temperature: 0.7
                     },
                     { 
-                        headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' },
+                        headers: { 
+                            'Authorization': `Bearer ${provider.key}`,
+                            'Content-Type': 'application/json'
+                        },
                         timeout: 15000 
                     }
                 );
+                
                 const reply = response.data.choices?.[0]?.message?.content;
-                if (reply) return { reply, provider: provider.name };
+                if (reply) {
+                    console.log(`✅ ${provider.name} success!`);
+                    return { reply, provider: provider.name };
+                } else {
+                    console.error(`⚠️ ${provider.name} returned no content`);
+                }
             }
         } catch (error) {
             console.error(`❌ ${provider.name} failed:`, error.message);
+            if (error.response) {
+                console.error(`Status: ${error.response.status}`);
+                console.error(`Data: ${JSON.stringify(error.response.data)}`);
+            }
         }
     }
     return null;
