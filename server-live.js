@@ -27,13 +27,13 @@ let db = null;
 let conversationsCollection = null;
 let mongoClient = null;
 
-// ✅ PROVIDER CONFIGURATION (Updated Models)
+// ✅ PROVIDER CONFIGURATION
 const providers = {
   groq: {
     name: 'Groq',
     key: process.env.GROQ_API_KEY,
     url: 'https://api.groq.com/openai/v1/chat/completions',
-    model: 'llama-3.3-70b-versatile',  // ✅ Updated
+    model: 'llama-3.3-70b-versatile',
     chat: true,
     audio: false,
     whisper: true
@@ -68,14 +68,14 @@ const providers = {
   gemini: {
     name: 'Gemini',
     key: process.env.GEMINI_API_KEY,
-    url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',  // ✅ Updated
+    url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',
     chat: true,
     audio: false,
     whisper: false
   }
 };
 
-// ✅ SMART CHAT (Groq Primary - Fixed Format)
+// ✅ SMART CHAT
 async function smartChat(messages, preferAudio = true) {
     const priorityOrder = ['groq', 'deepseek', 'kimi', 'gemini'];
     const orderedProviders = preferAudio ? ['groq', 'deepseek', 'kimi', 'gemini'] : priorityOrder;
@@ -138,9 +138,8 @@ async function smartChat(messages, preferAudio = true) {
     return null;
 }
 
-// ✅ SMART TRANSCRIPTION (Groq Whisper Primary)
+// ✅ SMART TRANSCRIPTION
 async function smartTranscription(fileObject) {
-    // 1. Try Groq Whisper
     const groqKey = process.env.GROQ_API_KEY;
     if (groqKey) {
         try {
@@ -178,7 +177,6 @@ async function smartTranscription(fileObject) {
         }
     }
 
-    // 2. Try OpenAI Whisper (Fallback)
     const openaiKey = process.env.OPENAI_API_KEY;
     if (openaiKey) {
         try {
@@ -205,11 +203,12 @@ async function smartTranscription(fileObject) {
     return null;
 }
 
-// ✅ SMART TTS (ElevenLabs Direct PCM - No amplification)
+// ✅ SMART TTS - FIXED: PCM को सीधे भेजें
 async function smartTTS(text) {
-  console.log(`🔊 TTS Request: "${text.substring(0, 50)}..."`);
+    console.log(`🔊 TTS Request: "${text.substring(0, 50)}..."`);
     console.log(`🔑 ElevenLabs Key: ${process.env.ELEVENLABS_API_KEY ? '✅ Set' : '❌ Missing'}`);
     console.log(`🔑 OpenAI Key: ${process.env.OPENAI_API_KEY ? '✅ Set' : '❌ Missing'}`);
+    
     const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
     const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
 
@@ -240,8 +239,6 @@ async function smartTTS(text) {
             
             let pcmData = Buffer.from(response.data);
             console.log(`✅ ElevenLabs PCM generated: ${pcmData.length} bytes`);
-            
-            // ✅ Return raw PCM (no amplification)
             return pcmData;
             
         } catch (error) {
@@ -249,7 +246,6 @@ async function smartTTS(text) {
         }
     }
 
-    // Fallback: OpenAI TTS
     const openaiKey = process.env.OPENAI_API_KEY;
     if (openaiKey) {
         try {
@@ -445,36 +441,9 @@ function pcmToWav(pcm, rate = 16000) {
   return Buffer.concat([h, pcm]);
 }
 
-function amplifyAudio(pcmData, factor = 1.3) {
-  const amplified = Buffer.alloc(pcmData.length);
-  for (let i = 0; i < pcmData.length; i += 2) {
-    let sample = pcmData.readInt16LE(i);
-    sample = Math.min(32767, Math.max(-32768, sample * factor));
-    amplified.writeInt16LE(sample, i);
-  }
-  return amplified;
-}
-
-function resampleAudio(pcmData, fromRate = 24000, toRate = 16000) {
-  if (fromRate === toRate) return pcmData;
-  const srcSamples = pcmData.length / 2;
-  const ratio = fromRate / toRate;
-  const dstSamples = Math.floor(srcSamples / ratio);
-  const result = Buffer.alloc(dstSamples * 2);
-  for (let i = 0; i < dstSamples; i++) {
-    const srcIndex = i * ratio;
-    const indexFloor = Math.floor(srcIndex);
-    const indexCheck = indexFloor * 2;
-    if (indexCheck + 3 < pcmData.length) {
-      const sample1 = pcmData.readInt16LE(indexCheck);
-      const sample2 = pcmData.readInt16LE(indexCheck + 2);
-      const interpolatedSample = sample1 + (sample2 - sample1) * (srcIndex - indexFloor);
-      result.writeInt16LE(Math.floor(interpolatedSample), i * 2);
-    }
-  }
-  return result;
-}
-
+// ============================================================
+// ✅ FIXED: WebSocket with PROPER AUDIO STREAMING
+// ============================================================
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let rawDeviceId = url.searchParams.get('deviceId');
@@ -495,7 +464,14 @@ wss.on('connection', (ws, req) => {
   }, 10000);
 
   const safeSend = (data, isBinary = false) => {
-    if (ws.readyState === 1 && !isClosing) { try { ws.send(data); return true; } catch (e) { return false; } }
+    if (ws.readyState === 1 && !isClosing) { 
+      try { 
+        ws.send(data, { binary: isBinary });
+        return true; 
+      } catch (e) { 
+        return false; 
+      }
+    }
     return false;
   };
 
@@ -506,7 +482,10 @@ wss.on('connection', (ws, req) => {
     const fullAudio = Buffer.concat(audioBuffer);
     audioBuffer = [];
 
-    if (fullAudio.length < 8000) { isProcessing = false; return; }
+    if (fullAudio.length < 8000) { 
+      isProcessing = false; 
+      return; 
+    }
 
     const rms = calculateRMS(fullAudio);
     const MIN_SPEECH_RMS = 0.030; 
@@ -577,43 +556,67 @@ wss.on('connection', (ws, req) => {
         console.log(`🤖 Provider: ${chatResult?.provider || 'none'}`);
       }
 
-console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
-safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
-if (!hasUserRequestedExit) await saveConversation(deviceId, 'assistant', botReply);
+      console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
+      safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
+      if (!hasUserRequestedExit) await saveConversation(deviceId, 'assistant', botReply);
 
-if (isClosing || ws.readyState !== 1) return;
+      if (isClosing || ws.readyState !== 1) return;
 
-isBotSpeaking = true;
-audioBuffer = []; 
-safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
+      isBotSpeaking = true;
+      audioBuffer = []; 
+      safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
 
-const audioPcm = await smartTTS(botReply);
-if (!audioPcm) {
-    console.warn('⚠️ TTS failed, sending text-only response');
-    safeSend(JSON.stringify({ type: 'audio_done' }));
-    isBotSpeaking = false;
-    isProcessing = false;
-    return;
-}
+      const audioPcm = await smartTTS(botReply);
+      if (!audioPcm) {
+          console.warn('⚠️ TTS failed, sending text-only response');
+          safeSend(JSON.stringify({ type: 'audio_done' }));
+          isBotSpeaking = false;
+          isProcessing = false;
+          return;
+      }
 
-// ✅ FIX: Direct use - NO resample, NO amplify (smartTTS already returns clean PCM)
-let processedAudio = audioPcm;
+      // ============================================================
+      // ✅ FIXED: CORRECT AUDIO STREAMING
+      // ============================================================
+      
+      // Step 1: Convert PCM to WAV (so client can play it)
+      const wavAudio = pcmToWav(audioPcm, 16000);
+      console.log(`📦 WAV size: ${wavAudio.length} bytes`);
+      
+      // Step 2: Send WAV in chunks (client expects streaming)
+      const CHUNK_SIZE = 1024; // Slightly larger chunks for smoother playback
+      const CHUNK_DELAY_MS = 15; // Matches 16kHz PCM timing
+      
+      // Send first chunk with WAV header included
+      for (let i = 0; i < wavAudio.length; i += CHUNK_SIZE) {
+          if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
+          
+          const chunk = wavAudio.subarray(i, Math.min(i + CHUNK_SIZE, wavAudio.length));
+          
+          // Send as binary
+          const success = safeSend(chunk, true);
+          if (!success) {
+              console.warn('⚠️ Failed to send audio chunk');
+              break;
+          }
+          
+          // Small delay between chunks for smooth playback
+          await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
+      }
 
-const chunkSize = 640;
-for (let i = 0; i < processedAudio.length; i += chunkSize) {
-    if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
-    const chunk = processedAudio.subarray(i, Math.min(i + chunkSize, processedAudio.length));
-    safeSend(chunk, true);
-    await new Promise(r => setTimeout(r, 20)); 
-}
-
-if (isBotSpeaking) safeSend(JSON.stringify({ type: 'audio_done' }));
-if (hasUserRequestedExit) {
-    await new Promise(r => setTimeout(r, 500));
-    safeSend(JSON.stringify({ type: 'force_close_ui' })); 
-}
-isBotSpeaking = false;
-if (!hasUserRequestedExit) safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
+      if (isBotSpeaking) {
+          safeSend(JSON.stringify({ type: 'audio_done' }));
+      }
+      
+      if (hasUserRequestedExit) {
+          await new Promise(r => setTimeout(r, 500));
+          safeSend(JSON.stringify({ type: 'force_close_ui' })); 
+      }
+      
+      isBotSpeaking = false;
+      if (!hasUserRequestedExit) {
+          safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
+      }
 
     } catch (err) {
       console.error(`❌ Error: ${err.message}`);
@@ -628,18 +631,38 @@ if (!hasUserRequestedExit) safeSend(JSON.stringify({ type: 'status', text: 'Supe
     if (!isBinary) {
       try {
         const json = JSON.parse(data.toString());
-        if (json.type === 'interrupt') { isBotSpeaking = false; audioBuffer = []; if (processTimer) clearTimeout(processTimer); }
+        if (json.type === 'interrupt') { 
+          isBotSpeaking = false; 
+          audioBuffer = []; 
+          if (processTimer) clearTimeout(processTimer); 
+        }
       } catch (e) {}
       return;
     }
     audioBuffer.push(Buffer.from(data));
     if (processTimer) clearTimeout(processTimer);
-    processTimer = setTimeout(() => { if (audioBuffer.length > 0 && !isProcessing && !isClosing) processAudio(); }, 550);
+    processTimer = setTimeout(() => { 
+      if (audioBuffer.length > 0 && !isProcessing && !isClosing) {
+        processAudio(); 
+      }
+    }, 550);
   });
 
-  ws.on('close', () => { isClosing = true; isBotSpeaking = false; if (processTimer) clearTimeout(processTimer); if (keepAliveInterval) clearInterval(keepAliveInterval); });
-  ws.on('error', () => { isClosing = true; });
+  ws.on('close', () => { 
+    isClosing = true; 
+    isBotSpeaking = false; 
+    if (processTimer) clearTimeout(processTimer); 
+    if (keepAliveInterval) clearInterval(keepAliveInterval); 
+  });
+  
+  ws.on('error', () => { 
+    isClosing = true; 
+  });
+  
   safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
 });
 
-process.on('SIGTERM', async () => { if (mongoClient) await mongoClient.close(); process.exit(0); });
+process.on('SIGTERM', async () => { 
+  if (mongoClient) await mongoClient.close(); 
+  process.exit(0); 
+});
