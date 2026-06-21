@@ -143,21 +143,23 @@ function cleanTranscript(rawText) {
   return text;
 }
 
-// ✅ MAIN SERVER START
-const server = app.listen(PORT, async () => {
+// ✅ Connect MongoDB First, Then Start Server
+await connectMongoDB();
+
+const server = app.listen(PORT, () => {
   console.log(`✅ Live Audio Server v6.5 (Railway Optimized) on ${PORT}`);
-  await connectMongoDB();
   
-  // ✅ Heartbeat Logging (Debugging)
+  // ✅ Heartbeat Logging - Railway Logs Capture Ke Liye
   setInterval(() => {
     console.log(JSON.stringify({
       marker: "railway-log-probe",
       ts: new Date().toISOString(),
       status: "alive",
       uptime: process.uptime(),
-      connections: wss.clients.size
+      connections: wss ? wss.clients.size : 0,
+      memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
     }));
-  }, 10000);
+  }, 15000);
 });
 
 const wss = new WebSocketServer({ server });
@@ -170,6 +172,13 @@ if (!process.env.OPENAI_API_KEY) {
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 app.get('/', (req, res) => res.send('Sahchar Live - v6.5 (Railway Optimized)'));
+app.get('/health', (req, res) => res.json({ 
+  status: 'ok', 
+  version: '6.5',
+  uptime: process.uptime(),
+  connections: wss.clients.size,
+  timestamp: new Date().toISOString()
+}));
 
 function calculateRMS(pcmBuffer) {
   let sum = 0;
