@@ -205,7 +205,7 @@ async function smartTranscription(fileObject) {
     return null;
 }
 
-// ✅ SMART TTS (ElevenLabs Direct PCM - No FFmpeg)
+// ✅ SMART TTS (ElevenLabs Direct PCM - Fixed)
 async function smartTTS(text) {
     const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
     const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
@@ -214,7 +214,6 @@ async function smartTTS(text) {
         try {
             console.log('🔄 Trying ElevenLabs TTS...');
             
-            // ✅ Direct PCM format request (No FFmpeg needed!)
             const response = await axios.post(
                 `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
                 {
@@ -224,7 +223,7 @@ async function smartTTS(text) {
                         stability: 0.5,
                         similarity_boost: 0.75
                     },
-                    output_format: 'pcm_16000'  // ✅ Direct PCM format!
+                    output_format: 'pcm_16000'
                 },
                 {
                     headers: {
@@ -236,18 +235,61 @@ async function smartTTS(text) {
                 }
             );
             
-            const pcmData = Buffer.from(response.data);
+            let pcmData = Buffer.from(response.data);
             console.log(`✅ ElevenLabs PCM generated: ${pcmData.length} bytes`);
             
-            // ✅ Amplify and return
-            return amplifyAudio(pcmData, 1.5);
+            // ✅ Safe amplification
+            const factor = 1.5;
+            const amplified = Buffer.alloc(pcmData.length);
+            for (let i = 0; i < pcmData.length; i += 2) {
+                if (i + 1 < pcmData.length) {
+                    let sample = pcmData.readInt16LE(i);
+                    sample = Math.min(32767, Math.max(-32768, Math.round(sample * factor)));
+                    amplified.writeInt16LE(sample, i);
+                }
+            }
+            
+            console.log(`✅ Amplified PCM: ${amplified.length} bytes`);
+            return amplified;
             
         } catch (error) {
             console.error('❌ ElevenLabs TTS failed:', error.message);
+            if (error.response) {
+                console.error('Status:', error.response.status);
+                console.error('Data:', error.response.data);
+            }
+            // Try without amplification if error
+            try {
+                const response2 = await axios.post(
+                    `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+                    {
+                        text: text,
+                        model_id: 'eleven_monolingual_v1',
+                        voice_settings: {
+                            stability: 0.5,
+                            similarity_boost: 0.75
+                        },
+                        output_format: 'pcm_16000'
+                    },
+                    {
+                        headers: {
+                            'xi-api-key': elevenLabsKey,
+                            'Content-Type': 'application/json'
+                        },
+                        responseType: 'arraybuffer',
+                        timeout: 15000
+                    }
+                );
+                const pcmData2 = Buffer.from(response2.data);
+                console.log(`✅ ElevenLabs PCM (raw) generated: ${pcmData2.length} bytes`);
+                return pcmData2;
+            } catch (e2) {
+                console.error('❌ ElevenLabs retry failed:', e2.message);
+            }
         }
     }
 
-    // ⚠️ Fallback: OpenAI TTS
+    // Fallback: OpenAI TTS
     const openaiKey = process.env.OPENAI_API_KEY;
     if (openaiKey) {
         try {
