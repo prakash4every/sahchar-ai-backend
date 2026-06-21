@@ -108,7 +108,6 @@ function cleanTranscript(rawText) {
 
   const lowerText = text.toLowerCase();
   
-  // 1. व्हिस्पर प्रॉम्प्ट लीक और बेसिक्स को ब्लॉक करें
   if (
     lowerText.includes("आम बोलचाल") || 
     lowerText.includes("दोस्त की बातचीत") || 
@@ -121,21 +120,17 @@ function cleanTranscript(rawText) {
     return "";
   }
   
-  // 2. "प्रस्तुत", "प्रस्तुप्प", "प्रस्तुप" का कोई भी रूप आए तो सीधे ब्लॉक करें (Regex Match)
   if (/प्रस्तु/i.test(lowerText) || lowerText.includes("परवारण") || lowerText.includes("परवार्ड")) {
-    console.log("⚠️ Whisper Silence Bug Filtered (प्रस्तुत वेरिएंट)");
+    console.log("⚠️ Whisper Silence Bug Filtered");
     return "";
   }
 
-  // 3. कैरेक्टर लेवल लूपिंग डिटेक्शन (जैसे: वावावावावा, हहाहाहाहा, अअअअअ)
-  // अगर कोई भी अक्षर लगातार 4 बार से ज़्यादा दोहराया जाए तो कचरा मानो
   const charRepeatRegex = /([\u0900-\u097F\w])\1{3,}/;
   if (charRepeatRegex.test(text)) {
-    console.log("⚠️ Whisper Character Loop Filtered (भावावावाव...)");
+    console.log("⚠️ Whisper Character Loop Filtered");
     return "";
   }
 
-  // 4. शब्दों का रिपीटिंग पैटर्न चेक (जैसे: बाई बाई बाई)
   const wordRepeatRegex = /([\u0900-\u097F\w]+)\s+\1\s+\1/;
   if (wordRepeatRegex.test(text)) {
     const parts = text.split(/[,।?]\s*/);
@@ -147,9 +142,24 @@ function cleanTranscript(rawText) {
 
   return text;
 }
-await connectMongoDB();
 
-const server = app.listen(PORT, () => console.log(`✅ Live Audio Server v6.4 (TTS Paragraph & Audio Sync Fixed) on ${PORT}`));
+// ✅ MAIN SERVER START
+const server = app.listen(PORT, async () => {
+  console.log(`✅ Live Audio Server v6.5 (Railway Optimized) on ${PORT}`);
+  await connectMongoDB();
+  
+  // ✅ Heartbeat Logging (Debugging)
+  setInterval(() => {
+    console.log(JSON.stringify({
+      marker: "railway-log-probe",
+      ts: new Date().toISOString(),
+      status: "alive",
+      uptime: process.uptime(),
+      connections: wss.clients.size
+    }));
+  }, 10000);
+});
+
 const wss = new WebSocketServer({ server });
 
 if (!process.env.OPENAI_API_KEY) {
@@ -159,7 +169,7 @@ if (!process.env.OPENAI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get('/', (req, res) => res.send('Sahchar Live - v6.4 (Mouth-Sync Fix Active)'));
+app.get('/', (req, res) => res.send('Sahchar Live - v6.5 (Railway Optimized)'));
 
 function calculateRMS(pcmBuffer) {
   let sum = 0;
@@ -307,7 +317,7 @@ wss.on('connection', (ws, req) => {
 ⚡ **CRITICAL RULES:**
 1. **किताबी हिंदी प्रतिबंधित है:** "प्रस्तुती", "विशेष विषय", "साझा करना" जैसे शब्दों का प्रयोग सख्त पाप है!
 2. **सच्चे दोस्त का लहजा:** "यार", "दोस्त", "भाई", "बहन" जैसे शब्दों का सहजता से उपयोग करो।
-3. **लिखने की शुद्धता (CRITICAL TEXT FIX):** हमेशा शुद्ध वर्तनी (Correct Hindi Devnagri) में लिखो, कोई अजीब वाक्य अधूरा मत छोड़ो। न्यू-लाइन कैरेक्टर (\\n) का उपयोग बिल्कुल मत करो, पूरा जवाब एक सीधे पैराग्राफ में होना चाहिए।
+3. **लिखने की शुद्धता:** हमेशा शुद्ध वर्तनी में लिखो, कोई अजीब वाक्य अधूरा मत छोड़ो।
 4. जवाब छोटा (1-2 वाक्य) और अंत में इमोजी 😊🙏 होना चाहिए।${liveSearchContext}`
           },
           ...previousHistory,
