@@ -451,7 +451,7 @@ function pcmToWav(pcm, rate = 16000) {
 }
 
 // ============================================================
-// ✅ FIXED: PCM DIRECT STREAMING (NO WAV CONVERSION)
+// ✅ FIXED: WAV STREAMING (Most Compatible)
 // ============================================================
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -585,33 +585,28 @@ wss.on('connection', (ws, req) => {
       }
 
       // ============================================================
-      // ✅ PCM DIRECT STREAMING (NO WAV CONVERSION)
+      // ✅ WAV STREAMING (Most Compatible)
       // ============================================================
       
-      console.log(`📦 PCM size: ${audioPcm.length} bytes`);
+      // PCM को WAV में बदलें
+      const wavAudio = pcmToWav(audioPcm, 16000);
+      console.log(`📦 WAV size: ${wavAudio.length} bytes (PCM: ${audioPcm.length} bytes)`);
       
-      // ✅ 16kHz PCM का चंक साइज़: 640 बाइट्स = 20ms
-      const CHUNK_SIZE = 640;
+      // ✅ WAV को चंक्स में भेजें
+      const CHUNK_SIZE = 1024;
       const CHUNK_DELAY_MS = 20;
       
       let totalSent = 0;
-      for (let i = 0; i < audioPcm.length; i += CHUNK_SIZE) {
+      for (let i = 0; i < wavAudio.length; i += CHUNK_SIZE) {
           if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
           
-          const chunk = audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length));
-          
-          // ✅ सीधा PCM भेजें (Binary Mode)
-          const success = safeSend(chunk, true);
-          if (!success) {
-              console.warn('⚠️ Failed to send audio chunk at offset', i);
-              break;
-          }
-          
+          const chunk = wavAudio.subarray(i, Math.min(i + CHUNK_SIZE, wavAudio.length));
+          safeSend(chunk, true);
           totalSent += chunk.length;
           await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
       }
       
-      console.log(`✅ Sent ${totalSent} bytes of PCM audio`);
+      console.log(`✅ Sent ${totalSent} bytes of WAV audio`);
 
       if (isBotSpeaking) {
           safeSend(JSON.stringify({ type: 'audio_done' }));
