@@ -205,7 +205,7 @@ async function smartTranscription(fileObject) {
     return null;
 }
 
-// ✅ SMART TTS (ElevenLabs Primary)
+// ✅ SMART TTS (ElevenLabs with PCM Conversion)
 async function smartTTS(text) {
     const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
     const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
@@ -213,6 +213,8 @@ async function smartTTS(text) {
     if (elevenLabsKey) {
         try {
             console.log('🔄 Trying ElevenLabs TTS...');
+            
+            // ElevenLabs ko MP3 format mein bolein
             const response = await axios.post(
                 `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
                 {
@@ -226,22 +228,62 @@ async function smartTTS(text) {
                 {
                     headers: {
                         'xi-api-key': elevenLabsKey,
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
+                        'Accept': 'audio/mpeg'
                     },
                     responseType: 'arraybuffer',
                     timeout: 15000
                 }
             );
             
-            const audioData = Buffer.from(response.data);
-            console.log(`✅ ElevenLabs TTS generated: ${audioData.length} bytes`);
-            return audioData;
+            const mp3Data = Buffer.from(response.data);
+            console.log(`📥 ElevenLabs MP3 size: ${mp3Data.length} bytes`);
+            
+            // ✅ MP3 को PCM में convert karein (using fluent-ffmpeg)
+            const { spawn } = await import('child_process');
+            const { Readable } = await import('stream');
+            
+            return new Promise((resolve, reject) => {
+                const inputStream = Readable.from(mp3Data);
+                const chunks = [];
+                
+                const ffmpeg = spawn('ffmpeg', [
+                    '-i', 'pipe:0',           // Input from stdin
+                    '-f', 's16le',            // PCM 16-bit little-endian
+                    '-acodec', 'pcm_s16le',   // PCM codec
+                    '-ar', '16000',           // 16kHz sample rate
+                    '-ac', '1',               // Mono
+                    '-af', 'volume=1.5',      // Amplify
+                    'pipe:1'                  // Output to stdout
+                ]);
+                
+                ffmpeg.stdout.on('data', (chunk) => chunks.push(chunk));
+                ffmpeg.stderr.on('data', (data) => {
+                    // Ignore ffmpeg logs
+                });
+                
+                ffmpeg.on('close', (code) => {
+                    if (code === 0) {
+                        const pcmData = Buffer.concat(chunks);
+                        console.log(`✅ ElevenLabs PCM generated: ${pcmData.length} bytes`);
+                        resolve(pcmData);
+                    } else {
+                        reject(new Error(`FFmpeg exited with code ${code}`));
+                    }
+                });
+                
+                ffmpeg.on('error', (err) => reject(err));
+                
+                inputStream.pipe(ffmpeg.stdin);
+                inputStream.on('end', () => ffmpeg.stdin.end());
+            });
+            
         } catch (error) {
             console.error('❌ ElevenLabs TTS failed:', error.message);
         }
     }
 
-    // Fallback: OpenAI TTS
+    // ⚠️ If ElevenLabs fails, try OpenAI TTS
     const openaiKey = process.env.OPENAI_API_KEY;
     if (openaiKey) {
         try {
