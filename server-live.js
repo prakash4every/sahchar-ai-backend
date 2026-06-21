@@ -16,7 +16,6 @@ const PORT = process.env.PORT || 10000;
 const MONGODB_URI = 
   process.env.MONGODB_URL || 
   process.env.MONGODB_URI || 
-  process.env.MONGOBD_URI || 
   process.env.MONGOBD_URL ||
   'mongodb://MongoDB.railway.internal:27017'; 
 
@@ -27,6 +26,155 @@ let db = null;
 let conversationsCollection = null;
 let mongoClient = null;
 
+// ✅ SMART PROVIDER CONFIGURATION
+const providers = {
+  groq: {
+    name: 'Groq',
+    key: process.env.GROQ_API_KEY,
+    url: 'https://api.groq.com/openai/v1/chat/completions',
+    model: 'llama-3.1-70b-versatile',
+    chat: true,
+    audio: false
+  },
+  openai: {
+    name: 'OpenAI',
+    key: process.env.OPENAI_API_KEY,
+    url: 'https://api.openai.com/v1/chat/completions',
+    model: 'gpt-4o-mini',
+    chat: true,
+    audio: true  // Whisper + TTS
+  },
+  deepseek: {
+    name: 'DeepSeek',
+    key: process.env.DEEPSEEK_API_KEY,
+    url: 'https://api.deepseek.com/v1/chat/completions',
+    model: 'deepseek-chat',
+    chat: true,
+    audio: false
+  },
+  kimi: {
+    name: 'Kimi',
+    key: process.env.KIMI_API_KEY,
+    url: 'https://api.moonshot.cn/v1/chat/completions',
+    model: 'moonshot-v1-8k',
+    chat: true,
+    audio: false
+  },
+  gemini: {
+    name: 'Gemini',
+    key: process.env.GEMINI_API_KEY,
+    url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
+    chat: true,
+    audio: false
+  }
+};
+
+// ✅ SMART CHAT FUNCTION
+async function smartChat(messages, preferAudio = false) {
+  // Priority: Groq → OpenAI → DeepSeek → Kimi → Gemini
+  const priorityOrder = ['groq', 'openai', 'deepseek', 'kimi', 'gemini'];
+  
+  // If audio is needed, prioritize OpenAI (has Whisper + TTS)
+  const orderedProviders = preferAudio 
+    ? ['openai', 'groq', 'deepseek', 'kimi', 'gemini']
+    : priorityOrder;
+
+  for (const providerName of orderedProviders) {
+    const provider = providers[providerName];
+    if (!provider || !provider.key || !provider.chat) continue;
+
+    try {
+      console.log(`🔄 Trying ${provider.name}...`);
+      let response;
+      
+      if (provider.name === 'Gemini') {
+        // Gemini API format
+        const geminiResponse = await axios.post(
+          `${provider.url}?key=${provider.key}`,
+          {
+            contents: [{
+              parts: [{ text: messages.map(m => `${m.role}: ${m.content}`).join('\n') }]
+            }]
+          },
+          { timeout: 15000 }
+        );
+        const reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (reply) return { reply, provider: provider.name };
+      } else {
+        // OpenAI-compatible APIs (Groq, DeepSeek, Kimi)
+        response = await axios.post(
+          provider.url,
+          {
+            model: provider.model,
+            messages: messages,
+            max_tokens: 80,
+            temperature: 0.4
+          },
+          { 
+            headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' },
+            timeout: 15000 
+          }
+        );
+        const reply = response.data.choices?.[0]?.message?.content;
+        if (reply) return { reply, provider: provider.name };
+      }
+    } catch (error) {
+      console.error(`❌ ${provider.name} failed:`, error.message);
+    }
+  }
+  
+  return null;
+}
+
+// ✅ SMART AUDIO PROVIDER (OpenAI Whisper)
+async function smartTranscription(fileObject) {
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!openaiKey) {
+    console.warn('⚠️ OpenAI key missing, transcription disabled');
+    return null;
+  }
+  
+  try {
+    const openai = new OpenAI({ apiKey: openaiKey });
+    const transcription = await openai.audio.transcriptions.create({
+      file: fileObject,
+      model: 'whisper-1',
+      language: 'hi',
+      prompt: 'नमस्ते।',
+      temperature: 0.0
+    });
+    return transcription.text;
+  } catch (error) {
+    console.error('❌ Whisper failed:', error.message);
+    return null;
+  }
+}
+
+// ✅ SMART TTS PROVIDER (OpenAI TTS)
+async function smartTTS(text) {
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!openaiKey) {
+    console.warn('⚠️ OpenAI key missing, TTS disabled');
+    return null;
+  }
+  
+  try {
+    const openai = new OpenAI({ apiKey: openaiKey });
+    const response = await openai.audio.speech.create({
+      model: 'tts-1',
+      voice: 'echo',
+      input: text,
+      response_format: 'pcm',
+      speed: 1.00
+    });
+    return Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    console.error('❌ TTS failed:', error.message);
+    return null;
+  }
+}
+
+// ✅ MongoDB Connection
 async function connectMongoDB() {
   if (!MONGODB_URI) {
     console.warn('⚠️ No MongoDB URI found - running without memory');
@@ -58,7 +206,6 @@ async function getConversationHistory(deviceId, limit = 5) {
       .sort({ timestamp: -1 })
       .limit(limit)
       .toArray();
-    
     return history.reverse().map(msg => ({
       role: msg.role,
       content: msg.content
@@ -105,7 +252,6 @@ async function getLiveGoogleSearch(query) {
 function cleanTranscript(rawText) {
   let text = rawText.trim();
   if (!text) return "";
-
   const lowerText = text.toLowerCase();
   
   if (
@@ -139,17 +285,15 @@ function cleanTranscript(rawText) {
     }
     return "";
   }
-
   return text;
 }
 
-// ✅ Connect MongoDB First, Then Start Server
+// ✅ SERVER START
 await connectMongoDB();
 
 const server = app.listen(PORT, () => {
-  console.log(`✅ Live Audio Server v6.5 (Railway Optimized) on ${PORT}`);
+  console.log(`✅ Live Audio Server v6.5 (Smart Multi-Provider) on ${PORT}`);
   
-  // ✅ Heartbeat Logging - Railway Logs Capture Ke Liye
   setInterval(() => {
     console.log(JSON.stringify({
       marker: "railway-log-probe",
@@ -164,18 +308,20 @@ const server = app.listen(PORT, () => {
 
 const wss = new WebSocketServer({ server });
 
-if (!process.env.OPENAI_API_KEY) {
-  console.error('❌ OPENAI_API_KEY not set!');
+// ✅ Check if at least one provider is available
+const availableProviders = Object.values(providers).filter(p => p.key);
+console.log(`✅ Available providers: ${availableProviders.map(p => p.name).join(', ')}`);
+
+if (availableProviders.length === 0) {
+  console.error('❌ No API keys configured!');
   process.exit(1);
 }
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-app.get('/', (req, res) => res.send('Sahchar Live - v6.5 (Railway Optimized)'));
+app.get('/', (req, res) => res.send('Sahchar Live - v6.5 (Smart Multi-Provider)'));
 app.get('/health', (req, res) => res.json({ 
   status: 'ok', 
   version: '6.5',
-  uptime: process.uptime(),
+  providers: availableProviders.map(p => p.name),
   connections: wss.clients.size,
   timestamp: new Date().toISOString()
 }));
@@ -277,21 +423,15 @@ wss.on('connection', (ws, req) => {
       const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
       const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
 
-      const transcription = await openai.audio.transcriptions.create({
-        file: fileObject,
-        model: 'whisper-1',
-        language: 'hi',
-        prompt: 'नमस्ते।', 
-        temperature: 0.0 
-      });
-
-      const userMsg = cleanTranscript(transcription.text);
+      // ✅ SMART TRANSCRIPTION
+      const userMsg = await smartTranscription(fileObject);
       if (!userMsg || userMsg.length < 2) {
         isProcessing = false;
         return;
       }
 
       console.log(`📝 [${connectionId}] User: ${userMsg} | RMS: ${rms.toFixed(4)}`);
+      
       const lowerUserMsg = userMsg.toLowerCase().replace("।", "").trim();
       const userExitKeywords = ["चैट क्लोज", "अलविदा", "बाय बाय", "बाय", "टाटा", "बंद करो"];
       const hasUserRequestedExit = userExitKeywords.some(k => lowerUserMsg.includes(k));
@@ -333,11 +473,10 @@ wss.on('connection', (ws, req) => {
           { role: 'user', content: userMsg }
         ];
 
-        const completion = await openai.chat.completions.create({
-          model: 'gpt-4o-mini', messages: messages, max_tokens: 80, temperature: 0.4
-        });
-        
-        botReply = completion.choices[0].message.content.replace(/\n+/g, ' ').trim();
+        // ✅ SMART CHAT
+        const chatResult = await smartChat(messages, true);
+        botReply = chatResult ? chatResult.reply : "सभी सेवाएं व्यस्त हैं। 🙏";
+        console.log(`🤖 Using provider: ${chatResult?.provider || 'none'}`);
       }
 
       console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
@@ -350,18 +489,22 @@ wss.on('connection', (ws, req) => {
       audioBuffer = []; 
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
 
-      const tts = await openai.audio.speech.create({
-        model: 'tts-1', voice: 'echo', input: botReply, response_format: 'pcm', speed: 1.00
-      });
+      // ✅ SMART TTS
+      const audioPcm = await smartTTS(botReply);
+      if (!audioPcm) {
+        console.error('❌ TTS failed, skipping audio');
+        isBotSpeaking = false;
+        isProcessing = false;
+        return;
+      }
 
-      let audioPcm = Buffer.from(await tts.arrayBuffer());
-      audioPcm = resampleAudio(audioPcm, 24000, 16000);
-      audioPcm = amplifyAudio(audioPcm, 1.3);
+      let processedAudio = resampleAudio(audioPcm, 24000, 16000);
+      processedAudio = amplifyAudio(processedAudio, 1.3);
 
       const chunkSize = 640;
-      for (let i = 0; i < audioPcm.length; i += chunkSize) {
+      for (let i = 0; i < processedAudio.length; i += chunkSize) {
         if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
-        const chunk = audioPcm.subarray(i, Math.min(i + chunkSize, audioPcm.length));
+        const chunk = processedAudio.subarray(i, Math.min(i + chunkSize, processedAudio.length));
         safeSend(chunk, true);
         await new Promise(r => setTimeout(r, 20)); 
       }
@@ -376,6 +519,7 @@ wss.on('connection', (ws, req) => {
 
     } catch (err) {
       console.error(`❌ Error: ${err.message}`);
+      console.error(`❌ Stack: ${err.stack}`);
       safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
     } finally {
       isProcessing = false;
