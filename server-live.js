@@ -475,7 +475,7 @@ wss.on('connection', (ws, req) => {
     return false;
   };
 
-  const processAudio = async () => {
+const processAudio = async () => {
     if (isProcessing || audioBuffer.length === 0 || isClosing) return;
 
     isProcessing = true;
@@ -576,33 +576,33 @@ wss.on('connection', (ws, req) => {
       }
 
       // ============================================================
-      // ✅ FIXED: CORRECT AUDIO STREAMING
+      // ✅ FIXED: PCM DIRECT STREAMING (NO WAV CONVERSION)
       // ============================================================
       
-      // Step 1: Convert PCM to WAV (so client can play it)
-      const wavAudio = pcmToWav(audioPcm, 16000);
-      console.log(`📦 WAV size: ${wavAudio.length} bytes`);
+      console.log(`📦 PCM size: ${audioPcm.length} bytes`);
       
-      // Step 2: Send WAV in chunks (client expects streaming)
-      const CHUNK_SIZE = 1024; // Slightly larger chunks for smoother playback
-      const CHUNK_DELAY_MS = 15; // Matches 16kHz PCM timing
+      // ✅ 16kHz PCM का चंक साइज़: 640 बाइट्स = 20ms
+      const CHUNK_SIZE = 640;
+      const CHUNK_DELAY_MS = 20;
       
-      // Send first chunk with WAV header included
-      for (let i = 0; i < wavAudio.length; i += CHUNK_SIZE) {
+      let totalSent = 0;
+      for (let i = 0; i < audioPcm.length; i += CHUNK_SIZE) {
           if (isClosing || ws.readyState !== 1 || !isBotSpeaking) break;
           
-          const chunk = wavAudio.subarray(i, Math.min(i + CHUNK_SIZE, wavAudio.length));
+          const chunk = audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length));
           
-          // Send as binary
+          // ✅ सीधा PCM भेजें (Binary Mode)
           const success = safeSend(chunk, true);
           if (!success) {
-              console.warn('⚠️ Failed to send audio chunk');
+              console.warn('⚠️ Failed to send audio chunk at offset', i);
               break;
           }
           
-          // Small delay between chunks for smooth playback
+          totalSent += chunk.length;
           await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
       }
+      
+      console.log(`✅ Sent ${totalSent} bytes of PCM audio`);
 
       if (isBotSpeaking) {
           safeSend(JSON.stringify({ type: 'audio_done' }));
@@ -625,7 +625,7 @@ wss.on('connection', (ws, req) => {
     } finally {
       isProcessing = false;
     }
-  };
+};
 
   ws.on('message', (data, isBinary) => {
     if (!isBinary) {
