@@ -461,19 +461,30 @@ wss.on('connection', (ws, req) => {
           isBotSpeaking = false; isProcessing = false; return;
       }
 
-      const CHUNK_SIZE = 640;
-      const CHUNK_DELAY_MS = 24;
+      // ============================================================
+      // ✅ RAW PCM STREAMING (Mouth-Sync & Anti-Static Fixed)
+      // ============================================================
+      console.log(`📦 Sending raw PCM stream: ${audioPcm.length} bytes`);
       
-      console.log(`🔊 Streaming raw PCM: ${audioPcm.length} bytes`);
+      const CHUNK_SIZE = 640;      
+      const CHUNK_DELAY_MS = 28;    
+      
       isAudioStreaming = true;
+      let totalSent = 0;
+      
       for (let i = 0; i < audioPcm.length; i += CHUNK_SIZE) {
           if (isClosing || ws.readyState !== 1) break;
+          
           const chunk = audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length));
-          safeSend(chunk, true);
+          safeSend(chunk, true); 
+          totalSent += chunk.length;
           await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
       }
+      
       isAudioStreaming = false;
       isBotSpeaking = false;
+      
+      console.log(`✅ Safely streamed ${totalSent} bytes of PCM to Android client.`);
       safeSend(JSON.stringify({ type: 'audio_done' }));
       
       if (hasUserRequestedExit) {
