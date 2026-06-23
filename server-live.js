@@ -461,14 +461,14 @@ wss.on('connection', (ws, req) => {
           isBotSpeaking = false; isProcessing = false; return;
       }
 
-      const wavAudio = pcmToWav(audioPcm, 16000);
       const CHUNK_SIZE = 640;
       const CHUNK_DELAY_MS = 24;
       
+      console.log(`🔊 Streaming raw PCM: ${audioPcm.length} bytes`);
       isAudioStreaming = true;
-      for (let i = 0; i < wavAudio.length; i += CHUNK_SIZE) {
+      for (let i = 0; i < audioPcm.length; i += CHUNK_SIZE) {
           if (isClosing || ws.readyState !== 1) break;
-          const chunk = wavAudio.subarray(i, Math.min(i + CHUNK_SIZE, wavAudio.length));
+          const chunk = audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length));
           safeSend(chunk, true);
           await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
       }
