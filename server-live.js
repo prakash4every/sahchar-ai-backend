@@ -461,13 +461,13 @@ wss.on('connection', (ws, req) => {
           isBotSpeaking = false; isProcessing = false; return;
       }
 
-      // ============================================================
+     // ============================================================
       // ✅ RAW PCM STREAMING (Mouth-Sync & Anti-Static Fixed)
       // ============================================================
       console.log(`📦 Sending raw PCM stream: ${audioPcm.length} bytes`);
       
-      const CHUNK_SIZE = 640;      
-      const CHUNK_DELAY_MS = 28;    
+      const CHUNK_SIZE = 640;      // एंड्रॉयड के बफ़र साइज के बिल्कुल बराबर
+      const CHUNK_DELAY_MS = 26;    // 28ms से थोड़ा तेज़ (26ms) ताकि एंड्रॉयड बफ़र अंडरफ़्लो न हो
       
       isAudioStreaming = true;
       let totalSent = 0;
@@ -476,7 +476,7 @@ wss.on('connection', (ws, req) => {
           if (isClosing || ws.readyState !== 1) break;
           
           const chunk = audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length));
-          safeSend(chunk, true); 
+          safeSend(chunk, true); // बाइनरी मोड में सीधे चंक भेजें
           totalSent += chunk.length;
           await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
       }
