@@ -129,10 +129,6 @@ async function smartChat(messages, preferAudio = true) {
             }
         } catch (error) {
             console.error(`❌ ${provider.name} failed:`, error.message);
-            if (error.response) {
-                console.error(`Status: ${error.response.status}`);
-                console.error(`Data: ${JSON.stringify(error.response.data)}`);
-            }
         }
     }
     return null;
@@ -206,8 +202,6 @@ async function smartTranscription(fileObject) {
 // ✅ SMART TTS
 async function smartTTS(text) {
     console.log(`🔊 TTS Request: "${text.substring(0, 50)}..."`);
-    console.log(`🔑 ElevenLabs Key: ${process.env.ELEVENLABS_API_KEY ? '✅ Set' : '❌ Missing'}`);
-    console.log(`🔑 OpenAI Key: ${process.env.OPENAI_API_KEY ? '✅ Set' : '❌ Missing'}`);
     
     const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
     const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
@@ -221,10 +215,7 @@ async function smartTTS(text) {
                 {
                     text: text,
                     model_id: 'eleven_monolingual_v1',
-                    voice_settings: {
-                        stability: 0.5,
-                        similarity_boost: 0.75
-                    },
+                    voice_settings: { stability: 0.5, similarity_boost: 0.75 },
                     output_format: 'pcm_16000'
                 },
                 {
@@ -273,22 +264,16 @@ async function smartTTS(text) {
 // ✅ MongoDB Connection
 async function connectMongoDB() {
   if (!MONGODB_URI) {
-    console.warn('⚠️ No MongoDB URI found - running without memory');
+    console.warn('⚠️ No MongoDB URI found');
     return;
   }
   try {
-    mongoClient = new MongoClient(MONGODB_URI, {
-      connectTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
-    });
+    mongoClient = new MongoClient(MONGODB_URI, { connectTimeoutMS: 5000, socketTimeoutMS: 45000 });
     await mongoClient.connect();
     db = mongoClient.db(DB_NAME);
     conversationsCollection = db.collection(COLLECTION_NAME);
-    
     await conversationsCollection.createIndex({ deviceId: 1, timestamp: -1 });
-    await conversationsCollection.createIndex({ timestamp: 1 }, { expireAfterSeconds: 604800 }); 
-    
-    console.log('✅ MongoDB connected successfully to Sahchar Storage Container!');
+    console.log('✅ MongoDB connected successfully!');
   } catch (error) {
     console.error('❌ MongoDB connection failed:', error.message);
   }
@@ -302,12 +287,8 @@ async function getConversationHistory(deviceId, limit = 5) {
       .sort({ timestamp: -1 })
       .limit(limit)
       .toArray();
-    return history.reverse().map(msg => ({
-      role: msg.role,
-      content: msg.content
-    }));
+    return history.reverse().map(msg => ({ role: msg.role, content: msg.content }));
   } catch (error) {
-    console.error('Error fetching history:', error.message);
     return [];
   }
 }
@@ -315,32 +296,21 @@ async function getConversationHistory(deviceId, limit = 5) {
 async function saveConversation(deviceId, role, content) {
   if (!conversationsCollection || !deviceId) return;
   try {
-    await conversationsCollection.insertOne({
-      deviceId: deviceId.trim(),
-      role,
-      content,
-      timestamp: new Date()
-    });
-  } catch (error) {
-    console.error('Error saving conversation:', error.message);
-  }
+    await conversationsCollection.insertOne({ deviceId: deviceId.trim(), role, content, timestamp: new Date() });
+  } catch (error) {}
 }
 
 async function getLiveGoogleSearch(query) {
   const serpApiKey = process.env.SERPAPI_API_KEY;
   if (!serpApiKey) return null;
-
   try {
-    const response = await axios.get('https://serpapi.com/search', {
-      params: { q: query, api_key: serpApiKey, engine: 'google', num: 3 },
-      timeout: 4000 
-    });
+    const response = await axios.get('https://serpapi.com/search', { params: { q: query, api_key: serpApiKey, engine: 'google', num: 3 }, timeout: 4000 });
     const results = response.data.organic_results;
     if (results && results.length > 0) {
       return results.map(res => `${res.title}: ${res.snippet}`).join('\n');
     }
   } catch (error) {
-    console.error("❌ SerpAPI Search Engine Failure:", error.message);
+    console.error("❌ SerpAPI Failure:", error.message);
   }
   return null;
 }
@@ -350,35 +320,16 @@ function cleanTranscript(rawText) {
   if (!text) return "";
   const lowerText = text.toLowerCase();
   
-  if (
-    lowerText.includes("आम बोलचाल") || 
-    lowerText.includes("दोस्त की बातचीत") || 
-    lowerText.includes("बात्चाल") ||
-    lowerText === "हूँ दोस्त।" || 
-    lowerText === "हूं दोस्त।" || 
-    lowerText === "दोस्त।"
-  ) {
-    console.log("⚠️ Whisper Prompt Leak Filtered");
-    return "";
-  }
-  
-  if (/प्रस्तु/i.test(lowerText) || lowerText.includes("परवारण") || lowerText.includes("परवार्ड")) {
-    console.log("⚠️ Whisper Silence Bug Filtered");
-    return "";
-  }
+  if (lowerText.includes("आम बोलचाल") || lowerText.includes("दोस्त की बातचीत") || lowerText === "दोस्त।") return "";
+  if (/प्रस्तु/i.test(lowerText) || lowerText.includes("परवारण")) return "";
 
   const charRepeatRegex = /([\u0900-\u097F\w])\1{3,}/;
-  if (charRepeatRegex.test(text)) {
-    console.log("⚠️ Whisper Character Loop Filtered");
-    return "";
-  }
+  if (charRepeatRegex.test(text)) return "";
 
   const wordRepeatRegex = /([\u0900-\u097F\w]+)\s+\1\s+\1/;
   if (wordRepeatRegex.test(text)) {
     const parts = text.split(/[,।?]\s*/);
-    if (parts.length > 1 && parts[0].trim().length > 1) {
-      return parts[0].trim(); 
-    }
+    if (parts.length > 1 && parts[0].trim().length > 1) return parts[0].trim();
     return "";
   }
   return text;
@@ -388,38 +339,12 @@ function cleanTranscript(rawText) {
 await connectMongoDB();
 
 const server = app.listen(PORT, () => {
-  console.log(`✅ Live Audio Server v6.5 (ElevenLabs TTS + Groq) on ${PORT}`);
-  
-  setInterval(() => {
-    console.log(JSON.stringify({
-      marker: "railway-log-probe",
-      ts: new Date().toISOString(),
-      status: "alive",
-      uptime: process.uptime(),
-      connections: wss ? wss.clients.size : 0,
-      memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
-    }));
-  }, 15000);
+  console.log(`✅ Live Audio Server v6.5 on ${PORT}`);
 });
 
 const wss = new WebSocketServer({ server });
 
-const availableProviders = Object.values(providers).filter(p => p.key);
-console.log(`✅ Available providers: ${availableProviders.map(p => p.name).join(', ')}`);
-
-if (availableProviders.length === 0) {
-  console.error('❌ No API keys configured!');
-  process.exit(1);
-}
-
-app.get('/', (req, res) => res.send('Sahchar Live - v6.5 (ElevenLabs TTS + Groq)'));
-app.get('/health', (req, res) => res.json({ 
-  status: 'ok', 
-  version: '6.5',
-  providers: availableProviders.map(p => p.name),
-  connections: wss.clients.size,
-  timestamp: new Date().toISOString()
-}));
+app.get('/', (req, res) => res.send('Sahchar Live - v6.5 Ready'));
 
 function calculateRMS(pcmBuffer) {
   let sum = 0;
@@ -434,30 +359,23 @@ function calculateRMS(pcmBuffer) {
 
 function pcmToWav(pcm, rate = 16000) {
   const header = Buffer.alloc(44);
-  header.write('RIFF', 0);
-  header.writeUInt32LE(36 + pcm.length, 4);
-  header.write('WAVE', 8);
-  header.write('fmt ', 12);
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1, 20);
-  header.writeUInt16LE(1, 22);
-  header.writeUInt32LE(rate, 24);
-  header.writeUInt32LE(rate * 2, 28);
-  header.writeUInt16LE(2, 32);
-  header.writeUInt16LE(16, 34);
-  header.write('data', 36);
+  header.write('RIFF', 0); header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8); header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22); header.writeUInt32LE(rate, 24);
+  header.writeUInt32LE(rate * 2, 28); header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34); header.write('data', 36);
   header.writeUInt32LE(pcm.length, 40);
   return Buffer.concat([header, pcm]);
 }
 
 // ============================================================
-// ✅ FIXED: WAV STREAMING (Most Compatible)
+// ✅ WEBSOCKET ROUTING AND STREAMING
 // ============================================================
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let rawDeviceId = url.searchParams.get('deviceId');
-  let deviceId = (rawDeviceId && rawDeviceId !== 'default' && rawDeviceId !== 'null' && rawDeviceId !== 'undefined') ? rawDeviceId.trim() : "default_user";
-
+  let deviceId = (rawDeviceId && rawDeviceId !== 'default') ? rawDeviceId.trim() : "default_user";
   const connectionId = `${deviceId.substring(0, 8)}-${randomUUID().substring(0, 4)}`;
   console.log(`🔌 Client active: ${connectionId}`);
 
@@ -475,34 +393,20 @@ wss.on('connection', (ws, req) => {
 
   const safeSend = (data, isBinary = false) => {
     if (ws.readyState === 1 && !isClosing) { 
-      try { 
-        ws.send(data, { binary: isBinary });
-        return true; 
-      } catch (e) { 
-        return false; 
-      }
+      try { ws.send(data, { binary: isBinary }); return true; } catch (e) { return false; }
     }
     return false;
   };
 
   const processAudio = async () => {
     if (isProcessing || audioBuffer.length === 0 || isClosing) return;
-
     isProcessing = true;
     const fullAudio = Buffer.concat(audioBuffer);
     audioBuffer = [];
 
-    if (fullAudio.length < 8000) { 
-      isProcessing = false; 
-      return; 
-    }
-
+    if (fullAudio.length < 8000) { isProcessing = false; return; }
     const rms = calculateRMS(fullAudio);
-    const MIN_SPEECH_RMS = 0.030; 
-    if (rms < MIN_SPEECH_RMS) {
-      isProcessing = false;
-      return;
-    }
+    if (rms < 0.030) { isProcessing = false; return; }
 
     safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
 
@@ -510,18 +414,13 @@ wss.on('connection', (ws, req) => {
       const wavBuffer = pcmToWav(fullAudio);
       const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
       const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
-
       const userMsg = await smartTranscription(fileObject);
-      if (!userMsg || userMsg.length < 2) {
-        console.log('⚠️ Empty transcription, skipping');
-        isProcessing = false;
-        return;
-      }
 
-      console.log(`📝 [${connectionId}] User: ${userMsg} | RMS: ${rms.toFixed(4)}`);
+      if (!userMsg || userMsg.length < 2) { isProcessing = false; return; }
+      console.log(`📝 [${connectionId}] User: ${userMsg}`);
       
       const lowerUserMsg = userMsg.toLowerCase().replace("।", "").trim();
-      const userExitKeywords = ["चैट क्लोज", "अलविदा", "बाय बाय", "बाय", "टाटा", "बंद करो"];
+      const userExitKeywords = ["चैट क्लोज", "अलविदा", "बाय"];
       const hasUserRequestedExit = userExitKeywords.some(k => lowerUserMsg.includes(k));
 
       let botReply = "";
@@ -532,38 +431,20 @@ wss.on('connection', (ws, req) => {
         await saveConversation(deviceId, 'user', userMsg);
 
         let liveSearchContext = "";
-        const searchTriggers = ["ट्रेन्डिंग", "ट्रेंड", "न्यूज़", "समाचार", "कौन है", "क्या है", "पार्टी", "मैच", "चुनाव"];
-        const needsSearch = searchTriggers.some(trigger => lowerUserMsg.includes(trigger));
-
-        if (needsSearch) {
+        if (["ट्रेंड", "न्यूज़", "चुनाव", "मैच"].some(t => lowerUserMsg.includes(t))) {
           const webSearchSnippets = await getLiveGoogleSearch(userMsg);
-          if (webSearchSnippets) {
-            liveSearchContext = `\n\n[IMPORTANT REAL-TIME GOOGLE SEARCH CONTENT]:\n${webSearchSnippets}\nUse this verified 2026 data. Inform them naturally without bookish Hindi.`;
-          }
+          if (webSearchSnippets) liveSearchContext = `\n\n[SEARCH]:\n${webSearchSnippets}`;
         }
 
         const previousHistory = await getConversationHistory(deviceId, 5);
-        const CURRENT_DATE_STRING = new Date().toLocaleString('en-US', {
-          timeZone: 'Asia/Kolkata', hour12: true, hour: 'numeric', minute: 'numeric', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
-        });
-
         const messages = [
-          {
-            role: 'system',
-            content: `तुम "SuperSahchar" हो, यूजर के सबसे पक्के दोस्त। वर्तमान समय: ${CURRENT_DATE_STRING}
-⚡ **CRITICAL RULES:**
-1. **किताबी हिंदी प्रतिबंधित है:** "प्रस्तुती", "विशेष विषय", "साझा करना" जैसे शब्दों का प्रयोग सख्त पाप है!
-2. **सच्चे दोस्त का लहजा:** "यार", "दोस्त", "भाई", "बहन" जैसे शब्दों का सहजता से उपयोग करो।
-3. **लिखने की शुद्धता:** हमेशा शुद्ध वर्तनी में लिखो, कोई अजीब वाक्य अधूरा मत छोड़ो।
-4. जवाब छोटा (1-2 वाक्य) और अंत में इमोजी 😊🙏 होना चाहिए।${liveSearchContext}`
-          },
+          { role: 'system', content: `तुम "SuperSahchar" हो, यूजर के पक्के दोस्त। छोटे वाक्य, शुद्ध वर्तनी, अंत में इमोजी 😊🙏।${liveSearchContext}` },
           ...previousHistory,
           { role: 'user', content: userMsg }
         ];
 
         const chatResult = await smartChat(messages, true);
         botReply = chatResult ? chatResult.reply : "सभी सेवाएं व्यस्त हैं। 🙏";
-        console.log(`🤖 Provider: ${chatResult?.provider || 'none'}`);
       }
 
       console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
@@ -571,60 +452,38 @@ wss.on('connection', (ws, req) => {
       if (!hasUserRequestedExit) await saveConversation(deviceId, 'assistant', botReply);
 
       if (isClosing || ws.readyState !== 1) return;
-
       isBotSpeaking = true;
-      audioBuffer = []; 
       safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
 
       const audioPcm = await smartTTS(botReply);
       if (!audioPcm) {
-          console.warn('⚠️ TTS failed, sending text-only response');
           safeSend(JSON.stringify({ type: 'audio_done' }));
-          isBotSpeaking = false;
-          isProcessing = false;
-          return;
+          isBotSpeaking = false; isProcessing = false; return;
       }
 
-      // ============================================================
-      // ✅ WAV STREAMING (Most Compatible)
-      // ============================================================
-      
-      // PCM को WAV में बदलें
       const wavAudio = pcmToWav(audioPcm, 16000);
-      console.log(`📦 WAV size: ${wavAudio.length} bytes (PCM: ${audioPcm.length} bytes)`);
-      
-      // ✅ WAV को चंक्स में भेजें
-      const CHUNK_SIZE = 1024;
-      const CHUNK_DELAY_MS = 20;
+      const CHUNK_SIZE = 640;
+      const CHUNK_DELAY_MS = 24;
       
       isAudioStreaming = true;
-      let totalSent = 0;
       for (let i = 0; i < wavAudio.length; i += CHUNK_SIZE) {
           if (isClosing || ws.readyState !== 1) break;
-          
           const chunk = wavAudio.subarray(i, Math.min(i + CHUNK_SIZE, wavAudio.length));
           safeSend(chunk, true);
-          totalSent += chunk.length;
           await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
       }
       isAudioStreaming = false;
       isBotSpeaking = false;
-      
-      console.log(`✅ Sent ${totalSent} bytes of WAV audio`);
-
       safeSend(JSON.stringify({ type: 'audio_done' }));
       
       if (hasUserRequestedExit) {
           await new Promise(r => setTimeout(r, 500));
           safeSend(JSON.stringify({ type: 'force_close_ui' })); 
       }
-      if (!hasUserRequestedExit) {
-          safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
-      }
+      if (!hasUserRequestedExit) safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
 
     } catch (err) {
       console.error(`❌ Error: ${err.message}`);
-      console.error(`❌ Stack: ${err.stack}`);
       safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
     } finally {
       isProcessing = false;
@@ -636,8 +495,7 @@ wss.on('connection', (ws, req) => {
       try {
         const json = JSON.parse(data.toString());
         if (json.type === 'interrupt' && !isAudioStreaming) { 
-          isBotSpeaking = false; 
-          audioBuffer = []; 
+          isBotSpeaking = false; audioBuffer = []; 
           if (processTimer) clearTimeout(processTimer); 
         }
       } catch (e) {}
@@ -646,23 +504,17 @@ wss.on('connection', (ws, req) => {
     audioBuffer.push(Buffer.from(data));
     if (processTimer) clearTimeout(processTimer);
     processTimer = setTimeout(() => { 
-      if (audioBuffer.length > 0 && !isProcessing && !isClosing) {
-        processAudio(); 
-      }
+      if (audioBuffer.length > 0 && !isProcessing && !isClosing) processAudio(); 
     }, 550);
   });
 
   ws.on('close', () => { 
-    isClosing = true; 
-    isBotSpeaking = false; 
+    isClosing = true; isBotSpeaking = false; 
     if (processTimer) clearTimeout(processTimer); 
     if (keepAliveInterval) clearInterval(keepAliveInterval); 
   });
   
-  ws.on('error', () => { 
-    isClosing = true; 
-  });
-  
+  ws.on('error', () => { isClosing = true; });
   safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
 });
 
