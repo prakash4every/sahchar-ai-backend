@@ -387,7 +387,30 @@ const server = app.listen(PORT, () => {
 
 const wss = new WebSocketServer({ server });
 
+wss.on('error', (err) => {
+  console.error(`❌ WebSocketServer error: ${err.message}`);
+});
+
+// Handle HTTP upgrade requests explicitly so Railway routes WebSocket traffic correctly
+server.on('upgrade', (request, socket, head) => {
+  console.log(`🔀 HTTP upgrade request from ${request.socket.remoteAddress} → ${request.url}`);
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request);
+  });
+});
+
 app.get('/', (req, res) => res.send('Sahchar Live - v6.6 Ready'));
+
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    service: 'sahchar-ai-backend',
+    version: '6.6',
+    uptime: Math.floor(process.uptime()),
+    websocket: wss.clients.size + ' active connection(s)',
+    timestamp: new Date().toISOString()
+  });
+});
 
 function calculateRMS(pcmBuffer) {
   let sum = 0;
@@ -416,11 +439,12 @@ function pcmToWav(pcm, rate = 16000) {
 // ✅ WEBSOCKET ROUTING AND STREAMING
 // ============================================================
 wss.on('connection', (ws, req) => {
+  const clientIp = req.socket.remoteAddress || req.headers['x-forwarded-for'] || 'unknown';
   const url = new URL(req.url, `http://${req.headers.host}`);
   let rawDeviceId = url.searchParams.get('deviceId');
-  let deviceId = (rawDeviceId && rawDeviceId!== 'default')? rawDeviceId.trim() : "default_user";
+  let deviceId = (rawDeviceId && rawDeviceId !== 'default') ? rawDeviceId.trim() : "default_user";
   const connectionId = `${deviceId.substring(0, 8)}-${randomUUID().substring(0, 4)}`;
-  console.log(`🔌 Client active: ${connectionId}`);
+  console.log(`🔌 WebSocket connected: ${connectionId} | IP: ${clientIp} | Total: ${wss.clients.size}`);
 
   let audioBuffer = [];
   let isProcessing = false;
@@ -565,13 +589,17 @@ wss.on('connection', (ws, req) => {
     }, 550);
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
     isClosing = true; isBotSpeaking = false;
     if (processTimer) clearTimeout(processTimer);
     if (keepAliveInterval) clearInterval(keepAliveInterval);
+    console.log(`🔌 WebSocket closed: ${connectionId} | Code: ${code} | Reason: ${reason || 'none'} | Remaining: ${wss.clients.size}`);
   });
 
-  ws.on('error', () => { isClosing = true; });
+  ws.on('error', (err) => {
+    isClosing = true;
+    console.error(`❌ WebSocket error [${connectionId}]: ${err.message}`);
+  });
   safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
 });
 
