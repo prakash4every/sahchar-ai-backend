@@ -391,14 +391,6 @@ wss.on('error', (err) => {
   console.error(`❌ WebSocketServer error: ${err.message}`);
 });
 
-// Handle HTTP upgrade requests explicitly so Railway routes WebSocket traffic correctly
-server.on('upgrade', (request, socket, head) => {
-  console.log(`🔀 HTTP upgrade request from ${request.socket.remoteAddress} → ${request.url}`);
-  wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit('connection', ws, request);
-  });
-});
-
 app.get('/', (req, res) => res.send('Sahchar Live - v6.6 Ready'));
 
 app.get('/health', (req, res) => {
