@@ -379,7 +379,6 @@ await connectMongoDB();
 
 const server = app.listen(PORT, () => {
   console.log(`✅ Live Audio Server v6.6 on ${PORT}`);
-  // ✅ FIX 7: Railway keep-alive
   setInterval(() => {
     axios.get(`http://localhost:${PORT}/`).catch(() => {});
   }, 240000);
@@ -391,14 +390,14 @@ wss.on('error', (err) => {
   console.error(`❌ WebSocketServer error: ${err.message}`);
 });
 
-// Handle HTTP upgrade requests explicitly so Railway routes WebSocket traffic correctly
+// server.on('upgrade', ...) वाले ब्लॉक को इससे बदलें:
 server.on('upgrade', (request, socket, head) => {
-  console.log(`🔀 HTTP upgrade request from ${request.socket.remoteAddress} → ${request.url}`);
-  wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit('connection', ws, request);
-  });
+    // अगर सॉकेट पहले से ही 'destroyed' है, तो उसे दोबारा अपग्रेड न करें
+    if (socket.destroyed) return;
+    wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+    });
 });
-
 app.get('/', (req, res) => res.send('Sahchar Live - v6.6 Ready'));
 
 app.get('/health', (req, res) => {
