@@ -9,16 +9,22 @@ import { Blob } from 'buffer';
 import axios from 'axios';
 import FormData from 'form-data';
 
+// Load environment variables
 dotenv.config();
 
 const app = express();
 app.use(cors());
+app.use(express.json());
+
 const PORT = process.env.PORT || 10000;
-const MONGODB_URI =
+
+// ✅ FIXED: MongoDB Connection with multiple fallback options
+const MONGODB_URI = 
   process.env.MONGODB_URL ||
   process.env.MONGODB_URI ||
   process.env.MONGOBD_URL ||
-  'mongodb://MongoDB.railway.internal:27017';
+  process.env.MONGODB_URI_LIVE ||
+  'mongodb://localhost:27017';
 
 const DB_NAME = 'sahchar_live';
 const COLLECTION_NAME = 'conversations';
@@ -27,7 +33,7 @@ let db = null;
 let conversationsCollection = null;
 let mongoClient = null;
 
-// ✅ PROVIDER CONFIGURATION
+// ✅ PROVIDER CONFIGURATION with proper error handling
 const providers = {
   groq: {
     name: 'Groq',
@@ -46,563 +52,545 @@ const providers = {
     chat: true,
     audio: true,
     whisper: true
-  },
-  deepseek: {
-    name: 'DeepSeek',
-    key: process.env.DEEPSEEK_API_KEY,
-    url: 'https://api.deepseek.com/v1/chat/completions',
-    model: 'deepseek-chat',
-    chat: true,
-    audio: false,
-    whisper: false
-  },
-  kimi: {
-    name: 'Kimi',
-    key: process.env.KIMI_API_KEY,
-    url: 'https://api.moonshot.cn/v1/chat/completions',
-    model: 'moonshot-v1-8k',
-    chat: true,
-    audio: false,
-    whisper: false
-  },
-  gemini: {
-    name: 'Gemini',
-    key: process.env.GEMINI_API_KEY,
-    url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',
-    chat: true,
-    audio: false,
-    whisper: false
   }
 };
 
-// ✅ SMART CHAT - FIXED: max_tokens 50 + temp 0.4
-async function smartChat(messages, preferAudio = true) {
-    const priorityOrder = ['groq', 'deepseek', 'kimi', 'gemini'];
-    const orderedProviders = preferAudio? ['groq', 'deepseek', 'kimi', 'gemini'] : priorityOrder;
+// ✅ SMART CHAT with fallback
+async function smartChat(messages) {
+    const orderedProviders = ['groq', 'openai'];
 
     for (const providerName of orderedProviders) {
         const provider = providers[providerName];
-        if (!provider ||!provider.key ||!provider.chat) continue;
+        if (!provider || !provider.key || !provider.chat) {
+            console.log(`⚠️ ${providerName} not available`);
+            continue;
+        }
 
         try {
-            console.log(`🔄 Trying ${provider.name}...`);
-
-            const formattedMessages = messages.map(m => ({
-                role: m.role || 'user',
-                content: m.content || ''
-            }));
-
-            if (provider.name === 'Gemini') {
-                const geminiResponse = await axios.post(
-                    `${provider.url}?key=${provider.key}`,
-                    {
-                        contents: [{
-                            parts: [{ text: messages.map(m => `${m.role}: ${m.content}`).join('\n') }]
-                        }],
-                        generationConfig: {
-                            maxOutputTokens: 60,
-                            temperature: 0.4
-                        }
+            console.log(`🔄 Trying ${providerName}...`);
+            const response = await axios.post(
+                provider.url,
+                {
+                    model: provider.model,
+                    messages: messages,
+                    max_tokens: 60,
+                    temperature: 0.4
+                },
+                {
+                    headers: {
+                        'Authorization': `Bearer ${provider.key}`,
+                        'Content-Type': 'application/json'
                     },
-                    { timeout: 15000 }
-                );
-                const reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (reply) return { reply: reply.trim(), provider: provider.name };
-            } else {
-                const response = await axios.post(
-                    provider.url,
-                    {
-                        model: provider.model,
-                        messages: formattedMessages,
-                        max_tokens: 50, // ✅ FIX 1: 100 -> 50 = short replies
-                        temperature: 0.4 // ✅ FIX 2: 0.7 -> 0.4 = less hallucination
-                    },
-                    {
-                        headers: {
-                            'Authorization': `Bearer ${provider.key}`,
-                            'Content-Type': 'application/json'
-                        },
-                        timeout: 15000
-                    }
-                );
-                const reply = response.data.choices?.[0]?.message?.content;
-                if (reply) {
-                    console.log(`✅ ${provider.name} success!`);
-                    return { reply: reply.trim(), provider: provider.name };
+                    timeout: 15000
                 }
+            );
+            const reply = response.data.choices?.[0]?.message?.content;
+            if (reply) {
+                console.log(`✅ ${providerName} success!`);
+                return { reply: reply.trim(), provider: provider.name };
             }
         } catch (error) {
-            console.error(`❌ ${provider.name} failed:`, error.message);
+            console.error(`❌ ${providerName} failed:`, error.message);
+            if (error.response) {
+                console.error(`📊 Status: ${error.response.status}`);
+            }
         }
     }
     return null;
 }
 
-// ✅ SMART TRANSCRIPTION - FIXED: verbose_json + no_speech_prob
+// ✅ SMART TRANSCRIPTION with fallback
 async function smartTranscription(fileObject) {
+    // Try Groq Whisper first
     const groqKey = process.env.GROQ_API_KEY;
     if (groqKey) {
         try {
-            console.log('🔄 Trying Groq Whisper...');
+            console.log('🔄 Transcribing with Groq Whisper...');
             const audioBuffer = await fileObject.arrayBuffer();
             const buffer = Buffer.from(audioBuffer);
 
             const formData = new FormData();
-            formData.append('file', buffer, {
-                filename: 'speech.wav',
-                contentType: 'audio/wav'
+            formData.append('file', buffer, { 
+                filename: 'speech.wav', 
+                contentType: 'audio/wav' 
             });
             formData.append('model', 'whisper-large-v3-turbo');
             formData.append('language', 'hi');
-            formData.append('response_format', 'verbose_json'); // ✅ FIX 3: Get no_speech_prob
-            formData.append('prompt', 'Umm, hmm. Arre yaar, kya haal hai?'); // ✅ FIX 4: Better prompt
+            formData.append('response_format', 'json');
+            formData.append('prompt', 'नमस्ते। आप कैसे हैं?');
 
             const response = await axios.post(
                 'https://api.groq.com/openai/v1/audio/transcriptions',
                 formData,
                 {
-                    headers: {
-                        'Authorization': `Bearer ${groqKey}`,
-                       ...formData.getHeaders()
+                    headers: { 
+                        'Authorization': `Bearer ${groqKey}`, 
+                        ...formData.getHeaders() 
                     },
-                    timeout: 15000
+                    timeout: 20000
                 }
             );
-
-            // ✅ FIX 5: Check no_speech_prob
-            const segments = response.data.segments || [];
-            if (segments.length > 0) {
-                const avgNoSpeechProb = segments.reduce((sum, s) => sum + (s.no_speech_prob || 0), 0) / segments.length;
-                if (avgNoSpeechProb > 0.6) {
-                    console.log(`⚠ Groq no_speech_prob high: ${avgNoSpeechProb.toFixed(2)}`);
-                    return null;
-                }
-            }
-
-            const transcript = response.data.text;
-            if (transcript) {
-                console.log(`✅ Groq Whisper: ${transcript}`);
-                return transcript;
-            }
+            const text = response.data.text;
+            console.log(`✅ Transcription: ${text}`);
+            return text;
         } catch (error) {
             console.error('❌ Groq Whisper failed:', error.message);
         }
     }
 
+    // Try OpenAI Whisper as fallback
     const openaiKey = process.env.OPENAI_API_KEY;
     if (openaiKey) {
         try {
-            console.log('🔄 Trying OpenAI Whisper...');
-            const openai = new OpenAI({ apiKey: openaiKey });
-            const transcription = await openai.audio.transcriptions.create({
-                file: fileObject,
-                model: 'whisper-1',
-                language: 'hi',
-                prompt: 'Umm, hmm. Arre yaar, kya haal hai?',
-                temperature: 0.0,
-                response_format: 'verbose_json'
+            console.log('🔄 Transcribing with OpenAI Whisper...');
+            const audioBuffer = await fileObject.arrayBuffer();
+            const buffer = Buffer.from(audioBuffer);
+            
+            const formData = new FormData();
+            formData.append('file', buffer, { 
+                filename: 'speech.wav', 
+                contentType: 'audio/wav' 
             });
+            formData.append('model', 'whisper-1');
+            formData.append('language', 'hi');
 
-            const segments = transcription.segments || [];
-            if (segments.length > 0) {
-                const avgNoSpeechProb = segments.reduce((sum, s) => sum + (s.no_speech_prob || 0), 0) / segments.length;
-                if (avgNoSpeechProb > 0.6) {
-                    console.log(`⚠ OpenAI no_speech_prob high: ${avgNoSpeechProb.toFixed(2)}`);
-                    return null;
+            const response = await axios.post(
+                'https://api.openai.com/v1/audio/transcriptions',
+                formData,
+                {
+                    headers: { 
+                        'Authorization': `Bearer ${openaiKey}`, 
+                        ...formData.getHeaders() 
+                    },
+                    timeout: 20000
                 }
-            }
-
-            const text = transcription.text;
-            if (text) {
-                console.log(`✅ OpenAI Whisper: ${text}`);
-                return text;
-            }
+            );
+            const text = response.data.text;
+            console.log(`✅ OpenAI Transcription: ${text}`);
+            return text;
         } catch (error) {
             console.error('❌ OpenAI Whisper failed:', error.message);
         }
     }
 
-    console.error('❌ All transcription providers failed');
     return null;
 }
 
-// ✅ SMART TTS
+// ✅ SMART TTS with fallback
 async function smartTTS(text) {
-    console.log(`🔊 TTS Request: "${text.substring(0, 50)}..."`);
-
     const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
     const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
 
     if (elevenLabsKey) {
         try {
-            console.log('🔄 Trying ElevenLabs TTS...');
-
+            console.log('🔄 Generating TTS with ElevenLabs...');
             const response = await axios.post(
                 `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
                 {
                     text: text,
-                    model_id: 'eleven_multilingual_v2', // ✅ Better Hindi support
-                    voice_settings: { stability: 0.6, similarity_boost: 0.8 },
+                    model_id: 'eleven_multilingual_v2',
+                    voice_settings: { 
+                        stability: 0.6, 
+                        similarity_boost: 0.8 
+                    },
                     output_format: 'pcm_16000'
                 },
                 {
-                    headers: {
-                        'xi-api-key': elevenLabsKey,
-                        'Content-Type': 'application/json'
+                    headers: { 
+                        'xi-api-key': elevenLabsKey, 
+                        'Content-Type': 'application/json' 
                     },
                     responseType: 'arraybuffer',
-                    timeout: 15000
+                    timeout: 20000
                 }
             );
-
-            let pcmData = Buffer.from(response.data);
-            console.log(`✅ ElevenLabs PCM generated: ${pcmData.length} bytes`);
-            return pcmData;
-
+            console.log('✅ TTS generated successfully');
+            return Buffer.from(response.data);
         } catch (error) {
             console.error('❌ ElevenLabs TTS failed:', error.message);
         }
     }
 
-    const openaiKey = process.env.OPENAI_API_KEY;
-    if (openaiKey) {
-        try {
-            console.log('🔄 Trying OpenAI TTS...');
-            const openai = new OpenAI({ apiKey: openaiKey });
-            const response = await openai.audio.speech.create({
-                model: 'tts-1',
-                voice: 'echo',
-                input: text,
-                response_format: 'pcm',
-                speed: 1.00
-            });
-            const audio = Buffer.from(await response.arrayBuffer());
-            console.log(`✅ OpenAI TTS generated: ${audio.length} bytes`);
-            return audio;
-        } catch (error) {
-            console.error('❌ OpenAI TTS failed:', error.message);
-        }
-    }
-
-    console.warn('⚠ No TTS provider available');
+    // Return null if TTS fails
     return null;
 }
 
-// ✅ MongoDB Connection
+// ✅ MongoDB Connection with retry
 async function connectMongoDB() {
-  if (!MONGODB_URI) {
-    console.warn('⚠ No MongoDB URI found');
-    return;
-  }
-  try {
-    mongoClient = new MongoClient(MONGODB_URI, { connectTimeoutMS: 5000, socketTimeoutMS: 45000 });
-    await mongoClient.connect();
-    db = mongoClient.db(DB_NAME);
-    conversationsCollection = db.collection(COLLECTION_NAME);
-    await conversationsCollection.createIndex({ deviceId: 1, timestamp: -1 });
-    console.log('✅ MongoDB connected successfully!');
-  } catch (error) {
-    console.error('❌ MongoDB connection failed:', error.message);
-  }
+    if (!MONGODB_URI) {
+        console.log('⚠️ No MongoDB URI found, skipping DB connection');
+        return;
+    }
+    
+    try {
+        console.log(`🔄 Connecting to MongoDB: ${MONGODB_URI.replace(/\/\/[^:]+:[^@]+@/, '//***:***@')}`);
+        mongoClient = new MongoClient(MONGODB_URI, { 
+            connectTimeoutMS: 5000, 
+            socketTimeoutMS: 45000,
+            serverSelectionTimeoutMS: 5000
+        });
+        await mongoClient.connect();
+        db = mongoClient.db(DB_NAME);
+        conversationsCollection = db.collection(COLLECTION_NAME);
+        console.log('✅ MongoDB connected successfully!');
+    } catch (error) {
+        console.error('❌ MongoDB connection error:', error.message);
+        // Don't fail the server if MongoDB is not available
+    }
 }
 
 async function getConversationHistory(deviceId, limit = 5) {
-  if (!conversationsCollection ||!deviceId) return [];
-  try {
-    const history = await conversationsCollection
-     .find({ deviceId: deviceId.trim() })
-     .sort({ timestamp: -1 })
-     .limit(limit)
-     .toArray();
-    return history.reverse().map(msg => ({ role: msg.role, content: msg.content }));
-  } catch (error) {
-    return [];
-  }
+    if (!conversationsCollection || !deviceId) return [];
+    try {
+        const history = await conversationsCollection
+            .find({ deviceId: deviceId.trim() })
+            .sort({ timestamp: -1 })
+            .limit(limit)
+            .toArray();
+        return history.reverse().map(msg => ({ 
+            role: msg.role, 
+            content: msg.content 
+        }));
+    } catch (error) {
+        console.error('⚠️ History fetch error:', error.message);
+        return [];
+    }
 }
 
 async function saveConversation(deviceId, role, content) {
-  if (!conversationsCollection ||!deviceId) return;
-  try {
-    await conversationsCollection.insertOne({ deviceId: deviceId.trim(), role, content, timestamp: new Date() });
-  } catch (error) {}
-}
-
-async function getLiveGoogleSearch(query) {
-  const serpApiKey = process.env.SERPAPI_API_KEY;
-  if (!serpApiKey) return null;
-  try {
-    const response = await axios.get('https://serpapi.com/search', { params: { q: query, api_key: serpApiKey, engine: 'google', num: 3 }, timeout: 4000 });
-    const results = response.data.organic_results;
-    if (results && results.length > 0) {
-      return results.map(res => `${res.title}: ${res.snippet}`).join('\n');
+    if (!conversationsCollection || !deviceId) return;
+    try {
+        await conversationsCollection.insertOne({ 
+            deviceId: deviceId.trim(), 
+            role, 
+            content, 
+            timestamp: new Date() 
+        });
+    } catch (error) {
+        console.error('⚠️ Save error:', error.message);
     }
-  } catch (error) {
-    console.error("❌ SerpAPI Failure:", error.message);
-  }
-  return null;
 }
 
-// ✅ FIX 6: Strong cleanTranscript
+// ✅ Robust Transcript Cleaner
 function cleanTranscript(rawText) {
-  let text = rawText.trim();
-  if (!text) return "";
-  const lowerText = text.toLowerCase();
+    if (!rawText) return "";
+    let text = rawText.trim();
+    if (!text) return "";
+    
+    const lowerText = text.toLowerCase();
 
-  // 1. Whisper leaks
-  const leaks = ["आम बोलचाल", "दोस्त की बातचीत", "प्रस्तु", "परवारण", "धन्यवाद", "सब्सक्राइब"];
-  if (leaks.some(leak => lowerText.includes(leak))) {
-    console.log("⚠ Whisper leak filtered");
-    return "";
-  }
+    // Filter Icelandic/Hallucinated nonsense
+    if (lowerText.includes("hvað") || 
+        lowerText.includes("þau") || 
+        lowerText.includes("árrvík") || 
+        lowerText.includes("kannski")) {
+        console.log("⚠️ Icelandic Hallucination Filtered");
+        return "";
+    }
 
-  // 2. Single word repeat 3+ times: "झाल झाल झाल"
-  const words = text.split(/\s+/).filter(w => w.length > 0);
-  if (words.length >= 3 && new Set(words).size === 1) {
-    console.log("⚠ Single word loop filtered:", text);
-    return "";
-  }
+    const leaks = ["आम बोलचाल", "दोस्त की बातचीत", "प्रस्तु", "परवारण", "धन्यवाद", "सब्सक्राइब"];
+    if (leaks.some(leak => lowerText.includes(leak))) return "";
 
-  // 3. Char repeat: "भावावावाव"
-  if (/([\u0900-\u097F\w])\1{4,}/.test(text)) {
-    console.log("⚠ Char repeat filtered");
-    return "";
-  }
+    const words = text.split(/\s+/);
+    if (words.length >= 3 && new Set(words).size === 1) return "";
 
-  // 4. Too short after cleaning
-  if (text.replace(/[।,.!?]/g, '').trim().length < 3) return "";
+    if (text.replace(/[।,.!?]/g, '').trim().length < 3) return "";
 
-  return text;
+    return text;
 }
 
-// ✅ START SERVER
+// Connect to MongoDB and start server
 await connectMongoDB();
 
 const server = app.listen(PORT, () => {
-  console.log(`✅ Live Audio Server v6.6 on ${PORT}`);
-  setInterval(() => {
-    axios.get(`http://localhost:${PORT}/`).catch(() => {});
-  }, 240000);
+    console.log(`✅ Live Audio Server v7.0 running on port ${PORT}`);
+    console.log(`🔑 Keys loaded:`);
+    console.log(`   GROQ_API_KEY: ${process.env.GROQ_API_KEY ? '✅' : '❌'}`);
+    console.log(`   OPENAI_API_KEY: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
+    console.log(`   ELEVENLABS_API_KEY: ${process.env.ELEVENLABS_API_KEY ? '✅' : '❌'}`);
+    console.log(`   MONGODB_URI: ${process.env.MONGODB_URI ? '✅' : '❌'}`);
 });
 
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ noServer: true });
 
-wss.on('error', (err) => {
-  console.error(`❌ WebSocketServer error: ${err.message}`);
-});
-
-// server.on('upgrade', ...) वाले ब्लॉक को इससे बदलें:
 server.on('upgrade', (request, socket, head) => {
-    // अगर सॉकेट पहले से ही 'destroyed' है, तो उसे दोबारा अपग्रेड न करें
     if (socket.destroyed) return;
     wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit('connection', ws, request);
+        if (ws.readyState === ws.OPEN) {
+            wss.emit('connection', ws, request);
+        } else {
+            ws.terminate();
+        }
     });
 });
-app.get('/', (req, res) => res.send('Sahchar Live - v6.6 Ready'));
 
-app.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'ok',
-    service: 'sahchar-ai-backend',
-    version: '6.6',
-    uptime: Math.floor(process.uptime()),
-    websocket: wss.clients.size + ' active connection(s)',
-    timestamp: new Date().toISOString()
-  });
-});
+app.get('/', (req, res) => res.send('Sahchar Live Ready'));
+app.get('/health', (req, res) => res.json({ 
+    status: 'ok', 
+    mongodb: !!conversationsCollection,
+    providers: {
+        groq: !!process.env.GROQ_API_KEY,
+        openai: !!process.env.OPENAI_API_KEY,
+        elevenlabs: !!process.env.ELEVENLABS_API_KEY
+    }
+}));
 
 function calculateRMS(pcmBuffer) {
-  let sum = 0;
-  const count = pcmBuffer.length / 2;
-  if (count === 0) return 0;
-  for (let i = 0; i < pcmBuffer.length; i += 2) {
-    const sample = pcmBuffer.readInt16LE(i);
-    sum += sample * sample;
-  }
-  return Math.sqrt(sum / count) / 32768.0;
+    let sum = 0;
+    const count = pcmBuffer.length / 2;
+    if (count === 0) return 0;
+    for (let i = 0; i < pcmBuffer.length; i += 2) {
+        const sample = pcmBuffer.readInt16LE(i);
+        sum += sample * sample;
+    }
+    return Math.sqrt(sum / count) / 32768.0;
 }
 
 function pcmToWav(pcm, rate = 16000) {
-  const header = Buffer.alloc(44);
-  header.write('RIFF', 0); header.writeUInt32LE(36 + pcm.length, 4);
-  header.write('WAVE', 8); header.write('fmt ', 12);
-  header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20);
-  header.writeUInt16LE(1, 22); header.writeUInt32LE(rate, 24);
-  header.writeUInt32LE(rate * 2, 28); header.writeUInt16LE(2, 32);
-  header.writeUInt16LE(16, 34); header.write('data', 36);
-  header.writeUInt32LE(pcm.length, 40);
-  return Buffer.concat([header, pcm]);
+    const header = Buffer.alloc(44);
+    header.write('RIFF', 0);
+    header.writeUInt32LE(36 + pcm.length, 4);
+    header.write('WAVE', 8);
+    header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(rate, 24);
+    header.writeUInt32LE(rate * 2, 28);
+    header.writeUInt16LE(2, 32);
+    header.writeUInt16LE(16, 34);
+    header.write('data', 36);
+    header.writeUInt32LE(pcm.length, 40);
+    return Buffer.concat([header, pcm]);
 }
 
-// ============================================================
-// ✅ WEBSOCKET ROUTING AND STREAMING
-// ============================================================
 wss.on('connection', (ws, req) => {
-  const clientIp = req.socket.remoteAddress || req.headers['x-forwarded-for'] || 'unknown';
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  let rawDeviceId = url.searchParams.get('deviceId');
-  let deviceId = (rawDeviceId && rawDeviceId !== 'default') ? rawDeviceId.trim() : "default_user";
-  const connectionId = `${deviceId.substring(0, 8)}-${randomUUID().substring(0, 4)}`;
-  console.log(`🔌 WebSocket connected: ${connectionId} | IP: ${clientIp} | Total: ${wss.clients.size}`);
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    let deviceId = url.searchParams.get('deviceId') || "default_user";
+    const connectionId = `${deviceId.substring(0, 8)}-${randomUUID().substring(0, 4)}`;
+    console.log(`🔌 Client connected: ${connectionId}`);
 
-  let audioBuffer = [];
-  let isProcessing = false;
-  let isBotSpeaking = false;
-  let isAudioStreaming = false;
-  let isClosing = false;
-  let keepAliveInterval = null;
-  let processTimer = null;
+    let audioBuffer = [];
+    let isProcessing = false;
+    let isBotSpeaking = false;
+    let isClosing = false;
+    let processTimer = null;
+    let lastActivity = Date.now();
 
-  keepAliveInterval = setInterval(() => {
-    if (ws.readyState === 1 &&!isClosing) { try { ws.ping(); } catch (e) {} }
-  }, 10000);
+    const safeSend = (data, isBinary = false) => {
+        if (ws.readyState === 1 && !isClosing) {
+            try {
+                ws.send(data, { binary: isBinary });
+                return true;
+            } catch (e) {
+                console.error('Send error:', e.message);
+                return false;
+            }
+        }
+        return false;
+    };
 
-  const safeSend = (data, isBinary = false) => {
-    if (ws.readyState === 1 &&!isClosing) {
-      try { ws.send(data, { binary: isBinary }); return true; } catch (e) { return false; }
-    }
-    return false;
-  };
+    // Find the processAudio function and update it
 
-  const processAudio = async () => {
+const processAudio = async () => {
     if (isProcessing || audioBuffer.length === 0 || isClosing) return;
     isProcessing = true;
+    console.log(`🔄 Processing audio (${audioBuffer.length} chunks)`);
+    
     const fullAudio = Buffer.concat(audioBuffer);
     audioBuffer = [];
 
-    if (fullAudio.length < 12000) { isProcessing = false; return; } // ✅ FIX 8: 8k -> 12k
+    // ✅ DEBUG: Log audio size
+    console.log(`📊 Audio size: ${fullAudio.length} bytes`);
+
+    if (fullAudio.length < 12000) {
+        console.log('⚠️ Audio too short, skipping');
+        isProcessing = false;
+        return;
+    }
+    
     const rms = calculateRMS(fullAudio);
-    if (rms < 0.035) { isProcessing = false; return; } // ✅ FIX 9: 0.030 -> 0.035
+    console.log(`📊 RMS: ${rms}`);
+    
+    if (rms < 0.035) {
+        console.log('⚠️ Audio too quiet, skipping');
+        isProcessing = false;
+        return;
+    }
 
     safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
 
     try {
-      const wavBuffer = pcmToWav(fullAudio);
-      const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
-      const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
-      const userMsgRaw = await smartTranscription(fileObject);
-      const userMsg = cleanTranscript(userMsgRaw || '');
+        const wavBuffer = pcmToWav(fullAudio);
+        const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+        const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
+        
+        console.log('🔄 Transcribing...');
+        const userMsgRaw = await smartTranscription(fileObject);
+        console.log(`📝 Raw transcription: ${userMsgRaw}`);
+        
+        const userMsg = cleanTranscript(userMsgRaw || '');
 
-      if (!userMsg || userMsg.length < 2) { isProcessing = false; return; }
-      console.log(`📝 [${connectionId}] User: ${userMsg}`);
-
-      const lowerUserMsg = userMsg.toLowerCase().replace("।", "").trim();
-      const userExitKeywords = ["चैट क्लोज", "अलविदा", "बाय"];
-      const hasUserRequestedExit = userExitKeywords.some(k => lowerUserMsg.includes(k));
-
-      let botReply = "";
-      if (hasUserRequestedExit) {
-        botReply = "अच्छा, बाय! फिर मिलते हैं 😊🙏";
-      } else {
-        await safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
+        if (!userMsg) {
+            console.log('⚠️ No valid transcription');
+            safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
+            isProcessing = false;
+            return;
+        }
+        
+        console.log(`📝 User: ${userMsg}`);
+        safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
         await saveConversation(deviceId, 'user', userMsg);
 
-        let liveSearchContext = "";
-        if (["ट्रेंड", "न्यूज़", "चुनाव", "मैच"].some(t => lowerUserMsg.includes(t))) {
-          const webSearchSnippets = await getLiveGoogleSearch(userMsg);
-          if (webSearchSnippets) liveSearchContext = `\n\n[SEARCH]:\n${webSearchSnippets}`;
-        }
-
         const previousHistory = await getConversationHistory(deviceId, 5);
-        // ✅ FIX 10: Strong system prompt
         const messages = [
-          {
-            role: 'system',
-            content: `तुम "SuperSahchar" हो। नियम: 1. जवाब सिर्फ 1 वाक्य + इमोजी। 2. "मुझे लगता है", "शायद" मत बोलो। 3. User "झाल", "प्रफ" बोले तो: "यार ये क्या बोल रहा 😂 कुछ काम की बात कर" बोलो। 4. किताबी हिंदी बैन।${liveSearchContext}`
-          },
-         ...previousHistory,
-          { role: 'user', content: userMsg }
+            { role: 'system', content: `तुम "SuperSahchar" हो। दोस्त जैसा बर्ताव करो। जवाब छोटा और हिंदी में।` },
+            ...previousHistory,
+            { role: 'user', content: userMsg }
         ];
 
-        const chatResult = await smartChat(messages, true);
-        botReply = chatResult? chatResult.reply : "अरे यार, सब busy है अभी 😊";
-      }
+        console.log('🔄 Getting AI response...');
+        const chatResult = await smartChat(messages);
+        const botReply = chatResult ? chatResult.reply : "अरे यार, सब busy है। 😊";
+        console.log(`🤖 Bot: ${botReply}`);
+        
+        safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
+        await saveConversation(deviceId, 'assistant', botReply);
 
-      console.log(`🤖 [${connectionId}] Bot: ${botReply}`);
-      safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
-      if (!hasUserRequestedExit) await saveConversation(deviceId, 'assistant', botReply);
+        isBotSpeaking = true;
+        safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
 
-      if (isClosing || ws.readyState!== 1) return;
-      isBotSpeaking = true;
-      safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
+        console.log('🔄 Generating TTS...');
+        const audioPcm = await smartTTS(botReply);
+        
+        if (!audioPcm) {
+            console.log('⚠️ TTS failed, skipping audio');
+            safeSend(JSON.stringify({ type: 'audio_done' }));
+            isBotSpeaking = false;
+            isProcessing = false;
+            return;
+        }
 
-      const audioPcm = await smartTTS(botReply);
-      if (!audioPcm) {
-          safeSend(JSON.stringify({ type: 'audio_done' }));
-          isBotSpeaking = false; isProcessing = false; return;
-      }
+        console.log(`📢 Sending audio (${audioPcm.length} bytes)`);
+        const CHUNK_SIZE = 640;
+        for (let i = 0; i < audioPcm.length; i += CHUNK_SIZE) {
+            if (isClosing || ws.readyState !== 1) break;
+            const chunk = audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length));
+            safeSend(chunk, true);
+            await new Promise(r => setTimeout(r, 10));
+        }
 
-      // ✅ FIX 11: Perfect 20ms chunk timing
-      console.log(`📦 Sending raw PCM stream: ${audioPcm.length} bytes`);
-
-      const CHUNK_SIZE = 640; // 320 samples = 20ms @ 16kHz
-      const CHUNK_DELAY_MS = 20; // ✅ FIX: 26 -> 20 = no underflow
-
-      isAudioStreaming = true;
-      let totalSent = 0;
-
-      for (let i = 0; i < audioPcm.length; i += CHUNK_SIZE) {
-          if (isClosing || ws.readyState!== 1) break;
-
-          const chunk = audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length));
-          safeSend(chunk, true);
-          totalSent += chunk.length;
-          await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
-      }
-
-      isAudioStreaming = false;
-      isBotSpeaking = false;
-
-      console.log(`✅ Safely streamed ${totalSent} bytes of PCM to Android client.`);
-      safeSend(JSON.stringify({ type: 'audio_done' }));
-
-      if (hasUserRequestedExit) {
-          await new Promise(r => setTimeout(r, 500));
-          safeSend(JSON.stringify({ type: 'force_close_ui' }));
-      }
-      if (!hasUserRequestedExit) safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
+        safeSend(JSON.stringify({ type: 'audio_done' }));
+        isBotSpeaking = false;
+        safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
 
     } catch (err) {
-      console.error(`❌ Error: ${err.message}`);
-      safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
+        console.error(`❌ Error: ${err.message}`);
+        console.error(`📊 Stack: ${err.stack}`);
+        safeSend(JSON.stringify({ type: 'status', text: 'Error occurred' }));
     } finally {
-      isProcessing = false;
+        isProcessing = false;
     }
-  };
+};            
+            console.log(`📝 User: ${userMsg}`);
+            safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
+            await saveConversation(deviceId, 'user', userMsg);
 
-  ws.on('message', (data, isBinary) => {
-    if (!isBinary) {
-      try {
-        const json = JSON.parse(data.toString());
-        if (json.type === 'interrupt' &&!isAudioStreaming) {
-          isBotSpeaking = false; audioBuffer = [];
-          if (processTimer) clearTimeout(processTimer);
+            const previousHistory = await getConversationHistory(deviceId, 5);
+            const messages = [
+                { role: 'system', content: `तुम "SuperSahchar" हो। दोस्त जैसा बर्ताव करो। जवाब छोटा और हिंदी में।` },
+                ...previousHistory,
+                { role: 'user', content: userMsg }
+            ];
+
+            console.log('🔄 Getting AI response...');
+            const chatResult = await smartChat(messages);
+            const botReply = chatResult ? chatResult.reply : "अरे यार, सब busy है। 😊";
+            console.log(`🤖 Bot: ${botReply}`);
+            
+            safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
+            await saveConversation(deviceId, 'assistant', botReply);
+
+            isBotSpeaking = true;
+            safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
+
+            console.log('🔄 Generating TTS...');
+            const audioPcm = await smartTTS(botReply);
+            
+            if (!audioPcm) {
+                console.log('⚠️ TTS failed, skipping audio');
+                safeSend(JSON.stringify({ type: 'audio_done' }));
+                isBotSpeaking = false;
+                isProcessing = false;
+                return;
+            }
+
+            console.log(`📢 Sending audio (${audioPcm.length} bytes)`);
+            const CHUNK_SIZE = 640;
+            for (let i = 0; i < audioPcm.length; i += CHUNK_SIZE) {
+                if (isClosing || ws.readyState !== 1) break;
+                const chunk = audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length));
+                safeSend(chunk, true);
+                await new Promise(r => setTimeout(r, 10));
+            }
+
+            safeSend(JSON.stringify({ type: 'audio_done' }));
+            isBotSpeaking = false;
+            safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
+
+        } catch (err) {
+            console.error(`❌ Error: ${err.message}`);
+            safeSend(JSON.stringify({ type: 'status', text: 'Error occurred' }));
+        } finally {
+            isProcessing = false;
         }
-      } catch (e) {}
-      return;
-    }
-    audioBuffer.push(Buffer.from(data));
-    if (processTimer) clearTimeout(processTimer);
-    processTimer = setTimeout(() => {
-      if (audioBuffer.length > 0 &&!isProcessing &&!isClosing) processAudio();
-    }, 550);
-  });
+    };
 
-  ws.on('close', (code, reason) => {
-    isClosing = true; isBotSpeaking = false;
-    if (processTimer) clearTimeout(processTimer);
-    if (keepAliveInterval) clearInterval(keepAliveInterval);
-    console.log(`🔌 WebSocket closed: ${connectionId} | Code: ${code} | Reason: ${reason || 'none'} | Remaining: ${wss.clients.size}`);
-  });
+    ws.on('message', (data, isBinary) => {
+        lastActivity = Date.now();
+        
+        if (!isBinary) {
+            try {
+                const json = JSON.parse(data.toString());
+                console.log(`📨 Received: ${json.type}`);
+                if (json.type === 'interrupt') {
+                    console.log('🛑 Interrupt received');
+                    isBotSpeaking = false;
+                    audioBuffer = [];
+                }
+            } catch (e) {
+                console.log('⚠️ Non-JSON message received');
+            }
+            return;
+        }
+        
+        audioBuffer.push(Buffer.from(data));
+        
+        if (processTimer) clearTimeout(processTimer);
+        processTimer = setTimeout(() => {
+            if (audioBuffer.length > 0 && !isProcessing && !isClosing) {
+                processAudio();
+            }
+        }, 500);
+    });
 
-  ws.on('error', (err) => {
-    isClosing = true;
-    console.error(`❌ WebSocket error [${connectionId}]: ${err.message}`);
-  });
-  safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
+    ws.on('close', () => {
+        console.log(`🔌 Client disconnected: ${connectionId}`);
+        isClosing = true;
+        if (processTimer) clearTimeout(processTimer);
+    });
+    
+    ws.on('error', (error) => {
+        console.error(`❌ WebSocket error: ${error.message}`);
+        isClosing = true;
+    });
+    
+    // Send initial status
+    safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
 });
 
 process.on('SIGTERM', async () => {
-  if (mongoClient) await mongoClient.close();
-  process.exit(0);
+    console.log('🛑 Shutting down...');
+    if (mongoClient) await mongoClient.close();
+    process.exit(0);
 });
