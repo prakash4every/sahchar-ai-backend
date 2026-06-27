@@ -63,7 +63,7 @@ async function smartChat(messages) {
             console.log(`🔄 Trying ${providerName}...`);
             const response = await axios.post(
                 provider.url,
-                { model: provider.model, messages, max_tokens: 60, temperature: 0.4 },
+                { model: provider.model, messages, max_tokens: 100, temperature: 0.5 },
                 { headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' }, timeout: 15000 }
             );
             const reply = response.data.choices?.[0]?.message?.content;
@@ -126,29 +126,26 @@ async function smartTTS(text) {
     const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
     if (elevenLabsKey) {
         try {
-            console.log('🔄 Generating TTS with ElevenLabs...');
+            console.log(`🔄 Generating TTS for: "${text.substring(0, 30)}..."`);
             const response = await axios.post(
-                `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+                `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=pcm_16000`,
                 {
                     text: text,
                     model_id: 'eleven_multilingual_v2',
-                    voice_settings: { stability: 0.5, similarity_boost: 0.75, speed: 1.0 },
-                    output_format: 'pcm_16000'
+                    voice_settings: { stability: 0.5, similarity_boost: 0.75, speed: 1.0 }
                 },
                 { headers: { 'xi-api-key': elevenLabsKey, 'Content-Type': 'application/json' }, responseType: 'arraybuffer', timeout: 30000 }
             );
 
-            // ✅ FIX: Check if the response is actually audio
-            const contentType = response.headers['content-type'] || '';
-            if (!contentType.includes('audio')) {
-                const errorText = Buffer.from(response.data).toString();
-                console.error('❌ ElevenLabs returned non-audio response:', errorText);
+            let pcmData = Buffer.from(response.data);
+
+            // ✅ Check if it's a small JSON error instead of audio
+            if (pcmData.length < 1000 && pcmData.toString().includes('"detail"')) {
+                console.error('❌ ElevenLabs JSON Error:', pcmData.toString());
                 return null;
             }
 
-            let pcmData = Buffer.from(response.data);
-
-            // ✅ FIX: Strip WAV header if ElevenLabs accidentally sends it
+            // ✅ Strip WAV header if present
             if (pcmData.length > 44 && pcmData.slice(0, 4).toString() === 'RIFF') {
                 console.log("⚠️ WAV header detected in TTS, stripping 44 bytes");
                 pcmData = pcmData.slice(44);
@@ -158,8 +155,12 @@ async function smartTTS(text) {
             return pcmData;
         } catch (error) {
             if (error.response && error.response.data) {
-                const errorText = Buffer.from(error.response.data).toString();
-                console.error('❌ ElevenLabs API error response:', errorText);
+                try {
+                    const errorText = Buffer.from(error.response.data).toString();
+                    console.error('❌ ElevenLabs API error response:', errorText);
+                } catch (e) {
+                    console.error('❌ ElevenLabs API error (buffer fail)');
+                }
             } else {
                 console.error('❌ ElevenLabs TTS failed:', error.message);
             }
@@ -271,7 +272,9 @@ wss.on('connection', (ws, req) => {
     let isProcessing = false;
     let isBotSpeaking = false;
     let isClosing = false;
-    let processTimer = null;
+    let silenceChunks = 0;
+    const SILENCE_THRESHOLD = 0.003; // Adjust sensitivity
+    const REQUIRED_SILENCE_CHUNKS = 25; // ~1 second of silence at 16khz/640-byte chunks
 
     const safeSend = (data, isBinary = false) => {
         if (ws.readyState === 1 && !isClosing) {
@@ -280,47 +283,47 @@ wss.on('connection', (ws, req) => {
         return false;
     };
 
+    // ✅ Keep-alive heartbeat
+    const heartbeat = setInterval(() => {
+        if (ws.readyState === 1) ws.ping();
+        else clearInterval(heartbeat);
+    }, 30000);
+
     const processAudio = async () => {
         if (isProcessing || audioBuffer.length === 0 || isClosing) return;
         isProcessing = true;
-        console.log(`🔄 Processing audio (${audioBuffer.length} chunks)`);
 
-        const fullAudio = Buffer.concat(audioBuffer);
-        audioBuffer = [];
+        const chunksToProcess = [...audioBuffer];
+        audioBuffer = []; // Clear for next batch
+        silenceChunks = 0;
 
-        console.log(`📊 Audio size: ${fullAudio.length} bytes`);
+        console.log(`🔄 Processing audio batch (${chunksToProcess.length} chunks)`);
+        const fullAudio = Buffer.concat(chunksToProcess);
 
-        if (fullAudio.length < 12000) {
-            console.log('⚠️ Audio too short, skipping');
+        if (fullAudio.length < 8000) {
             isProcessing = false;
             return;
         }
 
         const rms = calculateRMS(fullAudio);
-        console.log(`📊 RMS: ${rms}`);
-
-        if (rms < 0.025) {
-            console.log('⚠️ Audio too quiet, skipping');
+        if (rms < 0.001) {
+            console.log('⚠️ Batch too quiet, skipping');
             isProcessing = false;
             return;
         }
 
-        safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
+        safeSend(JSON.stringify({ type: 'status', text: 'सोच रहा हूँ... 🤔' }));
 
         try {
             const wavBuffer = pcmToWav(fullAudio);
             const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
             const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
 
-            console.log('🔄 Transcribing...');
             const userMsgRaw = await smartTranscription(fileObject);
-            console.log(`📝 Raw: ${userMsgRaw}`);
-
             const userMsg = cleanTranscript(userMsgRaw || '');
 
             if (!userMsg) {
-                console.log('⚠️ No valid transcription');
-                safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
+                safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
                 isProcessing = false;
                 return;
             }
@@ -331,67 +334,60 @@ wss.on('connection', (ws, req) => {
 
             const previousHistory = await getConversationHistory(deviceId, 5);
             const messages = [
-                { role: 'system', content: `तुम "SuperSahchar" हो। दोस्त जैसा बर्ताव करो। जवाब छोटा और हिंदी में।` },
+                { role: 'system', content: `तुम "SuperSahchar" हो। एक दोस्ताना हिंदी सहायक। छोटे और प्यारे जवाब दो। बातचीत ऐसी करो जैसे दो दोस्त बात कर रहे हों।` },
                 ...previousHistory,
                 { role: 'user', content: userMsg }
             ];
 
-            console.log('🔄 Getting AI response...');
-            const chatResult = await smartChat(messages);
-            const botReply = chatResult ? chatResult.reply : "अरे यार, सब busy है। 😊";
-            console.log(`🤖 Bot: ${botReply}`);
+            const chatResult = await smartChat(messages, 150);
+            const botReply = chatResult ? chatResult.reply : "अरे यार, नेट थोड़ा स्लो है। फिर से बोलिये? 😊";
 
+            console.log(`🤖 Bot: ${botReply}`);
             safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
             await saveConversation(deviceId, 'assistant', botReply);
 
             isBotSpeaking = true;
+            audioBuffer = []; // 🧹 Clear buffer
+            silenceChunks = 0;
+
             safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
 
-            console.log('🔄 Generating TTS...');
             let audioPcm = await smartTTS(botReply);
-
             if (!audioPcm) {
-                console.log('⚠️ TTS failed');
                 safeSend(JSON.stringify({ type: 'audio_done' }));
                 isBotSpeaking = false;
                 isProcessing = false;
                 return;
             }
 
-            // ✅ FIX: Ensure PCM is valid (even byte count)
-            if (audioPcm.length % 2 !== 0) {
-                console.log('⚠️ PCM length odd, truncating');
-                audioPcm = audioPcm.slice(0, audioPcm.length - 1);
-            }
-
-            // ✅ Log first few bytes for debugging
-            const hexFirst16 = audioPcm.slice(0, 16).toString('hex');
-            console.log(`🔊 PCM first 16 bytes: ${hexFirst16}`);
+            // Ensure even length for 16-bit PCM
+            if (audioPcm.length % 2 !== 0) audioPcm = audioPcm.slice(0, -1);
 
             console.log(`📢 Sending audio (${audioPcm.length} bytes)`);
-            const CHUNK_SIZE = 640;
-            let sentBytes = 0;
 
+            // ✅ Send audio in 4KB chunks for better stability
+            const CHUNK_SIZE = 4096;
             for (let i = 0; i < audioPcm.length; i += CHUNK_SIZE) {
                 if (isClosing || ws.readyState !== 1) break;
-                const chunk = audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length));
-                safeSend(chunk, true);
-                sentBytes += chunk.length;
-                await new Promise(r => setTimeout(r, 5));
+                safeSend(audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length)), true);
             }
 
-            console.log(`✅ Sent ${sentBytes} bytes of PCM audio`);
+            // ✅ Calculate duration to keep isBotSpeaking true
+            // 32000 bytes = 1 second.
+            const playDurationMs = (audioPcm.length / 32000) * 1000;
+            console.log(`🕒 Audio will play for ~${playDurationMs}ms`);
+
+            // Wait for audio to finish playing on phone + safety margin
+            await new Promise(r => setTimeout(r, playDurationMs + 1000));
 
             safeSend(JSON.stringify({ type: 'audio_done' }));
-            isBotSpeaking = false;
-            safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
-
         } catch (err) {
-            console.error(`❌ Error: ${err.message}`);
-            console.error(`📊 Stack: ${err.stack}`);
-            safeSend(JSON.stringify({ type: 'status', text: 'Error occurred' }));
+            console.error(`❌ Error in processAudio: ${err.message}`);
         } finally {
+            isBotSpeaking = false;
             isProcessing = false;
+            audioBuffer = []; // 🧹 Final clear
+            safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
         }
     };
 
@@ -399,36 +395,43 @@ wss.on('connection', (ws, req) => {
         if (!isBinary) {
             try {
                 const json = JSON.parse(data.toString());
-                console.log(`📨 Received: ${json.type}`);
                 if (json.type === 'interrupt') {
-                    console.log('🛑 Interrupt received');
                     isBotSpeaking = false;
                     audioBuffer = [];
+                    silenceChunks = 0;
                 }
             } catch (e) {}
             return;
         }
 
-        const chunkSize = data.length;
-        if (chunkSize > 0) {
-            if (audioBuffer.length % 50 === 0) {
-                console.log(`📊 Audio chunk #${audioBuffer.length + 1}: ${chunkSize} bytes`);
-            }
-            audioBuffer.push(Buffer.from(data));
+        // 🔇 IGNORE audio while bot is speaking to prevent hallucination loop
+        if (isBotSpeaking || isProcessing) return;
+
+        // ✅ Monitor audio stream in real-time
+        const chunk = Buffer.from(data);
+        audioBuffer.push(chunk);
+
+        const chunkRms = calculateRMS(chunk);
+        if (chunkRms < SILENCE_THRESHOLD) {
+            silenceChunks++;
+        } else {
+            silenceChunks = 0; // User is speaking
         }
 
-        if (processTimer) clearTimeout(processTimer);
-        processTimer = setTimeout(() => {
-            if (audioBuffer.length > 0 && !isProcessing && !isClosing) {
+        // ✅ Trigger processing if:
+        // 1. We have enough audio AND
+        // 2. We've seen ~1s of silence OR
+        // 3. Buffer is too long (> 15s)
+        if (audioBuffer.length > 25) {
+            if (silenceChunks >= REQUIRED_SILENCE_CHUNKS || audioBuffer.length > 375) {
                 processAudio();
             }
-        }, 300);
+        }
     });
 
     ws.on('close', () => {
-        console.log(`🔌 Client disconnected: ${connectionId}`);
         isClosing = true;
-        if (processTimer) clearTimeout(processTimer);
+        clearInterval(heartbeat);
     });
 
     ws.on('error', (error) => {
