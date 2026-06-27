@@ -18,7 +18,6 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-// ✅ FIXED: MongoDB Connection with multiple fallback options
 const MONGODB_URI = 
   process.env.MONGODB_URL ||
   process.env.MONGODB_URI ||
@@ -33,7 +32,7 @@ let db = null;
 let conversationsCollection = null;
 let mongoClient = null;
 
-// ✅ PROVIDER CONFIGURATION with proper error handling
+// ✅ PROVIDER CONFIGURATION
 const providers = {
   groq: {
     name: 'Groq',
@@ -41,7 +40,6 @@ const providers = {
     url: 'https://api.groq.com/openai/v1/chat/completions',
     model: 'llama-3.3-70b-versatile',
     chat: true,
-    audio: false,
     whisper: true
   },
   openai: {
@@ -50,12 +48,11 @@ const providers = {
     url: 'https://api.openai.com/v1/chat/completions',
     model: 'gpt-4o-mini',
     chat: true,
-    audio: true,
     whisper: true
   }
 };
 
-// ✅ SMART CHAT with fallback
+// ✅ SMART CHAT
 async function smartChat(messages) {
     const orderedProviders = ['groq', 'openai'];
 
@@ -91,17 +88,13 @@ async function smartChat(messages) {
             }
         } catch (error) {
             console.error(`❌ ${providerName} failed:`, error.message);
-            if (error.response) {
-                console.error(`📊 Status: ${error.response.status}`);
-            }
         }
     }
     return null;
 }
 
-// ✅ SMART TRANSCRIPTION with fallback
+// ✅ SMART TRANSCRIPTION
 async function smartTranscription(fileObject) {
-    // Try Groq Whisper first
     const groqKey = process.env.GROQ_API_KEY;
     if (groqKey) {
         try {
@@ -117,7 +110,6 @@ async function smartTranscription(fileObject) {
             formData.append('model', 'whisper-large-v3-turbo');
             formData.append('language', 'hi');
             formData.append('response_format', 'json');
-            formData.append('prompt', 'नमस्ते। आप कैसे हैं?');
 
             const response = await axios.post(
                 'https://api.groq.com/openai/v1/audio/transcriptions',
@@ -127,18 +119,21 @@ async function smartTranscription(fileObject) {
                         'Authorization': `Bearer ${groqKey}`, 
                         ...formData.getHeaders() 
                     },
-                    timeout: 20000
+                    timeout: 30000
                 }
             );
             const text = response.data.text;
-            console.log(`✅ Transcription: ${text}`);
+            console.log(`✅ Groq Transcription: ${text}`);
             return text;
         } catch (error) {
             console.error('❌ Groq Whisper failed:', error.message);
+            if (error.response) {
+                console.error('📊 Error:', error.response.data);
+            }
         }
     }
 
-    // Try OpenAI Whisper as fallback
+    // OpenAI Whisper fallback
     const openaiKey = process.env.OPENAI_API_KEY;
     if (openaiKey) {
         try {
@@ -162,7 +157,7 @@ async function smartTranscription(fileObject) {
                         'Authorization': `Bearer ${openaiKey}`, 
                         ...formData.getHeaders() 
                     },
-                    timeout: 20000
+                    timeout: 30000
                 }
             );
             const text = response.data.text;
@@ -176,7 +171,7 @@ async function smartTranscription(fileObject) {
     return null;
 }
 
-// ✅ SMART TTS with fallback
+// ✅ SMART TTS
 async function smartTTS(text) {
     const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
     const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
@@ -201,7 +196,7 @@ async function smartTTS(text) {
                         'Content-Type': 'application/json' 
                     },
                     responseType: 'arraybuffer',
-                    timeout: 20000
+                    timeout: 30000
                 }
             );
             console.log('✅ TTS generated successfully');
@@ -210,20 +205,18 @@ async function smartTTS(text) {
             console.error('❌ ElevenLabs TTS failed:', error.message);
         }
     }
-
-    // Return null if TTS fails
     return null;
 }
 
-// ✅ MongoDB Connection with retry
+// ✅ MongoDB Connection
 async function connectMongoDB() {
     if (!MONGODB_URI) {
-        console.log('⚠️ No MongoDB URI found, skipping DB connection');
+        console.log('⚠️ No MongoDB URI found');
         return;
     }
     
     try {
-        console.log(`🔄 Connecting to MongoDB: ${MONGODB_URI.replace(/\/\/[^:]+:[^@]+@/, '//***:***@')}`);
+        console.log('🔄 Connecting to MongoDB...');
         mongoClient = new MongoClient(MONGODB_URI, { 
             connectTimeoutMS: 5000, 
             socketTimeoutMS: 45000,
@@ -235,7 +228,6 @@ async function connectMongoDB() {
         console.log('✅ MongoDB connected successfully!');
     } catch (error) {
         console.error('❌ MongoDB connection error:', error.message);
-        // Don't fail the server if MongoDB is not available
     }
 }
 
@@ -252,7 +244,6 @@ async function getConversationHistory(deviceId, limit = 5) {
             content: msg.content 
         }));
     } catch (error) {
-        console.error('⚠️ History fetch error:', error.message);
         return [];
     }
 }
@@ -266,12 +257,10 @@ async function saveConversation(deviceId, role, content) {
             content, 
             timestamp: new Date() 
         });
-    } catch (error) {
-        console.error('⚠️ Save error:', error.message);
-    }
+    } catch (error) {}
 }
 
-// ✅ Robust Transcript Cleaner
+// ✅ Transcript Cleaner
 function cleanTranscript(rawText) {
     if (!rawText) return "";
     let text = rawText.trim();
@@ -279,12 +268,11 @@ function cleanTranscript(rawText) {
     
     const lowerText = text.toLowerCase();
 
-    // Filter Icelandic/Hallucinated nonsense
     if (lowerText.includes("hvað") || 
         lowerText.includes("þau") || 
         lowerText.includes("árrvík") || 
         lowerText.includes("kannski")) {
-        console.log("⚠️ Icelandic Hallucination Filtered");
+        console.log("⚠️ Icelandic filtered");
         return "";
     }
 
@@ -293,22 +281,19 @@ function cleanTranscript(rawText) {
 
     const words = text.split(/\s+/);
     if (words.length >= 3 && new Set(words).size === 1) return "";
-
     if (text.replace(/[।,.!?]/g, '').trim().length < 3) return "";
 
     return text;
 }
 
-// Connect to MongoDB and start server
+// Start server
 await connectMongoDB();
 
 const server = app.listen(PORT, () => {
     console.log(`✅ Live Audio Server v7.0 running on port ${PORT}`);
-    console.log(`🔑 Keys loaded:`);
-    console.log(`   GROQ_API_KEY: ${process.env.GROQ_API_KEY ? '✅' : '❌'}`);
-    console.log(`   OPENAI_API_KEY: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
-    console.log(`   ELEVENLABS_API_KEY: ${process.env.ELEVENLABS_API_KEY ? '✅' : '❌'}`);
-    console.log(`   MONGODB_URI: ${process.env.MONGODB_URI ? '✅' : '❌'}`);
+    console.log(`🔑 GROQ_API_KEY: ${process.env.GROQ_API_KEY ? '✅' : '❌'}`);
+    console.log(`🔑 OPENAI_API_KEY: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
+    console.log(`🔑 ELEVENLABS_API_KEY: ${process.env.ELEVENLABS_API_KEY ? '✅' : '❌'}`);
 });
 
 const wss = new WebSocketServer({ noServer: true });
@@ -375,7 +360,6 @@ wss.on('connection', (ws, req) => {
     let isBotSpeaking = false;
     let isClosing = false;
     let processTimer = null;
-    let lastActivity = Date.now();
 
     const safeSend = (data, isBinary = false) => {
         if (ws.readyState === 1 && !isClosing) {
@@ -383,115 +367,59 @@ wss.on('connection', (ws, req) => {
                 ws.send(data, { binary: isBinary });
                 return true;
             } catch (e) {
-                console.error('Send error:', e.message);
                 return false;
             }
         }
         return false;
     };
 
-    // Find the processAudio function and update it
-
-const processAudio = async () => {
-    if (isProcessing || audioBuffer.length === 0 || isClosing) return;
-    isProcessing = true;
-    console.log(`🔄 Processing audio (${audioBuffer.length} chunks)`);
-    
-    const fullAudio = Buffer.concat(audioBuffer);
-    audioBuffer = [];
-
-    // ✅ DEBUG: Log audio size
-    console.log(`📊 Audio size: ${fullAudio.length} bytes`);
-
-    if (fullAudio.length < 12000) {
-        console.log('⚠️ Audio too short, skipping');
-        isProcessing = false;
-        return;
-    }
-    
-    const rms = calculateRMS(fullAudio);
-    console.log(`📊 RMS: ${rms}`);
-    
-    if (rms < 0.035) {
-        console.log('⚠️ Audio too quiet, skipping');
-        isProcessing = false;
-        return;
-    }
-
-    safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
-
-    try {
-        const wavBuffer = pcmToWav(fullAudio);
-        const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
-        const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
+    // ✅ SINGLE processAudio function
+    const processAudio = async () => {
+        if (isProcessing || audioBuffer.length === 0 || isClosing) return;
+        isProcessing = true;
+        console.log(`🔄 Processing audio (${audioBuffer.length} chunks)`);
         
-        console.log('🔄 Transcribing...');
-        const userMsgRaw = await smartTranscription(fileObject);
-        console.log(`📝 Raw transcription: ${userMsgRaw}`);
-        
-        const userMsg = cleanTranscript(userMsgRaw || '');
+        const fullAudio = Buffer.concat(audioBuffer);
+        audioBuffer = [];
 
-        if (!userMsg) {
-            console.log('⚠️ No valid transcription');
-            safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
+        console.log(`📊 Audio size: ${fullAudio.length} bytes`);
+
+        if (fullAudio.length < 12000) {
+            console.log('⚠️ Audio too short, skipping');
             isProcessing = false;
             return;
         }
         
-        console.log(`📝 User: ${userMsg}`);
-        safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
-        await saveConversation(deviceId, 'user', userMsg);
-
-        const previousHistory = await getConversationHistory(deviceId, 5);
-        const messages = [
-            { role: 'system', content: `तुम "SuperSahchar" हो। दोस्त जैसा बर्ताव करो। जवाब छोटा और हिंदी में।` },
-            ...previousHistory,
-            { role: 'user', content: userMsg }
-        ];
-
-        console.log('🔄 Getting AI response...');
-        const chatResult = await smartChat(messages);
-        const botReply = chatResult ? chatResult.reply : "अरे यार, सब busy है। 😊";
-        console.log(`🤖 Bot: ${botReply}`);
+        const rms = calculateRMS(fullAudio);
+        console.log(`📊 RMS: ${rms}`);
         
-        safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
-        await saveConversation(deviceId, 'assistant', botReply);
-
-        isBotSpeaking = true;
-        safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
-
-        console.log('🔄 Generating TTS...');
-        const audioPcm = await smartTTS(botReply);
-        
-        if (!audioPcm) {
-            console.log('⚠️ TTS failed, skipping audio');
-            safeSend(JSON.stringify({ type: 'audio_done' }));
-            isBotSpeaking = false;
+        // Lower threshold for better detection
+        if (rms < 0.025) {
+            console.log('⚠️ Audio too quiet, skipping');
             isProcessing = false;
             return;
         }
 
-        console.log(`📢 Sending audio (${audioPcm.length} bytes)`);
-        const CHUNK_SIZE = 640;
-        for (let i = 0; i < audioPcm.length; i += CHUNK_SIZE) {
-            if (isClosing || ws.readyState !== 1) break;
-            const chunk = audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length));
-            safeSend(chunk, true);
-            await new Promise(r => setTimeout(r, 10));
-        }
+        safeSend(JSON.stringify({ type: 'status', text: 'सुन रहा हूँ... 🎤' }));
 
-        safeSend(JSON.stringify({ type: 'audio_done' }));
-        isBotSpeaking = false;
-        safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
+        try {
+            const wavBuffer = pcmToWav(fullAudio);
+            const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+            const fileObject = await OpenAI.toFile(audioBlob, 'speech.wav');
+            
+            console.log('🔄 Transcribing...');
+            const userMsgRaw = await smartTranscription(fileObject);
+            console.log(`📝 Raw: ${userMsgRaw}`);
+            
+            const userMsg = cleanTranscript(userMsgRaw || '');
 
-    } catch (err) {
-        console.error(`❌ Error: ${err.message}`);
-        console.error(`📊 Stack: ${err.stack}`);
-        safeSend(JSON.stringify({ type: 'status', text: 'Error occurred' }));
-    } finally {
-        isProcessing = false;
-    }
-};            
+            if (!userMsg) {
+                console.log('⚠️ No valid transcription');
+                safeSend(JSON.stringify({ type: 'status', text: 'बोलिए... 🎤' }));
+                isProcessing = false;
+                return;
+            }
+            
             console.log(`📝 User: ${userMsg}`);
             safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
             await saveConversation(deviceId, 'user', userMsg);
@@ -518,7 +446,7 @@ const processAudio = async () => {
             const audioPcm = await smartTTS(botReply);
             
             if (!audioPcm) {
-                console.log('⚠️ TTS failed, skipping audio');
+                console.log('⚠️ TTS failed');
                 safeSend(JSON.stringify({ type: 'audio_done' }));
                 isBotSpeaking = false;
                 isProcessing = false;
@@ -540,6 +468,7 @@ const processAudio = async () => {
 
         } catch (err) {
             console.error(`❌ Error: ${err.message}`);
+            console.error(`📊 Stack: ${err.stack}`);
             safeSend(JSON.stringify({ type: 'status', text: 'Error occurred' }));
         } finally {
             isProcessing = false;
@@ -547,8 +476,6 @@ const processAudio = async () => {
     };
 
     ws.on('message', (data, isBinary) => {
-        lastActivity = Date.now();
-        
         if (!isBinary) {
             try {
                 const json = JSON.parse(data.toString());
@@ -559,11 +486,13 @@ const processAudio = async () => {
                     audioBuffer = [];
                 }
             } catch (e) {
-                console.log('⚠️ Non-JSON message received');
+                // Ignore non-JSON messages
             }
             return;
         }
         
+        // ✅ Log incoming audio chunks
+        console.log(`📊 Audio chunk received: ${data.length} bytes`);
         audioBuffer.push(Buffer.from(data));
         
         if (processTimer) clearTimeout(processTimer);
@@ -571,7 +500,7 @@ const processAudio = async () => {
             if (audioBuffer.length > 0 && !isProcessing && !isClosing) {
                 processAudio();
             }
-        }, 500);
+        }, 300); // Reduced from 500ms for faster response
     });
 
     ws.on('close', () => {
@@ -585,7 +514,6 @@ const processAudio = async () => {
         isClosing = true;
     });
     
-    // Send initial status
     safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
 });
 
