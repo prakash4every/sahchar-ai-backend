@@ -167,7 +167,7 @@ async function smartTranscription(fileObject) {
     return null;
 }
 
-// ✅ FIXED: SMART TTS (SINGLE VERSION - REMOVED DUPLICATE)
+// ✅ SMART TTS
 async function smartTTS(text) {
     console.log(`🔄 Generating TTS for: "${text.substring(0, 50)}..."`);
     
@@ -201,13 +201,11 @@ async function smartTTS(text) {
             
             const pcmData = Buffer.from(response.data);
             
-            // ✅ Validate
             if (pcmData.length < 1000) {
                 console.warn('⚠️ TTS response too small:', pcmData.length);
                 return null;
             }
             
-            // Check for valid audio
             let hasAudio = false;
             for (let i = 0; i < Math.min(pcmData.length, 200); i += 2) {
                 const sample = pcmData.readInt16LE(i);
@@ -437,7 +435,7 @@ wss.on('connection', (ws, req) => {
         return false;
     };
 
-    // ✅ Process Audio Function
+    // ✅ FIXED: Process Audio Function with TTS Debug
     const processAudio = async () => {
         if (isProcessing || audioBuffer.length === 0 || isClosing) return;
         isProcessing = true;
@@ -506,17 +504,89 @@ wss.on('connection', (ws, req) => {
             safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
 
             console.log('🔄 Generating TTS...');
-            const audioPcm = await smartTTS(botReply);
             
+            // ✅ FIX: Check if API keys are available
+            const hasElevenLabs = !!process.env.ELEVENLABS_API_KEY;
+            const hasOpenAI = !!process.env.OPENAI_API_KEY;
+            console.log(`🔑 ElevenLabs: ${hasElevenLabs ? '✅' : '❌'}, OpenAI: ${hasOpenAI ? '✅' : '❌'}`);
+            
+            let audioPcm = null;
+            
+            // ✅ Try ElevenLabs first
+            if (hasElevenLabs) {
+                try {
+                    console.log('🔄 Trying ElevenLabs TTS...');
+                    audioPcm = await smartTTS(botReply);
+                    if (audioPcm) {
+                        console.log(`✅ ElevenLabs success: ${audioPcm.length} bytes`);
+                    }
+                } catch (e) {
+                    console.error('❌ ElevenLabs error:', e.message);
+                }
+            }
+            
+            // ✅ Fallback to OpenAI TTS
+            if (!audioPcm && hasOpenAI) {
+                try {
+                    console.log('🔄 Trying OpenAI TTS fallback...');
+                    const response = await axios.post(
+                        'https://api.openai.com/v1/audio/speech',
+                        {
+                            model: 'tts-1',
+                            input: botReply,
+                            voice: 'nova',
+                            response_format: 'pcm'
+                        },
+                        {
+                            headers: {
+                                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+                                'Content-Type': 'application/json'
+                            },
+                            responseType: 'arraybuffer',
+                            timeout: 30000
+                        }
+                    );
+                    audioPcm = Buffer.from(response.data);
+                    console.log(`✅ OpenAI TTS success: ${audioPcm.length} bytes`);
+                } catch (e) {
+                    console.error('❌ OpenAI TTS error:', e.message);
+                }
+            }
+            
+            // ✅ If still no audio, generate a simple beep
             if (!audioPcm) {
-                console.log('⚠️ TTS failed');
+                console.log('⚠️ No TTS available, sending simple beep');
+                const sampleRate = 16000;
+                const duration = 1.0;
+                const numSamples = Math.floor(sampleRate * duration);
+                const beepBuffer = Buffer.alloc(numSamples * 2);
+                for (let i = 0; i < numSamples; i++) {
+                    const sample = Math.sin(2 * Math.PI * 440 * i / sampleRate) * 8000;
+                    beepBuffer.writeInt16LE(sample, i * 2);
+                }
+                audioPcm = beepBuffer;
+                console.log(`✅ Generated beep: ${audioPcm.length} bytes`);
+            }
+
+            // ✅ Validate PCM
+            if (!audioPcm || audioPcm.length < 100) {
+                console.log('⚠️ Invalid audio PCM, skipping');
                 safeSend(JSON.stringify({ type: 'audio_done' }));
                 isBotSpeaking = false;
                 isProcessing = false;
                 return;
             }
 
-            // ✅ Send audio in chunks of 640 bytes
+            // ✅ Ensure even byte count
+            if (audioPcm.length % 2 !== 0) {
+                console.log('⚠️ PCM length odd, truncating');
+                audioPcm = audioPcm.slice(0, audioPcm.length - 1);
+            }
+
+            // ✅ Log first few bytes for debugging
+            const hexFirst16 = audioPcm.slice(0, Math.min(16, audioPcm.length)).toString('hex');
+            console.log(`🔊 PCM first 16 bytes: ${hexFirst16}`);
+
             console.log(`📢 Sending audio (${audioPcm.length} bytes)`);
             const CHUNK_SIZE = 640;
             let sentBytes = 0;
@@ -524,8 +594,10 @@ wss.on('connection', (ws, req) => {
             for (let i = 0; i < audioPcm.length; i += CHUNK_SIZE) {
                 if (isClosing || ws.readyState !== 1) break;
                 const chunk = audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length));
-                safeSend(chunk, true);
-                sentBytes += chunk.length;
+                if (chunk.length > 0) {
+                    safeSend(chunk, true);
+                    sentBytes += chunk.length;
+                }
                 await new Promise(r => setTimeout(r, 5));
             }
             
