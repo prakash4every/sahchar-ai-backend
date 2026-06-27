@@ -9,7 +9,6 @@ import { Blob } from 'buffer';
 import axios from 'axios';
 import FormData from 'form-data';
 
-// Load environment variables
 dotenv.config();
 
 const app = express();
@@ -32,7 +31,6 @@ let db = null;
 let conversationsCollection = null;
 let mongoClient = null;
 
-// ✅ PROVIDER CONFIGURATION
 const providers = {
   groq: {
     name: 'Groq',
@@ -52,48 +50,28 @@ const providers = {
   }
 };
 
-// ✅ SMART CHAT
 async function smartChat(messages) {
     const orderedProviders = ['groq', 'openai'];
-
     for (const providerName of orderedProviders) {
         const provider = providers[providerName];
-        if (!provider || !provider.key || !provider.chat) {
-            console.log(`⚠️ ${providerName} not available`);
-            continue;
-        }
-
+        if (!provider || !provider.key || !provider.chat) continue;
         try {
             console.log(`🔄 Trying ${providerName}...`);
             const response = await axios.post(
                 provider.url,
-                {
-                    model: provider.model,
-                    messages: messages,
-                    max_tokens: 60,
-                    temperature: 0.4
-                },
-                {
-                    headers: {
-                        'Authorization': `Bearer ${provider.key}`,
-                        'Content-Type': 'application/json'
-                    },
-                    timeout: 15000
-                }
+                { model: provider.model, messages, max_tokens: 60, temperature: 0.4 },
+                { headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' }, timeout: 15000 }
             );
             const reply = response.data.choices?.[0]?.message?.content;
             if (reply) {
                 console.log(`✅ ${providerName} success!`);
                 return { reply: reply.trim(), provider: provider.name };
             }
-        } catch (error) {
-            console.error(`❌ ${providerName} failed:`, error.message);
-        }
+        } catch (error) { console.error(`❌ ${providerName} failed:`, error.message); }
     }
     return null;
 }
 
-// ✅ SMART TRANSCRIPTION
 async function smartTranscription(fileObject) {
     const groqKey = process.env.GROQ_API_KEY;
     if (groqKey) {
@@ -101,254 +79,125 @@ async function smartTranscription(fileObject) {
             console.log('🔄 Transcribing with Groq Whisper...');
             const audioBuffer = await fileObject.arrayBuffer();
             const buffer = Buffer.from(audioBuffer);
-
             const formData = new FormData();
-            formData.append('file', buffer, { 
-                filename: 'speech.wav', 
-                contentType: 'audio/wav' 
-            });
+            formData.append('file', buffer, { filename: 'speech.wav', contentType: 'audio/wav' });
             formData.append('model', 'whisper-large-v3-turbo');
             formData.append('language', 'hi');
             formData.append('response_format', 'json');
-
             const response = await axios.post(
                 'https://api.groq.com/openai/v1/audio/transcriptions',
                 formData,
-                {
-                    headers: { 
-                        'Authorization': `Bearer ${groqKey}`, 
-                        ...formData.getHeaders() 
-                    },
-                    timeout: 30000
-                }
+                { headers: { 'Authorization': `Bearer ${groqKey}`, ...formData.getHeaders() }, timeout: 30000 }
             );
             const text = response.data.text;
             console.log(`✅ Groq Transcription: ${text}`);
             return text;
-        } catch (error) {
-            console.error('❌ Groq Whisper failed:', error.message);
-        }
+        } catch (error) { console.error('❌ Groq Whisper failed:', error.message); }
     }
-
     const openaiKey = process.env.OPENAI_API_KEY;
     if (openaiKey) {
         try {
             console.log('🔄 Transcribing with OpenAI Whisper...');
             const audioBuffer = await fileObject.arrayBuffer();
             const buffer = Buffer.from(audioBuffer);
-            
             const formData = new FormData();
-            formData.append('file', buffer, { 
-                filename: 'speech.wav', 
-                contentType: 'audio/wav' 
-            });
+            formData.append('file', buffer, { filename: 'speech.wav', contentType: 'audio/wav' });
             formData.append('model', 'whisper-1');
             formData.append('language', 'hi');
-
             const response = await axios.post(
                 'https://api.openai.com/v1/audio/transcriptions',
                 formData,
-                {
-                    headers: { 
-                        'Authorization': `Bearer ${openaiKey}`, 
-                        ...formData.getHeaders() 
-                    },
-                    timeout: 30000
-                }
+                { headers: { 'Authorization': `Bearer ${openaiKey}`, ...formData.getHeaders() }, timeout: 30000 }
             );
             const text = response.data.text;
             console.log(`✅ OpenAI Transcription: ${text}`);
             return text;
-        } catch (error) {
-            console.error('❌ OpenAI Whisper failed:', error.message);
-        }
+        } catch (error) { console.error('❌ OpenAI Whisper failed:', error.message); }
     }
-
     return null;
 }
 
-// ✅ SMART TTS
 async function smartTTS(text) {
     console.log(`🔄 Generating TTS for: "${text.substring(0, 50)}..."`);
-    
-    // Try ElevenLabs
     const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
     if (elevenLabsKey) {
         try {
             const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
-            
             const response = await axios.post(
                 `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-                {
-                    text: text,
-                    model_id: 'eleven_multilingual_v2',
-                    voice_settings: { 
-                        stability: 0.3,
-                        similarity_boost: 0.5,
-                        speed: 1.0
-                    },
-                    output_format: 'pcm_16000'
-                },
-                {
-                    headers: {
-                        'xi-api-key': elevenLabsKey,
-                        'Content-Type': 'application/json'
-                    },
-                    responseType: 'arraybuffer',
-                    timeout: 30000
-                }
+                { text, model_id: 'eleven_multilingual_v2', voice_settings: { stability: 0.3, similarity_boost: 0.5, speed: 1.0 }, output_format: 'pcm_16000' },
+                { headers: { 'xi-api-key': elevenLabsKey, 'Content-Type': 'application/json' }, responseType: 'arraybuffer', timeout: 30000 }
             );
-            
             const pcmData = Buffer.from(response.data);
-            
-            if (pcmData.length < 1000) {
-                console.warn('⚠️ TTS response too small:', pcmData.length);
-                return null;
-            }
-            
+            if (pcmData.length < 1000) { console.warn('⚠️ TTS too small:', pcmData.length); return null; }
             let hasAudio = false;
             for (let i = 0; i < Math.min(pcmData.length, 200); i += 2) {
-                const sample = pcmData.readInt16LE(i);
-                if (Math.abs(sample) > 10) {
-                    hasAudio = true;
-                    break;
-                }
+                if (Math.abs(pcmData.readInt16LE(i)) > 10) { hasAudio = true; break; }
             }
-            
-            if (!hasAudio) {
-                console.warn('⚠️ TTS audio is silent (all zeros)');
-                return null;
-            }
-            
-            const hexFirst16 = pcmData.slice(0, 16).toString('hex');
-            console.log(`🔊 PCM first 16 bytes: ${hexFirst16}`);
-            
+            if (!hasAudio) { console.warn('⚠️ TTS silent'); return null; }
             console.log(`✅ ElevenLabs TTS: ${pcmData.length} bytes`);
             return pcmData;
-            
-        } catch (error) {
-            console.error('❌ ElevenLabs error:', error.message);
-            if (error.response) {
-                console.error('📊 Status:', error.response.status);
-            }
-        }
+        } catch (error) { console.error('❌ ElevenLabs error:', error.message); }
     }
-    
-    // ✅ Fallback: OpenAI TTS
     const openaiKey = process.env.OPENAI_API_KEY;
     if (openaiKey) {
         try {
             console.log('🔄 Trying OpenAI TTS...');
             const response = await axios.post(
                 'https://api.openai.com/v1/audio/speech',
-                {
-                    model: 'tts-1',
-                    input: text,
-                    voice: 'nova',
-                    response_format: 'pcm'
-                },
-                {
-                    headers: {
-                        'Authorization': `Bearer ${openaiKey}`,
-                        'Content-Type': 'application/json'
-                    },
-                    responseType: 'arraybuffer',
-                    timeout: 30000
-                }
+                { model: 'tts-1', input: text, voice: 'nova', response_format: 'pcm' },
+                { headers: { 'Authorization': `Bearer ${openaiKey}`, 'Content-Type': 'application/json' }, responseType: 'arraybuffer', timeout: 30000 }
             );
-            
             const pcmData = Buffer.from(response.data);
             console.log(`✅ OpenAI TTS: ${pcmData.length} bytes`);
             return pcmData;
-            
-        } catch (error) {
-            console.error('❌ OpenAI TTS error:', error.message);
-        }
+        } catch (error) { console.error('❌ OpenAI TTS error:', error.message); }
     }
-    
-    console.error('❌ No TTS provider available');
     return null;
 }
 
-// ✅ MongoDB Connection
 async function connectMongoDB() {
-    if (!MONGODB_URI) {
-        console.log('⚠️ No MongoDB URI found');
-        return;
-    }
-    
+    if (!MONGODB_URI) { console.log('⚠️ No MongoDB URI found'); return; }
     try {
         console.log('🔄 Connecting to MongoDB...');
-        mongoClient = new MongoClient(MONGODB_URI, { 
-            connectTimeoutMS: 5000, 
-            socketTimeoutMS: 45000,
-            serverSelectionTimeoutMS: 5000
-        });
+        mongoClient = new MongoClient(MONGODB_URI, { connectTimeoutMS: 5000, socketTimeoutMS: 45000, serverSelectionTimeoutMS: 5000 });
         await mongoClient.connect();
         db = mongoClient.db(DB_NAME);
         conversationsCollection = db.collection(COLLECTION_NAME);
         console.log('✅ MongoDB connected successfully!');
-    } catch (error) {
-        console.error('❌ MongoDB connection error:', error.message);
-    }
+    } catch (error) { console.error('❌ MongoDB connection error:', error.message); }
 }
 
 async function getConversationHistory(deviceId, limit = 5) {
     if (!conversationsCollection || !deviceId) return [];
     try {
-        const history = await conversationsCollection
-            .find({ deviceId: deviceId.trim() })
-            .sort({ timestamp: -1 })
-            .limit(limit)
-            .toArray();
-        return history.reverse().map(msg => ({ 
-            role: msg.role, 
-            content: msg.content 
-        }));
-    } catch (error) {
-        return [];
-    }
+        const history = await conversationsCollection.find({ deviceId: deviceId.trim() }).sort({ timestamp: -1 }).limit(limit).toArray();
+        return history.reverse().map(msg => ({ role: msg.role, content: msg.content }));
+    } catch (error) { return []; }
 }
 
 async function saveConversation(deviceId, role, content) {
     if (!conversationsCollection || !deviceId) return;
-    try {
-        await conversationsCollection.insertOne({ 
-            deviceId: deviceId.trim(), 
-            role, 
-            content, 
-            timestamp: new Date() 
-        });
-    } catch (error) {}
+    try { await conversationsCollection.insertOne({ deviceId: deviceId.trim(), role, content, timestamp: new Date() }); } catch (error) {}
 }
 
-// ✅ Transcript Cleaner
 function cleanTranscript(rawText) {
     if (!rawText) return "";
     let text = rawText.trim();
     if (!text) return "";
-    
     const lowerText = text.toLowerCase();
-
-    if (lowerText.includes("hvað") || 
-        lowerText.includes("þau") || 
-        lowerText.includes("árrvík") || 
-        lowerText.includes("kannski")) {
+    if (lowerText.includes("hvað") || lowerText.includes("þau") || lowerText.includes("árrvík") || lowerText.includes("kannski")) {
         console.log("⚠️ Icelandic filtered");
         return "";
     }
-
     const leaks = ["आम बोलचाल", "दोस्त की बातचीत", "प्रस्तु", "परवारण", "धन्यवाद", "सब्सक्राइब"];
     if (leaks.some(leak => lowerText.includes(leak))) return "";
-
     const words = text.split(/\s+/);
     if (words.length >= 3 && new Set(words).size === 1) return "";
     if (text.replace(/[।,.!?]/g, '').trim().length < 3) return "";
-
     return text;
 }
 
-// Start server
 await connectMongoDB();
 
 const server = app.listen(PORT, () => {
@@ -363,24 +212,12 @@ const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (request, socket, head) => {
     if (socket.destroyed) return;
     wss.handleUpgrade(request, socket, head, (ws) => {
-        if (ws.readyState === ws.OPEN) {
-            wss.emit('connection', ws, request);
-        } else {
-            ws.terminate();
-        }
+        if (ws.readyState === ws.OPEN) { wss.emit('connection', ws, request); } else { ws.terminate(); }
     });
 });
 
 app.get('/', (req, res) => res.send('Sahchar Live Ready'));
-app.get('/health', (req, res) => res.json({ 
-    status: 'ok', 
-    mongodb: !!conversationsCollection,
-    providers: {
-        groq: !!process.env.GROQ_API_KEY,
-        openai: !!process.env.OPENAI_API_KEY,
-        elevenlabs: !!process.env.ELEVENLABS_API_KEY
-    }
-}));
+app.get('/health', (req, res) => res.json({ status: 'ok', mongodb: !!conversationsCollection, providers: { groq: !!process.env.GROQ_API_KEY, openai: !!process.env.OPENAI_API_KEY, elevenlabs: !!process.env.ELEVENLABS_API_KEY } }));
 
 function calculateRMS(pcmBuffer) {
     let sum = 0;
@@ -425,17 +262,12 @@ wss.on('connection', (ws, req) => {
 
     const safeSend = (data, isBinary = false) => {
         if (ws.readyState === 1 && !isClosing) {
-            try {
-                ws.send(data, { binary: isBinary });
-                return true;
-            } catch (e) {
-                return false;
-            }
+            try { ws.send(data, { binary: isBinary }); return true; } catch (e) { return false; }
         }
         return false;
     };
 
-    // ✅ FIXED: Process Audio Function with TTS Debug
+    // ✅ FIXED: Lower threshold from 0.025 to 0.010
     const processAudio = async () => {
         if (isProcessing || audioBuffer.length === 0 || isClosing) return;
         isProcessing = true;
@@ -455,7 +287,8 @@ wss.on('connection', (ws, req) => {
         const rms = calculateRMS(fullAudio);
         console.log(`📊 RMS: ${rms}`);
         
-        if (rms < 0.025) {
+        // ✅ FIX: Lowered threshold for better detection
+        if (rms < 0.010) {
             console.log('⚠️ Audio too quiet, skipping');
             isProcessing = false;
             return;
@@ -505,14 +338,12 @@ wss.on('connection', (ws, req) => {
 
             console.log('🔄 Generating TTS...');
             
-            // ✅ FIX: Check if API keys are available
             const hasElevenLabs = !!process.env.ELEVENLABS_API_KEY;
             const hasOpenAI = !!process.env.OPENAI_API_KEY;
             console.log(`🔑 ElevenLabs: ${hasElevenLabs ? '✅' : '❌'}, OpenAI: ${hasOpenAI ? '✅' : '❌'}`);
             
             let audioPcm = null;
             
-            // ✅ Try ElevenLabs first
             if (hasElevenLabs) {
                 try {
                     console.log('🔄 Trying ElevenLabs TTS...');
@@ -525,26 +356,13 @@ wss.on('connection', (ws, req) => {
                 }
             }
             
-            // ✅ Fallback to OpenAI TTS
             if (!audioPcm && hasOpenAI) {
                 try {
                     console.log('🔄 Trying OpenAI TTS fallback...');
                     const response = await axios.post(
                         'https://api.openai.com/v1/audio/speech',
-                        {
-                            model: 'tts-1',
-                            input: botReply,
-                            voice: 'nova',
-                            response_format: 'pcm'
-                        },
-                        {
-                            headers: {
-                                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-                                'Content-Type': 'application/json'
-                            },
-                            responseType: 'arraybuffer',
-                            timeout: 30000
-                        }
+                        { model: 'tts-1', input: botReply, voice: 'nova', response_format: 'pcm' },
+                        { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' }, responseType: 'arraybuffer', timeout: 30000 }
                     );
                     audioPcm = Buffer.from(response.data);
                     console.log(`✅ OpenAI TTS success: ${audioPcm.length} bytes`);
@@ -553,9 +371,8 @@ wss.on('connection', (ws, req) => {
                 }
             }
             
-            // ✅ If still no audio, generate a simple beep
             if (!audioPcm) {
-                console.log('⚠️ No TTS available, sending simple beep');
+                console.log('⚠️ No TTS available, generating beep');
                 const sampleRate = 16000;
                 const duration = 1.0;
                 const numSamples = Math.floor(sampleRate * duration);
@@ -568,7 +385,6 @@ wss.on('connection', (ws, req) => {
                 console.log(`✅ Generated beep: ${audioPcm.length} bytes`);
             }
 
-            // ✅ Validate PCM
             if (!audioPcm || audioPcm.length < 100) {
                 console.log('⚠️ Invalid audio PCM, skipping');
                 safeSend(JSON.stringify({ type: 'audio_done' }));
@@ -577,13 +393,11 @@ wss.on('connection', (ws, req) => {
                 return;
             }
 
-            // ✅ Ensure even byte count
             if (audioPcm.length % 2 !== 0) {
                 console.log('⚠️ PCM length odd, truncating');
                 audioPcm = audioPcm.slice(0, audioPcm.length - 1);
             }
 
-            // ✅ Log first few bytes for debugging
             const hexFirst16 = audioPcm.slice(0, Math.min(16, audioPcm.length)).toString('hex');
             console.log(`🔊 PCM first 16 bytes: ${hexFirst16}`);
 
@@ -626,9 +440,7 @@ wss.on('connection', (ws, req) => {
                     isBotSpeaking = false;
                     audioBuffer = [];
                 }
-            } catch (e) {
-                // Ignore
-            }
+            } catch (e) {}
             return;
         }
         
