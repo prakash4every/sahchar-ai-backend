@@ -63,7 +63,7 @@ async function smartChat(messages) {
             console.log(`🔄 Trying ${providerName}...`);
             const response = await axios.post(
                 provider.url,
-                { model: provider.model, messages, max_tokens: 100, temperature: 0.5 },
+                { model: provider.model, messages, max_tokens: 300, temperature: 0.5 },
                 { headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' }, timeout: 15000 }
             );
             const reply = response.data.choices?.[0]?.message?.content;
