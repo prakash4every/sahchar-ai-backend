@@ -51,27 +51,124 @@ const providers = {
     model: 'gpt-4o-mini',
     chat: true,
     whisper: true
+  },
+  serpapi: {
+    key: process.env.SERPAPI_API_KEY
   }
 };
 
+async function smartSearch(query) {
+    if (!providers.serpapi.key) return null;
+    try {
+        console.log(`🔍 Searching web for: "${query}"...`);
+        const response = await axios.get('https://serpapi.com/search', {
+            params: {
+                api_key: providers.serpapi.key,
+                engine: 'google',
+                q: query,
+                google_domain: 'google.co.in',
+                gl: 'in',
+                hl: 'hi'
+            },
+            timeout: 10000
+        });
+
+        const results = response.data.organic_results?.slice(0, 3).map(r => `${r.title}: ${r.snippet}`).join('\n');
+        const answerBox = response.data.answer_box?.answer || response.data.answer_box?.snippet;
+        const knowledgeGraph = response.data.knowledge_graph?.description;
+
+        const finalContext = [answerBox, knowledgeGraph, results].filter(Boolean).join('\n\n');
+        console.log(`✅ Search successful! (Results length: ${finalContext.length})`);
+        return finalContext || "No clear results found.";
+    } catch (error) {
+        console.error('❌ SerpApi search failed:', error.message);
+        return null;
+    }
+}
+
 async function smartChat(messages) {
     const orderedProviders = ['groq', 'openai'];
+
+    // Define tools for the model
+    const tools = [
+        {
+            type: "function",
+            function: {
+                name: "search_web",
+                description: "Search Google for current events, facts, or real-time information that you don't know.",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        query: { type: "string", description: "The search query" }
+                    },
+                    required: ["query"]
+                }
+            }
+        }
+    ];
+
     for (const providerName of orderedProviders) {
         const provider = providers[providerName];
         if (!provider || !provider.key || !provider.chat) continue;
         try {
             console.log(`🔄 Trying ${providerName}...`);
-            const response = await axios.post(
+
+            // First attempt to see if tool call is needed
+            let response = await axios.post(
                 provider.url,
-                { model: provider.model, messages, max_tokens: 300, temperature: 0.5 },
+                {
+                    model: provider.model,
+                    messages,
+                    tools: tools,
+                    tool_choice: "auto",
+                    max_tokens: 300,
+                    temperature: 0.5
+                },
                 { headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' }, timeout: 15000 }
             );
-            const reply = response.data.choices?.[0]?.message?.content;
+
+            let message = response.data.choices?.[0]?.message;
+
+            // Handle Tool Calls (Search)
+            if (message?.tool_calls) {
+                const toolCall = message.tool_calls[0];
+                if (toolCall.function.name === "search_web") {
+                    const query = JSON.parse(toolCall.function.arguments).query;
+                    const searchResult = await smartSearch(query);
+
+                    if (searchResult) {
+                        // Add tool result to history and call again
+                        const newMessages = [
+                            ...messages,
+                            message,
+                            {
+                                role: "tool",
+                                tool_call_id: toolCall.id,
+                                name: "search_web",
+                                content: searchResult
+                            }
+                        ];
+
+                        console.log(`🔄 Getting final response from ${providerName} with search data...`);
+                        response = await axios.post(
+                            provider.url,
+                            { model: provider.model, messages: newMessages, max_tokens: 300, temperature: 0.5 },
+                            { headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+                        );
+                        message = response.data.choices?.[0]?.message;
+                    }
+                }
+            }
+
+            const reply = message?.content;
             if (reply) {
                 console.log(`✅ ${providerName} success!`);
                 return { reply: reply.trim(), provider: provider.name };
             }
-        } catch (error) { console.error(`❌ ${providerName} failed:`, error.message); }
+        } catch (error) {
+            console.error(`❌ ${providerName} failed:`, error.message);
+            if (error.response?.data) console.error(JSON.stringify(error.response.data));
+        }
     }
     return null;
 }
@@ -87,6 +184,7 @@ async function smartTranscription(fileObject) {
             formData.append('file', buffer, { filename: 'speech.wav', contentType: 'audio/wav' });
             formData.append('model', 'whisper-large-v3-turbo');
             formData.append('language', 'hi');
+            formData.append('prompt', 'SahcharAI, नमस्ते, आप कैसे हैं? बातचीत हिंदी में है।'); // Help Whisper stay in context
             formData.append('response_format', 'json');
             const response = await axios.post(
                 'https://api.groq.com/openai/v1/audio/transcriptions',
@@ -203,11 +301,14 @@ function cleanTranscript(rawText) {
         console.log("⚠️ Icelandic filtered");
         return "";
     }
-    const leaks = ["आम बोलचाल", "दोस्त की बातचीत", "प्रस्तु", "परवारण", "धन्यवाद", "सब्सक्राइब"];
-    if (leaks.some(leak => lowerText.includes(leak))) return "";
+    const leaks = ["आम बोलचाल", "दोस्त की बातचीत", "प्रस्तु", "परवारण", "धन्यवाद", "सब्सक्राइब", "झाल झाल", "झाल", "वेतवार", "पुल्प्लेज", "चुटरा"];
+    if (leaks.some(leak => lowerText.includes(leak))) {
+        console.log(`⚠️ Noise/Filler filtered: "${text}"`);
+        return "";
+    }
     const words = text.split(/\s+/);
     if (words.length >= 3 && new Set(words).size === 1) return "";
-    if (text.replace(/[।,.!?]/g, '').trim().length < 3) return "";
+    if (text.replace(/[।,.!?]/g, '').trim().length < 1) return "";
     return text;
 }
 
@@ -273,8 +374,8 @@ wss.on('connection', (ws, req) => {
     let isBotSpeaking = false;
     let isClosing = false;
     let silenceChunks = 0;
-    const SILENCE_THRESHOLD = 0.003; // Adjust sensitivity
-    const REQUIRED_SILENCE_CHUNKS = 25; // ~1 second of silence at 16khz/640-byte chunks
+    const SILENCE_THRESHOLD = 0.008; // More sensitive to actual speech
+    const REQUIRED_SILENCE_CHUNKS = 45; // ~0.9 seconds of silence to ensure user finished
 
     const safeSend = (data, isBinary = false) => {
         if (ws.readyState === 1 && !isClosing) {
@@ -300,7 +401,9 @@ wss.on('connection', (ws, req) => {
         console.log(`🔄 Processing audio batch (${chunksToProcess.length} chunks)`);
         const fullAudio = Buffer.concat(chunksToProcess);
 
-        if (fullAudio.length < 8000) {
+        // Require at least 0.6 seconds of audio to process
+        if (fullAudio.length < 19200) {
+            console.log('⚠️ Batch too short, ignoring');
             isProcessing = false;
             return;
         }
@@ -334,7 +437,7 @@ wss.on('connection', (ws, req) => {
 
             const previousHistory = await getConversationHistory(deviceId, 5);
             const messages = [
-                { role: 'system', content: `तुम "SuperSahchar" हो। एक दोस्ताना हिंदी सहायक। छोटे और प्यारे जवाब दो। बातचीत ऐसी करो जैसे दो दोस्त बात कर रहे हों।` },
+                { role: 'system', content: `तुम "SuperSahchar" हो। एक दोस्ताना हिंदी सहायक। छोटे और प्यारे जवाब दो। बातचीत ऐसी करो जैसे दो दोस्त बात कर रहे हों। अगर तुम्हें कोई ताजा जानकारी (जैसे वर्तमान नेता, खबरें, या तथ्य) नहीं पता, तो 'search_web' टूल का इस्तेमाल करो। जवाब हमेशा शुद्ध और सरल हिंदी में दो।` },
                 ...previousHistory,
                 { role: 'user', content: userMsg }
             ];
@@ -404,14 +507,28 @@ wss.on('connection', (ws, req) => {
             return;
         }
 
-        // 🔇 IGNORE audio while bot is speaking to prevent hallucination loop
-        if (isBotSpeaking || isProcessing) return;
+        // ✅ AUTO-INTERRUPT: If audio comes in with high volume, stop the bot
+        const chunk = Buffer.from(data);
+        const chunkRms = calculateRMS(chunk);
+
+        if (isBotSpeaking && chunkRms > 0.035) {
+            console.log("⚡ User interrupted bot (detected by RMS)!");
+            isBotSpeaking = false;
+            audioBuffer = [];
+            silenceChunks = 0;
+            safeSend(JSON.stringify({ type: 'status', text: 'जी, सुन रहा हूँ... 🎤' }));
+        }
+
+        // 🔇 IGNORE audio while bot is speaking (after checking interrupt) or already processing
+        if (isBotSpeaking || isProcessing) {
+            audioBuffer = []; // 🧹 Keep buffer empty while bot speaks to prevent loops
+            silenceChunks = 0;
+            return;
+        }
 
         // ✅ Monitor audio stream in real-time
-        const chunk = Buffer.from(data);
         audioBuffer.push(chunk);
 
-        const chunkRms = calculateRMS(chunk);
         if (chunkRms < SILENCE_THRESHOLD) {
             silenceChunks++;
         } else {
@@ -420,10 +537,11 @@ wss.on('connection', (ws, req) => {
 
         // ✅ Trigger processing if:
         // 1. We have enough audio AND
-        // 2. We've seen ~1s of silence OR
-        // 3. Buffer is too long (> 15s)
-        if (audioBuffer.length > 25) {
-            if (silenceChunks >= REQUIRED_SILENCE_CHUNKS || audioBuffer.length > 375) {
+        // 2. We've seen significant silence OR
+        // 3. Buffer is getting too long (safety limit - 20 seconds)
+        if (audioBuffer.length > 15) {
+            if (silenceChunks >= REQUIRED_SILENCE_CHUNKS || audioBuffer.length > 1000) {
+                console.log(`🎯 Triggering processing: silence=${silenceChunks}, buffer=${audioBuffer.length}`);
                 processAudio();
             }
         }
@@ -447,3 +565,6 @@ process.on('SIGTERM', async () => {
     if (mongoClient) await mongoClient.close();
     process.exit(0);
 });
+
+
+
