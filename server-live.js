@@ -40,7 +40,7 @@ const providers = {
     name: 'Groq',
     key: process.env.GROQ_API_KEY,
     url: 'https://api.groq.com/openai/v1/chat/completions',
-    model: 'llama-3.3-70b-versatile',
+    model: 'llama-3.1-8b-instant', // Fast and higher rate limits
     chat: true,
     whisper: true
   },
@@ -114,17 +114,23 @@ async function smartChat(messages) {
             console.log(`🔄 Trying ${providerName}...`);
 
             // First attempt to see if tool call is needed
+            // NOTE: Groq can be sensitive. We ensure tool_choice is explicitly 'auto'.
+            const requestBody = {
+                model: provider.model,
+                messages: [
+                    ...messages,
+                    { role: 'system', content: `The current date and time is: ${new Date().toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata' })}.` }
+                ],
+                tools: tools,
+                tool_choice: "auto",
+                max_tokens: 500,
+                temperature: 0.1 // Lower temperature for more stable tool calls
+            };
+
             let response = await axios.post(
                 provider.url,
-                {
-                    model: provider.model,
-                    messages,
-                    tools: tools,
-                    tool_choice: "auto",
-                    max_tokens: 300,
-                    temperature: 0.5
-                },
-                { headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+                requestBody,
+                { headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' }, timeout: 20000 }
             );
 
             let message = response.data.choices?.[0]?.message;
@@ -184,7 +190,7 @@ async function smartTranscription(fileObject) {
             formData.append('file', buffer, { filename: 'speech.wav', contentType: 'audio/wav' });
             formData.append('model', 'whisper-large-v3-turbo');
             formData.append('language', 'hi');
-            formData.append('prompt', 'SahcharAI, नमस्ते, आप कैसे हैं? बातचीत हिंदी में है।'); // Help Whisper stay in context
+            formData.append('prompt', 'SahcharAI, एक हिंदी सहायक।'); // Neutral prompt
             formData.append('response_format', 'json');
             const response = await axios.post(
                 'https://api.groq.com/openai/v1/audio/transcriptions',
@@ -297,10 +303,20 @@ function cleanTranscript(rawText) {
     let text = rawText.trim();
     if (!text) return "";
     const lowerText = text.toLowerCase();
+
+    // Icelandic/Glitch filters
     if (lowerText.includes("hvað") || lowerText.includes("þau") || lowerText.includes("árrvík") || lowerText.includes("kannski")) {
         console.log("⚠️ Icelandic filtered");
         return "";
     }
+
+    // Common Whisper hallucinations on silence/noise
+    const totalHallucinations = ["आप कैसे हैं", "आप कैसे हैं?", "कर दो", "करदो", "जी", "हां", "नमस्ते"];
+    if (totalHallucinations.some(h => text === h || text === h + "।")) {
+        console.log(`⚠️ Hallucination filtered: "${text}"`);
+        return "";
+    }
+
     const leaks = ["आम बोलचाल", "दोस्त की बातचीत", "प्रस्तु", "परवारण", "धन्यवाद", "सब्सक्राइब", "झाल झाल", "झाल", "वेतवार", "पुल्प्लेज", "चुटरा"];
     if (leaks.some(leak => lowerText.includes(leak))) {
         console.log(`⚠️ Noise/Filler filtered: "${text}"`);
@@ -409,8 +425,8 @@ wss.on('connection', (ws, req) => {
         }
 
         const rms = calculateRMS(fullAudio);
-        if (rms < 0.001) {
-            console.log('⚠️ Batch too quiet, skipping');
+        if (rms < 0.008) {
+            console.log(`⚠️ Batch too quiet (RMS: ${rms.toFixed(4)}), skipping`);
             isProcessing = false;
             return;
         }
@@ -437,7 +453,7 @@ wss.on('connection', (ws, req) => {
 
             const previousHistory = await getConversationHistory(deviceId, 5);
             const messages = [
-                { role: 'system', content: `तुम "SuperSahchar" हो। एक दोस्ताना हिंदी सहायक। छोटे और प्यारे जवाब दो। बातचीत ऐसी करो जैसे दो दोस्त बात कर रहे हों। अगर तुम्हें कोई ताजा जानकारी (जैसे वर्तमान नेता, खबरें, या तथ्य) नहीं पता, तो 'search_web' टूल का इस्तेमाल करो। जवाब हमेशा शुद्ध और सरल हिंदी में दो।` },
+                { role: 'system', content: `तुम "SuperSahchar" हो। एक दोस्ताना हिंदी सहायक। आज की तारीख और समय: ${new Date().toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata' })} है। छोटे और प्यारे जवाब दो। बातचीत ऐसी करो जैसे दो दोस्त बात कर रहे हों। अगर तुम्हें कोई ताजा जानकारी (जैसे वर्तमान नेता, खबरें, या तथ्य) नहीं पता, तो 'search_web' टूल का इस्तेमाल करो। जवाब हमेशा शुद्ध और सरल हिंदी में दो।` },
                 ...previousHistory,
                 { role: 'user', content: userMsg }
             ];
