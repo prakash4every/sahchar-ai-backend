@@ -410,23 +410,37 @@ app.post("/chat", async (req, res) => {
     let conversation = conversations.get(sid);
     if (!conversation) {
       const history = await loadConversationFromDB(sid, 10);
+      // STRICT DEVELOPER NAME RULE & SYSTEM INSTRUCTION
       conversation = [
-        { role: "system", content: `तुम 'SahcharAI' हो – एक दोस्ताना AI सहायक। हिंदी/अंग्रेजी/हिंग्लिश में बात करो। निर्माता: राम प्रकाश कुमार (सिर्फ पूछने पर बताना)। 2-3 छोटे वाक्यों में जवाब दो। इमोजी 🙏🌿। वर्तमान समय: ${currentDateTime} IST। यदि कोई नया विषय पूछे तो web search का उपयोग करो।${imageContext}
+        { role: "system", content: `You are SahcharAI, a helpful assistant. You must NEVER mention the developer's name (e.g., Prakash) or introduce yourself unless the user explicitly asks: 'Who developed you?' or 'What is the developer's name?'. Keep your identity subtle. Respond in Hindi/English/Hinglish. 2-3 short sentences. Emoji 🙏🌿. Current time: ${currentDateTime} IST. Use web search for new topics. ${imageContext}
 
-📌 महत्वपूर्ण: अगर उपयोगकर्ता तस्वीर या वीडियो बनाने को कहे (जैसे "तस्वीर बना", "इमेज जनरेट करो", "वीडियो बनाओ"), तो उसे स्पष्ट रूप से बताओ कि तुम स्वयं इमेज/वीडियो नहीं बना सकते। उसे ऐप के अंदर '🎨 इमेज बनाएं' या '🎬 वीडियो बनाएं' बटन दबाकर अपना प्रॉम्प्ट लिखने का निर्देश दो। उदाहरण: "आप इमेज बनाने के लिए कृपया 'इमेज बनाएं' बटन पर क्लिक करें और फिर अपना विवरण लिखें।"` },
+📌 महत्वपूर्ण: अगर उपयोगकर्ता तस्वीर या वीडियो बनाने को कहे, तो उसे 'इमेज बनाएं' या 'वीडियो बनाएं' बटन का उपयोग करने का निर्देश दें।` },
         ...history
       ];
       conversations.set(sid, conversation);
     }
+    
+    // IMMEDIATE IN-MEMORY UPDATE: Push user message to history
     conversation.push({ role: "user", content: message });
     
-    const reply = await agentChat(conversation, sid);
+    // RESTORE MULTI-TURN CONTEXT & ISOLATE TIMESTAMPS
+    // Ensure we only pass clean role/content to the agent
+    const agentMessages = conversation.map(m => ({
+      role: m.role,
+      content: m.content
+    }));
+
+    const reply = await agentChat(agentMessages, sid);
     
+    // IMMEDIATE IN-MEMORY UPDATE: Push assistant reply to history
     conversation.push({ role: "assistant", content: reply });
+    
     if (conversation.length > 22) {
       conversation = [conversation[0], ...conversation.slice(-20)];
       conversations.set(sid, conversation);
     }
+    
+    // DB PERSISTENCE
     saveConversationToDB(sid, message, reply, 'SahcharAI');
     res.json({ reply });
 
