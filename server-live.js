@@ -1,5 +1,6 @@
 // ============================================================
-// 🤖 SAHCHAR AI - FIXED server-live.js v7.1
+// 🤖 SAHCHAR AI - LIVE AUDIO SERVER v7.2 (Production Ready)
+// Developer: Ram Prakash Kumar | Team: SahcharAI Team
 // ============================================================
 
 import { WebSocketServer } from 'ws';
@@ -20,6 +21,8 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
+const DEVELOPER_NAME = "Ram Prakash Kumar";
+const TEAM_NAME = "SahcharAI Team";
 
 const MONGODB_URI =
   process.env.MONGODB_URL ||
@@ -40,7 +43,7 @@ const providers = {
     name: 'Groq',
     key: process.env.GROQ_API_KEY,
     url: 'https://api.groq.com/openai/v1/chat/completions',
-    model: 'llama-3.1-8b-instant', // Fast and higher rate limits
+    model: 'llama-3.1-8b-instant',
     chat: true,
     whisper: true
   },
@@ -89,7 +92,6 @@ async function smartSearch(query) {
 async function smartChat(messages) {
     const orderedProviders = ['groq', 'openai'];
 
-    // Define tools for the model
     const tools = [
         {
             type: "function",
@@ -113,18 +115,16 @@ async function smartChat(messages) {
         try {
             console.log(`🔄 Trying ${providerName}...`);
 
-            // First attempt to see if tool call is needed
-            // NOTE: Groq can be sensitive. We ensure tool_choice is explicitly 'auto'.
             const requestBody = {
                 model: provider.model,
                 messages: [
                     ...messages,
-                    { role: 'system', content: `The current date and time is: ${new Date().toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata' })}.` }
+                    { role: 'system', content: `The current date and time is: ${new Date().toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata' })}. Developed by ${DEVELOPER_NAME} (${TEAM_NAME}).` }
                 ],
                 tools: tools,
                 tool_choice: "auto",
                 max_tokens: 500,
-                temperature: 0.1 // Lower temperature for more stable tool calls
+                temperature: 0.1
             };
 
             let response = await axios.post(
@@ -135,7 +135,6 @@ async function smartChat(messages) {
 
             let message = response.data.choices?.[0]?.message;
 
-            // Handle Tool Calls (Search)
             if (message?.tool_calls) {
                 const toolCall = message.tool_calls[0];
                 if (toolCall.function.name === "search_web") {
@@ -143,7 +142,6 @@ async function smartChat(messages) {
                     const searchResult = await smartSearch(query);
 
                     if (searchResult) {
-                        // Add tool result to history and call again
                         const newMessages = [
                             ...messages,
                             message,
@@ -190,7 +188,7 @@ async function smartTranscription(fileObject) {
             formData.append('file', buffer, { filename: 'speech.wav', contentType: 'audio/wav' });
             formData.append('model', 'whisper-large-v3-turbo');
             formData.append('language', 'hi');
-            formData.append('prompt', 'SahcharAI, एक हिंदी सहायक।'); // Neutral prompt
+            formData.append('prompt', 'SahcharAI, एक हिंदी सहायक।');
             formData.append('response_format', 'json');
             const response = await axios.post(
                 'https://api.groq.com/openai/v1/audio/transcriptions',
@@ -243,13 +241,11 @@ async function smartTTS(text) {
 
             let pcmData = Buffer.from(response.data);
 
-            // ✅ Check if it's a small JSON error instead of audio
             if (pcmData.length < 1000 && pcmData.toString().includes('"detail"')) {
                 console.error('❌ ElevenLabs JSON Error:', pcmData.toString());
                 return null;
             }
 
-            // ✅ Strip WAV header if present
             if (pcmData.length > 44 && pcmData.slice(0, 4).toString() === 'RIFF') {
                 console.log("⚠️ WAV header detected in TTS, stripping 44 bytes");
                 pcmData = pcmData.slice(44);
@@ -258,16 +254,7 @@ async function smartTTS(text) {
             console.log(`✅ TTS generated: ${pcmData.length} bytes PCM`);
             return pcmData;
         } catch (error) {
-            if (error.response && error.response.data) {
-                try {
-                    const errorText = Buffer.from(error.response.data).toString();
-                    console.error('❌ ElevenLabs API error response:', errorText);
-                } catch (e) {
-                    console.error('❌ ElevenLabs API error (buffer fail)');
-                }
-            } else {
-                console.error('❌ ElevenLabs TTS failed:', error.message);
-            }
+            console.error('❌ ElevenLabs TTS failed:', error.message);
         }
     }
     return null;
@@ -304,27 +291,19 @@ function cleanTranscript(rawText) {
     if (!text) return "";
     const lowerText = text.toLowerCase();
 
-    // Icelandic/Glitch filters
     if (lowerText.includes("hvað") || lowerText.includes("þau") || lowerText.includes("árrvík") || lowerText.includes("kannski")) {
-        console.log("⚠️ Icelandic filtered");
         return "";
     }
 
-    // Common Whisper hallucinations on silence/noise
     const totalHallucinations = ["आप कैसे हैं", "आप कैसे हैं?", "कर दो", "करदो", "जी", "हां", "नमस्ते"];
-    if (totalHallucinations.some(h => text === h || text === h + "।")) {
-        console.log(`⚠️ Hallucination filtered: "${text}"`);
+    if (totalHallucinations.some(h => text === h || text === h + "。")) {
         return "";
     }
 
-    const leaks = ["आम बोलचाल", "दोस्त की बातचीत", "प्रस्तु", "परवारण", "धन्यवाद", "सब्सक्राइब", "झाल झाल", "झाल", "वेतवार", "पुल्प्लेज", "चुटरा"];
+    const leaks = ["आम बोलचाल", "दोस्त की बातचीत", "प्रस्तु", "परवारण", "धन्यवाद", "सब्सक्राइब"];
     if (leaks.some(leak => lowerText.includes(leak))) {
-        console.log(`⚠️ Noise/Filler filtered: "${text}"`);
         return "";
     }
-    const words = text.split(/\s+/);
-    if (words.length >= 3 && new Set(words).size === 1) return "";
-    if (text.replace(/[।,.!?]/g, '').trim().length < 1) return "";
     return text;
 }
 
@@ -332,6 +311,8 @@ await connectMongoDB();
 
 const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Live Audio Server v7.2 running on port ${PORT}`);
+    console.log(`👨‍💻 Developer: ${DEVELOPER_NAME}`);
+    console.log(`🏢 Team: ${TEAM_NAME}`);
     console.log(`🔑 GROQ: ${process.env.GROQ_API_KEY ? '✅' : '❌'}`);
     console.log(`🔑 OPENAI: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
     console.log(`🔑 ELEVENLABS: ${process.env.ELEVENLABS_API_KEY ? '✅' : '❌'}`);
@@ -348,7 +329,7 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 app.get('/', (req, res) => res.send('Sahchar Live Ready'));
-app.get('/health', (req, res) => res.json({ status: 'ok', mongodb: !!conversationsCollection, providers: { groq: !!process.env.GROQ_API_KEY, openai: !!process.env.OPENAI_API_KEY, elevenlabs: !!process.env.ELEVENLABS_API_KEY } }));
+app.get('/health', (req, res) => res.json({ status: 'ok', developer: DEVELOPER_NAME, mongodb: !!conversationsCollection }));
 
 function calculateRMS(pcmBuffer) {
     let sum = 0;
@@ -382,16 +363,20 @@ function pcmToWav(pcm, rate = 16000) {
 wss.on('connection', (ws, req) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     let deviceId = url.searchParams.get('deviceId') || "default_user";
+    
+    // 🤖 AUTO-DETECT BOT NAME FROM URL PARAMS (Supports multiple chatbots dynamically)
+    let botName = url.searchParams.get('botName') || url.searchParams.get('bot') || "SuperSahchar";
+    
     const connectionId = `${deviceId.substring(0, 8)}-${randomUUID().substring(0, 4)}`;
-    console.log(`🔌 Client connected: ${connectionId}`);
+    console.log(`🔌 Client connected: ${connectionId} | Active Bot: ${botName}`);
 
     let audioBuffer = [];
     let isProcessing = false;
     let isBotSpeaking = false;
     let isClosing = false;
     let silenceChunks = 0;
-    const SILENCE_THRESHOLD = 0.008; // More sensitive to actual speech
-    const REQUIRED_SILENCE_CHUNKS = 45; // ~0.9 seconds of silence to ensure user finished
+    const SILENCE_THRESHOLD = 0.008;
+    const REQUIRED_SILENCE_CHUNKS = 45;
 
     const safeSend = (data, isBinary = false) => {
         if (ws.readyState === 1 && !isClosing) {
@@ -400,7 +385,6 @@ wss.on('connection', (ws, req) => {
         return false;
     };
 
-    // ✅ Keep-alive heartbeat
     const heartbeat = setInterval(() => {
         if (ws.readyState === 1) ws.ping();
         else clearInterval(heartbeat);
@@ -411,22 +395,18 @@ wss.on('connection', (ws, req) => {
         isProcessing = true;
 
         const chunksToProcess = [...audioBuffer];
-        audioBuffer = []; // Clear for next batch
+        audioBuffer = [];
         silenceChunks = 0;
 
-        console.log(`🔄 Processing audio batch (${chunksToProcess.length} chunks)`);
         const fullAudio = Buffer.concat(chunksToProcess);
 
-        // Require at least 0.6 seconds of audio to process
         if (fullAudio.length < 19200) {
-            console.log('⚠️ Batch too short, ignoring');
             isProcessing = false;
             return;
         }
 
         const rms = calculateRMS(fullAudio);
         if (rms < 0.008) {
-            console.log(`⚠️ Batch too quiet (RMS: ${rms.toFixed(4)}), skipping`);
             isProcessing = false;
             return;
         }
@@ -442,31 +422,34 @@ wss.on('connection', (ws, req) => {
             const userMsg = cleanTranscript(userMsgRaw || '');
 
             if (!userMsg) {
-                safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
+                safeSend(JSON.stringify({ type: 'status', text: `${botName} सुन रहा है... 🎤` }));
                 isProcessing = false;
                 return;
             }
 
-            console.log(`📝 User: ${userMsg}`);
+            console.log(`📝 User [${botName}]: ${userMsg}`);
             safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
             await saveConversation(deviceId, 'user', userMsg);
 
             const previousHistory = await getConversationHistory(deviceId, 5);
             const messages = [
-                { role: 'system', content: `तुम "SuperSahchar" हो। एक दोस्ताना हिंदी सहायक। आज की तारीख और समय: ${new Date().toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata' })} है। छोटे और प्यारे जवाब दो। बातचीत ऐसी करो जैसे दो दोस्त बात कर रहे हों। अगर तुम्हें कोई ताजा जानकारी (जैसे वर्तमान नेता, खबरें, या तथ्य) नहीं पता, तो 'search_web' टूल का इस्तेमाल करो। जवाब हमेशा शुद्ध और सरल हिंदी में दो।` },
+                { 
+                    role: 'system', 
+                    content: `तुम "${botName}" हो। एक दोस्ताना हिंदी सहायक जिसे ${TEAM_NAME} के लीड डेवलपर ${DEVELOPER_NAME} ने बनाया है। आज की तारीख और समय: ${new Date().toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata' })} है। छोटे और प्यारे जवाब दो। बातचीत ऐसी करो जैसे दो दोस्त बात कर रहे हों। यदि किसी ताजा जानकारी की जरूरत हो तो 'search_web' टूल का उपयोग करें।` 
+                },
                 ...previousHistory,
                 { role: 'user', content: userMsg }
             ];
 
             const chatResult = await smartChat(messages, 150);
-            const botReply = chatResult ? chatResult.reply : "अरे यार, नेट थोड़ा स्लो है। फिर से बोलिये? 😊";
+            const botReply = chatResult ? chatResult.reply : "अरे यार, नेट थोड़ा स्लो है। फिर से बोलिये? 😊";
 
-            console.log(`🤖 Bot: ${botReply}`);
+            console.log(`🤖 Bot [${botName}]: ${botReply}`);
             safeSend(JSON.stringify({ type: 'bot_text', text: botReply }));
             await saveConversation(deviceId, 'assistant', botReply);
 
             isBotSpeaking = true;
-            audioBuffer = []; // 🧹 Clear buffer
+            audioBuffer = [];
             silenceChunks = 0;
 
             safeSend(JSON.stringify({ type: 'status', text: 'बोल रहा हूँ... 🔊' }));
@@ -479,24 +462,15 @@ wss.on('connection', (ws, req) => {
                 return;
             }
 
-            // Ensure even length for 16-bit PCM
             if (audioPcm.length % 2 !== 0) audioPcm = audioPcm.slice(0, -1);
 
-            console.log(`📢 Sending audio (${audioPcm.length} bytes)`);
-
-            // ✅ Send audio in 4KB chunks for better stability
             const CHUNK_SIZE = 4096;
             for (let i = 0; i < audioPcm.length; i += CHUNK_SIZE) {
                 if (isClosing || ws.readyState !== 1) break;
                 safeSend(audioPcm.subarray(i, Math.min(i + CHUNK_SIZE, audioPcm.length)), true);
             }
 
-            // ✅ Calculate duration to keep isBotSpeaking true
-            // 32000 bytes = 1 second.
             const playDurationMs = (audioPcm.length / 32000) * 1000;
-            console.log(`🕒 Audio will play for ~${playDurationMs}ms`);
-
-            // Wait for audio to finish playing on phone + safety margin
             await new Promise(r => setTimeout(r, playDurationMs + 1000));
 
             safeSend(JSON.stringify({ type: 'audio_done' }));
@@ -505,8 +479,8 @@ wss.on('connection', (ws, req) => {
         } finally {
             isBotSpeaking = false;
             isProcessing = false;
-            audioBuffer = []; // 🧹 Final clear
-            safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
+            audioBuffer = [];
+            safeSend(JSON.stringify({ type: 'status', text: `${botName} सुन रहा है... 🎤` }));
         }
     };
 
@@ -523,41 +497,32 @@ wss.on('connection', (ws, req) => {
             return;
         }
 
-        // ✅ AUTO-INTERRUPT: If audio comes in with high volume, stop the bot
         const chunk = Buffer.from(data);
         const chunkRms = calculateRMS(chunk);
 
         if (isBotSpeaking && chunkRms > 0.035) {
-            console.log("⚡ User interrupted bot (detected by RMS)!");
             isBotSpeaking = false;
             audioBuffer = [];
             silenceChunks = 0;
             safeSend(JSON.stringify({ type: 'status', text: 'जी, सुन रहा हूँ... 🎤' }));
         }
 
-        // 🔇 IGNORE audio while bot is speaking (after checking interrupt) or already processing
         if (isBotSpeaking || isProcessing) {
-            audioBuffer = []; // 🧹 Keep buffer empty while bot speaks to prevent loops
+            audioBuffer = [];
             silenceChunks = 0;
             return;
         }
 
-        // ✅ Monitor audio stream in real-time
         audioBuffer.push(chunk);
 
         if (chunkRms < SILENCE_THRESHOLD) {
             silenceChunks++;
         } else {
-            silenceChunks = 0; // User is speaking
+            silenceChunks = 0;
         }
 
-        // ✅ Trigger processing if:
-        // 1. We have enough audio AND
-        // 2. We've seen significant silence OR
-        // 3. Buffer is getting too long (safety limit - 20 seconds)
         if (audioBuffer.length > 15) {
             if (silenceChunks >= REQUIRED_SILENCE_CHUNKS || audioBuffer.length > 1000) {
-                console.log(`🎯 Triggering processing: silence=${silenceChunks}, buffer=${audioBuffer.length}`);
                 processAudio();
             }
         }
@@ -569,11 +534,10 @@ wss.on('connection', (ws, req) => {
     });
 
     ws.on('error', (error) => {
-        console.error(`❌ WebSocket error: ${error.message}`);
         isClosing = true;
     });
 
-    safeSend(JSON.stringify({ type: 'status', text: 'SuperSahchar सुन रहा है... 🎤' }));
+    safeSend(JSON.stringify({ type: 'status', text: `${botName} सुन रहा है... 🎤` }));
 });
 
 process.on('SIGTERM', async () => {
@@ -581,6 +545,3 @@ process.on('SIGTERM', async () => {
     if (mongoClient) await mongoClient.close();
     process.exit(0);
 });
-
-
-
