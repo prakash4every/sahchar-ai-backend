@@ -21,17 +21,26 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
-const upload = multer({ dest: 'uploads/' });
+const upload = multer({ dest: '/tmp/uploads' });
 
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 // ========== TWILIO WHATSAPP SETUP ==========
-const twilioClient = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
+let twilioClient;
+try {
+  if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
+    twilioClient = twilio(
+      process.env.TWILIO_ACCOUNT_SID,
+      process.env.TWILIO_AUTH_TOKEN
+    );
+  } else {
+    console.log("⚠️ Twilio credentials not set – WhatsApp disabled");
+  }
+} catch (error) {
+  console.error("❌ Twilio Initialization Error:", error.message);
+}
 const TWILIO_WHATSAPP_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER || 'whatsapp:+14155238886';
 
 // ========== MONGODB SETUP ==========
@@ -280,6 +289,10 @@ async function analyzeImageFromUrl(imageUrl, userQuestion) {
 
 // ========== WHATSAPP WEBHOOK (FIXED MEDIA HANDLING) ==========
 app.post('/whatsapp-webhook', async (req, res) => {
+  if (!twilioClient) {
+    console.error('❌ WhatsApp Webhook: Twilio client not initialized');
+    return res.status(503).send('WhatsApp Service Unavailable');
+  }
   try {
     const senderId = req.body.From;
     const messageText = req.body.Body || '';
@@ -394,7 +407,13 @@ app.get('/whatsapp-webhook', (req, res) => {
 });
 
 // ========== HEALTH CHECK ==========
-app.get("/", (req, res) => res.send("🌿 SahcharAI Backend v20.1 - WhatsApp Image Analysis Fixed ✅"));
+app.get("/", (req, res) => res.send(`🌿 SahcharAI Backend v20.1 - Developer: Ram Prakash Kumar - WhatsApp Image Analysis Fixed ✅`));
+app.post("/", (req, res) => res.json({ message: `Hello ${req.body.name || 'User'}! SahcharAI is live.`, developer: "Ram Prakash Kumar", status: "active" }));
+app.all("/api", (req, res) => {
+  const name = req.body?.name || req.query?.name || "User";
+  res.json({ message: `Hello ${name}! Migration test successful.`, developer: "Ram Prakash Kumar", status: "active" });
+});
+app.all("/health", (req, res) => res.json({ status: "ok", version: "20.1", developer: "Ram Prakash Kumar" }));
 
 // ==================== 1. SAHCHARAI ====================
 app.post("/chat", async (req, res) => {
@@ -703,4 +722,4 @@ wss.on('connection', (ws, req) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Agent Server v20.1 - WhatsApp Ready on ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Agent Server v20.1 - WhatsApp Ready on ${PORT}`));
