@@ -1,0 +1,64 @@
+version: '1.0'
+options:
+  logging: CLOUD_LOGGING_ONLY
+  substitutionOption: ALLOW_LOOSE
+  # Docker layers और Build cache को सक्रिय करता है
+  dynamic_substitutions: true
+
+steps:
+  # 1. SMART CHECK & AUTO-UPGRADE: dependencies की जांच करें और ऑटो-अपग्रेड करें
+  - name: 'node:20-slim'
+    id: 'Auto-Upgrade & Audit'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "=== Checking & Auto-upgrading Dependencies ==="
+        # यदि package-lock.json नहीं है, तो उसे जनरेट करें
+        if [ ! -f package-lock.json ]; then
+          npm i --package-lock-only
+        fi
+        # ऑटो-फिक्स हाई सिवायोरिटी वल्नरेबिलिटीज़ (Smart Auto-patch)
+        npm audit fix --force || true
+
+  # 2. CACHED BUILDPACK BUILD: कैश्ड बिल्डर का उपयोग करके तेज़ बिल्ड
+  - name: 'gcr.io/k8s-skaffold/pack'
+    id: 'Smart-Buildpack'
+    entrypoint: 'pack'
+    args:
+      - 'build'
+      - '$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA'
+      - '--builder=gcr.io/buildpacks/builder:latest'
+      - '--network=cloudbuild'
+      - '--cache' # इमेज लेयर को कैश करने के लिए
+      - '--publish'
+      - '--path=.'
+
+  # 3. CONTAINER SCANNING (Optional Security):
+  # आप कंटेनर बनने के बाद उसे स्कैन करने के लिए Google Artifact Registry Vuln scanning का उपयोग कर सकते हैं।
+
+  # 4. SMART DEPLOY: Cloud Run को सुरक्षित तरीके से अपडेट करें
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    id: 'Secure-Deploy'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'services'
+      - 'update'
+      - '$_SERVICE_NAME'
+      - '--platform=managed'
+      - '--image=$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA'
+      - '--region=$_DEPLOY_REGION'
+      - '--quiet'
+      # कस्टमाइज्ड लेबल्स ट्रेकिंग के लिए
+      - '--labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID,auto-upgraded=true'
+
+substitutions:
+  _AR_HOSTNAME: asia-southeast1-docker.pkg.dev
+  _AR_PROJECT_ID: sahcharai-df870
+  _AR_REPOSITORY: cloud-run-source-deploy
+  _DEPLOY_REGION: asia-southeast1
+  _SERVICE_NAME: sahchar-ai-backend
+
+images:
+  - '$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA'
