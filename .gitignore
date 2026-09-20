@@ -1,2 +1,7 @@
 .vercel
 .env*
+node_modules/
+build/
+dist/
+.firebase/
+firebase-debug.log
