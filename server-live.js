@@ -15,23 +15,32 @@ import { Blob } from 'buffer';
 import axios from 'axios';
 import FormData from 'form-data';
 
+console.log(`🚀 booting SuperSahchar... (node ${process.version}, pid ${process.pid})`);
+
+// Make failures visible in deploy logs instead of exiting silently.
+process.on('unhandledRejection', (reason) => {
+    console.error('💥 unhandledRejection:', reason instanceof Error ? reason.stack || reason.message : reason);
+});
+process.on('uncaughtException', (error) => {
+    console.error('💥 uncaughtException:', error?.stack || error?.message || error);
+    process.exit(1);
+});
+
 dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 10000;
+const PORT = Number(process.env.PORT) || 10000;
 const DEVELOPER_NAME = "Ram Prakash Kumar";
 const TEAM_NAME = "SahcharAI Team";
 const VERSION = "9.0-SMART";
 
-const MONGODB_URI =
-  process.env.MONGODB_URL ||
-  process.env.MONGODB_URI ||
-  process.env.MONGOBD_URL ||
-  process.env.MONGODB_URI_LIVE ||
-  'mongodb://localhost:27017';
+// MongoDB URI selection: first env var that is set wins. Only the variable NAME is logged, never the value.
+const MONGO_ENV_VARS = ['MONGODB_URL', 'MONGODB_URI', 'MONGO_URL', 'MONGOBD_URL', 'MONGODB_URI_LIVE'];
+const MONGO_URI_SOURCE = MONGO_ENV_VARS.find((name) => process.env[name] && process.env[name].trim());
+const MONGODB_URI = MONGO_URI_SOURCE ? process.env[MONGO_URI_SOURCE].trim() : null;
 
 const DB_NAME = 'sahchar_live';
 const COLLECTION_NAME = 'conversations';
@@ -72,6 +81,15 @@ const providers = {
     model: 'gpt-4o-mini',
     chat: true,
     whisper: true
+  },
+  // Optional third fallback: only used when OPENROUTER_API_KEY is set.
+  openrouter: {
+    name: 'OpenRouter',
+    key: process.env.OPENROUTER_API_KEY,
+    url: 'https://openrouter.ai/api/v1/chat/completions',
+    model: process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct',
+    chat: true,
+    whisper: false
   },
   serpapi: {
     key: process.env.SERPAPI_API_KEY
@@ -121,7 +139,7 @@ async function smartSearch(query) {
  * Extracts insights from conversations and saves them for future context.
  */
 async function smartLearningEngine(deviceId, userMsg, botReply) {
-    if (!insightsCollection || !providers.groq.key) return;
+    if (!insightsCollection || !conversationsCollection || !providers.groq.key) return;
     
     try {
         stats.learningEvents++;
@@ -140,7 +158,7 @@ async function smartLearningEngine(deviceId, userMsg, botReply) {
 
         // Periodically extract insights (e.g., every 5 messages for this device)
         const count = await conversationsCollection.countDocuments({ deviceId });
-        if (count % 5 === 0) {
+        if (count > 0 && count % 5 === 0) {
             console.log("🧩 Extracting user insights...");
             const history = await getConversationHistory(deviceId, 10);
             const historyText = history.map(h => `${h.role}: ${h.content}`).join('\n');
@@ -157,7 +175,7 @@ async function smartLearningEngine(deviceId, userMsg, botReply) {
                     { role: "user", content: learningPrompt }
                 ],
                 max_tokens: 150
-            }, { headers: { Authorization: `Bearer ${providers.groq.key}` } });
+            }, { headers: { Authorization: `Bearer ${providers.groq.key}` }, timeout: 15000 });
 
             const insights = response.data.choices?.[0]?.message?.content;
             if (insights) {
@@ -196,17 +214,54 @@ async function smartAutoUpgrade() {
     }
 }
 
+const PROVIDER_TIMEOUT_MS = 20000; // hard per-provider budget (initial call + tool follow-up)
+const MAX_REPLY_SENTENCES = 4;
+
+// Keep voice replies short: cap the number of sentences.
+function capSentences(text, max = MAX_REPLY_SENTENCES) {
+    const parts = text.split(/(?<=[।?!])\s+|(?<=\.)\s+/).filter(Boolean);
+    return parts.length > max ? parts.slice(0, max).join(' ') : text;
+}
+
+async function runSearchToolCall(toolCall) {
+    let content;
+    try {
+        const args = JSON.parse(toolCall.function?.arguments || '{}');
+        if (toolCall.function?.name !== 'search_web' || !args.query) {
+            content = 'Unsupported tool call or missing query.';
+        } else {
+            const result = await smartSearch(args.query);
+            content = result && result !== 'No clear results found.' ? result : 'No search results available.';
+        }
+    } catch (e) {
+        console.error('❌ Tool call failed:', e.message);
+        content = 'Tool call failed.';
+    }
+    return { role: 'tool', tool_call_id: toolCall.id, name: toolCall.function?.name || 'search_web', content };
+}
+
 async function smartChat(messages, deviceId) {
-    const orderedProviders = ['groq', 'openai'];
+    // Any provider with chat support and a key is tried, in this order.
+    const orderedProviders = ['groq', 'openai', 'openrouter'];
     const startTime = Date.now();
     stats.totalMessages++;
 
-    // Fetch insights for context
+    // Fetch insights for context (never let a DB problem break chat)
     let insightsContext = "";
     if (insightsCollection) {
-        const doc = await insightsCollection.findOne({ deviceId });
-        if (doc) insightsContext = `\n[User Insights: ${doc.insights}]`;
+        try {
+            const doc = await insightsCollection.findOne({ deviceId });
+            if (doc?.insights) insightsContext = ` यूज़र के बारे में: ${doc.insights}`;
+        } catch (e) {
+            console.error('⚠️ Insights fetch failed:', e.message);
+        }
     }
+
+    // Merge date + insights into the single leading system prompt.
+    const contextLine = `\nअभी का समय: ${new Date().toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata' })}.${insightsContext}`;
+    const baseMessages = messages[0]?.role === 'system'
+        ? [{ ...messages[0], content: messages[0].content + contextLine }, ...messages.slice(1)]
+        : [{ role: 'system', content: contextLine.trim() }, ...messages];
 
     // Define tools for the model
     const tools = [
@@ -229,75 +284,74 @@ async function smartChat(messages, deviceId) {
     for (const providerName of orderedProviders) {
         const provider = providers[providerName];
         if (!provider || !provider.key || !provider.chat) continue;
+
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), PROVIDER_TIMEOUT_MS);
+        const requestConfig = {
+            headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' },
+            timeout: PROVIDER_TIMEOUT_MS,
+            signal: controller.signal
+        };
+
         try {
             console.log(`🔄 Trying ${providerName}...`);
 
-            const requestBody = {
-                model: provider.model,
-                messages: [
-                    ...messages,
-                    { role: 'system', content: `Current date/time: ${new Date().toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata' })}.${insightsContext}. Developed by ${DEVELOPER_NAME} (${TEAM_NAME}).` }
-                ],
-                tools: tools,
-                tool_choice: "auto",
-                max_tokens: 500,
-                temperature: 0.1
-            };
-
             let response = await axios.post(
                 provider.url,
-                requestBody,
-                { headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' }, timeout: 20000 }
+                {
+                    model: provider.model,
+                    messages: baseMessages,
+                    tools: tools,
+                    tool_choice: "auto",
+                    max_tokens: 500,
+                    temperature: 0.1
+                },
+                requestConfig
             );
 
             let message = response.data.choices?.[0]?.message;
 
-            if (message?.tool_calls) {
-                const toolCall = message.tool_calls[0];
-                if (toolCall.function.name === "search_web") {
-                    const query = JSON.parse(toolCall.function.arguments).query;
-                    const searchResult = await smartSearch(query);
+            if (message?.tool_calls?.length) {
+                // Run every tool call (not just the first) and answer each one.
+                const toolMessages = await Promise.all(message.tool_calls.map(runSearchToolCall));
 
-                    if (searchResult && searchResult !== "No clear results found.") {
-                        const newMessages = [
-                            ...messages,
-                            message,
-                            {
-                                role: "tool",
-                                tool_call_id: toolCall.id,
-                                name: "search_web",
-                                content: searchResult
-                            }
-                        ];
-
-                        console.log(`🔄 Getting final response from ${providerName} with search data...`);
-                        response = await axios.post(
-                            provider.url,
-                            { model: provider.model, messages: newMessages, max_tokens: 300, temperature: 0.5 },
-                            { headers: { 'Authorization': `Bearer ${provider.key}`, 'Content-Type': 'application/json' }, timeout: 15000 }
-                        );
-                        message = response.data.choices?.[0]?.message;
-                    }
-                }
+                console.log(`🔄 Getting final response from ${providerName} with ${toolMessages.length} tool result(s)...`);
+                response = await axios.post(
+                    provider.url,
+                    {
+                        model: provider.model,
+                        messages: [...baseMessages, message, ...toolMessages],
+                        max_tokens: 300,
+                        temperature: 0.5
+                    },
+                    requestConfig
+                );
+                message = response.data.choices?.[0]?.message;
             }
 
-            const reply = message?.content;
+            const reply = message?.content?.trim();
             if (reply) {
                 const duration = Date.now() - startTime;
                 stats.avgResponseTime = (stats.avgResponseTime * (stats.totalMessages - 1) + duration) / stats.totalMessages;
-                
+
                 // Trigger background learning
-                setImmediate(() => smartLearningEngine(deviceId, messages[messages.length-1].content, reply));
+                const lastUserMsg = messages[messages.length - 1]?.content || '';
+                setImmediate(() => smartLearningEngine(deviceId, lastUserMsg, reply));
 
                 console.log(`✅ ${providerName} success! (RT: ${duration}ms)`);
-                return { reply: reply.trim(), provider: provider.name };
+                return { reply: capSentences(reply), provider: provider.name };
             }
+            console.warn(`⚠️ ${providerName} returned an empty reply, trying next provider...`);
         } catch (error) {
-            console.error(`❌ ${providerName} failed:`, error.message);
+            const reason = controller.signal.aborted ? `timeout after ${PROVIDER_TIMEOUT_MS}ms` : error.message;
+            console.error(`❌ ${providerName} failed: ${reason}`);
+        } finally {
+            clearTimeout(timer);
         }
     }
     return null;
 }
+
 
 async function smartTranscription(fileObject) {
     const groqKey = process.env.GROQ_API_KEY;
@@ -382,19 +436,61 @@ async function smartTTS(text) {
     return null;
 }
 
+const MONGO_CONNECT_TIMEOUT_MS = 8000;
+const MONGO_RETRY_INTERVAL_MS = 30000;
+let mongoRetryTimer = null;
+
 async function connectMongoDB() {
-    if (!MONGODB_URI) { console.log('⚠️ No MongoDB URI found'); return; }
+    if (!MONGODB_URI) {
+        console.warn(`⚠️ MongoDB is not configured (checked: ${MONGO_ENV_VARS.join(', ')}). Running without persistence/learning.`);
+        return false;
+    }
+    let client = null;
     try {
-        console.log('🔄 Connecting to MongoDB...');
-        mongoClient = new MongoClient(MONGODB_URI, { connectTimeoutMS: 5000, socketTimeoutMS: 45000, serverSelectionTimeoutMS: 5000 });
-        await mongoClient.connect();
+        console.log(`🔄 Connecting to MongoDB (using ${MONGO_URI_SOURCE})...`);
+        client = new MongoClient(MONGODB_URI, { connectTimeoutMS: 5000, socketTimeoutMS: 45000, serverSelectionTimeoutMS: 5000 });
+        let timeoutId;
+        const timeout = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error(`connect timed out after ${MONGO_CONNECT_TIMEOUT_MS}ms`)), MONGO_CONNECT_TIMEOUT_MS);
+        });
+        try {
+            await Promise.race([client.connect(), timeout]);
+        } finally {
+            clearTimeout(timeoutId);
+        }
+        mongoClient = client;
         db = mongoClient.db(DB_NAME);
         conversationsCollection = db.collection(COLLECTION_NAME);
         learningCollection = db.collection(LEARNING_COLLECTION);
         metricsCollection = db.collection(METRICS_COLLECTION);
         insightsCollection = db.collection(INSIGHTS_COLLECTION);
         console.log('✅ MongoDB connected successfully!');
-    } catch (error) { console.error('❌ MongoDB connection error:', error.message); }
+        return true;
+    } catch (error) {
+        console.error('❌ MongoDB connection error:', error.message);
+        if (client) client.close().catch(() => {});
+        return false;
+    }
+}
+
+// Connect in the background so a missing/offline MongoDB can never block the HTTP server.
+function connectMongoInBackground() {
+    if (!MONGODB_URI) {
+        console.warn('⚠️ MongoDB not configured; skipping connection.');
+        return;
+    }
+    connectMongoDB()
+        .then((connected) => {
+            if (!connected && !mongoRetryTimer) {
+                console.log(`🔁 Will retry MongoDB every ${MONGO_RETRY_INTERVAL_MS / 1000}s`);
+                mongoRetryTimer = setInterval(async () => {
+                    if (conversationsCollection) { clearInterval(mongoRetryTimer); mongoRetryTimer = null; return; }
+                    if (await connectMongoDB()) { clearInterval(mongoRetryTimer); mongoRetryTimer = null; }
+                }, MONGO_RETRY_INTERVAL_MS);
+                mongoRetryTimer.unref?.();
+            }
+        })
+        .catch((e) => console.error('❌ MongoDB background connect crashed:', e?.stack || e));
 }
 
 async function savePerformanceMetrics() {
@@ -427,27 +523,33 @@ async function saveConversation(deviceId, role, content) {
     } catch (error) {}
 }
 
+// Non-Hindi/glitch markers (Whisper sometimes emits Icelandic on noise)
+const GLITCH_MARKERS = ["hvað", "þau", "kannski", "þetta", "árið"];
+
+// Whole-utterance hallucinations Whisper produces on silence/noise (compared after stripping trailing punctuation)
+const HALLUCINATIONS = new Set(["आप कैसे हैं", "कर दो", "जी", "हां", "नमस्ते"]);
+
+// Substrings that indicate prompt leakage, subtitle/outro junk or filler
+const NOISE_PHRASES = ["आम बोलचाल", "दोस्त की बातचीत", "प्रस्तु", "परवारण", "धन्यवाद", "सब्सक्राइब", "झाल झाल", "वेतवार", "पुल्प्लेज"];
+
 function cleanTranscript(rawText) {
     if (!rawText) return "";
     let text = rawText.trim();
     if (!text) return "";
     const lowerText = text.toLowerCase();
 
-    // Icelandic/Glitch filters
-    if (lowerText.includes("hvað") || lowerText.includes("þau") || lowerText.includes("árrवींk") || lowerText.includes("kannski")) {
+    if (GLITCH_MARKERS.some(marker => lowerText.includes(marker))) {
         console.log("⚠️ Icelandic filtered");
         return "";
     }
 
-    // Common Whisper hallucinations on silence/noise
-    const totalHallucinations = ["आप कैसे हैं", "आप कैसे हैं?", "कर दो", "करdo", "जी", "हां", "नमस्ते"];
-    if (totalHallucinations.some(h => text === h || text === h + "।")) {
+    const normalized = text.replace(/[।,.!?\s]+$/u, '').trim();
+    if (HALLUCINATIONS.has(normalized)) {
         console.log(`⚠️ Hallucination filtered: "${text}"`);
         return "";
     }
 
-    const leaks = ["आम बोलचाल", "दोस्त की बातचीत", "प्रस्तु", "परवारण", "धन्यवाद", "सब्सक्राइब", "झाल झाल", "झाल", "वेतवार", "पुल्प्लेज", "चुटra"];
-    if (leaks.some(leak => lowerText.includes(leak))) {
+    if (NOISE_PHRASES.some(phrase => lowerText.includes(phrase))) {
         console.log(`⚠️ Noise/Filler filtered: "${text}"`);
         return "";
     }
@@ -457,13 +559,23 @@ function cleanTranscript(rawText) {
     return text;
 }
 
-await connectMongoDB();
-
+// Start the HTTP server FIRST so the service is reachable even if MongoDB is down.
 const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ SuperSahchar Audio Server v${VERSION}`);
     console.log(`👨‍💻 Developer: ${DEVELOPER_NAME}`);
     console.log(`🚀 Mode: Smart-Learning & Auto-Upgrade Active`);
     console.log(`📡 Port: ${PORT}`);
+    console.log(`🔑 Providers: ${Object.entries({ groq: providers.groq.key, openai: providers.openai.key, openrouter: providers.openrouter.key, serpapi: providers.serpapi.key, elevenlabs: process.env.ELEVENLABS_API_KEY }).map(([k, v]) => `${k}=${v ? 'yes' : 'no'}`).join(' ')}`);
+    connectMongoInBackground();
+});
+
+server.on('error', (error) => {
+    if (error.code === 'EADDRINUSE') {
+        console.error(`❌ Port ${PORT} is already in use (EADDRINUSE). Exiting.`);
+    } else {
+        console.error(`❌ HTTP server error on port ${PORT}:`, error.stack || error.message);
+    }
+    process.exit(1);
 });
 
 const wss = new WebSocketServer({ noServer: true });
@@ -477,14 +589,28 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 app.get('/', (req, res) => res.send(`Sahchar AI Live v${VERSION} - Developer: ${DEVELOPER_NAME}`));
-app.get('/health', (req, res) => res.json({ 
-    status: 'ok', 
-    version: VERSION,
-    developer: DEVELOPER_NAME,
-    stats: stats,
-    mongodb: !!conversationsCollection, 
-    providers: { groq: !!process.env.GROQ_API_KEY, openai: !!process.env.OPENAI_API_KEY, elevenlabs: !!process.env.ELEVENLABS_API_KEY } 
-}));
+app.get('/health', (req, res) => {
+    try {
+        res.json({
+            status: 'ok',
+            version: VERSION,
+            developer: DEVELOPER_NAME,
+            stats: { ...stats },
+            mongodb: !!conversationsCollection,
+            mongoConfigured: !!MONGODB_URI,
+            mongoSource: MONGO_URI_SOURCE || null, // variable name only, never the value
+            providers: {
+                groq: !!providers.groq.key,
+                openai: !!providers.openai.key,
+                openrouter: !!providers.openrouter.key,
+                serpapi: !!providers.serpapi.key,
+                elevenlabs: !!process.env.ELEVENLABS_API_KEY
+            }
+        });
+    } catch (e) {
+        res.status(500).json({ status: 'error', error: e.message });
+    }
+});
 
 app.get('/upgrade', async (req, res) => {
     const result = await smartAutoUpgrade();
@@ -594,17 +720,18 @@ wss.on('connection', (ws, req) => {
 
             console.log(`📝 User [${botName}]: ${userMsg}`);
             safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
+            // Fetch history BEFORE saving the new message so the current turn is not duplicated in the prompt.
+            const previousHistory = await getConversationHistory(deviceId, 6);
             await saveConversation(deviceId, 'user', userMsg);
-
-            const previousHistory = await getConversationHistory(deviceId, 5);
             const messages = [
-                { 
-                    role: 'system', 
-                    content: `तुम "${botName}" v${VERSION} हो, जिसे ${DEVELOPER_NAME} (${TEAM_NAME}) ने बनाया है। तुम एक अत्यंत स्मार्ट, स्वावलंबी और निरंतर सीखने वाले हिंदी सहायक हो। तुम्हारी खासियत यह है कि तुम हर बातचीत से खुद को "Smart Learning Engine" द्वारा बेहतर बनाते हो और "Smart Auto-Upgrade" के जरिए खुद को अपडेट रखते हो। जवाब छोटे, प्यारे और दोस्ताना दो। अगर कोई सवाल जटिल हो या जानकारी न हो, तो 'search_web' का उपयोग करो।` 
+                {
+                    role: 'system',
+                    content: `तुम "${botName}" हो, ${DEVELOPER_NAME} (${TEAM_NAME}) का बनाया हिंदी वॉइस असिस्टेंट। जवाब हिंदी में, छोटे (1-3 वाक्य), दोस्ताना और साफ़ दो। पिछली बातचीत और यूज़र की पसंद का ध्यान रखो। ताज़ा या अनजान जानकारी के लिए 'search_web' का उपयोग करो।`
                 },
                 ...previousHistory,
                 { role: 'user', content: userMsg }
             ];
+
 
             const chatResult = await smartChat(messages, deviceId);
             const botReply = chatResult ? chatResult.reply : "अरे यार, नेट थोड़ा स्लो है। फिर से बोलिये? 😊";
