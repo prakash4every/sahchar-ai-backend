@@ -223,6 +223,34 @@ function capSentences(text, max = MAX_REPLY_SENTENCES) {
     return parts.length > max ? parts.slice(0, max).join(' ') : text;
 }
 
+// Strip markdown so TTS doesn't read out symbols.
+function stripMarkdown(text) {
+    return String(text || '')
+        .replace(/```/g, '')
+        .replace(/\*\*/g, '')
+        .replace(/`/g, '')
+        .replace(/^[ \t]*[#\-*]+[ \t]*/gm, '')
+        .replace(/\*/g, '')
+        .trim();
+}
+
+// Per-device rate limiting: max 20 requests per rolling 60 seconds.
+const rateBuckets = new Map();
+const RATE_LIMIT_MAX = 20;
+const RATE_LIMIT_WINDOW_MS = 60000;
+
+function isRateLimited(deviceId) {
+    const now = Date.now();
+    const recent = (rateBuckets.get(deviceId) || []).filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+    if (recent.length >= RATE_LIMIT_MAX) {
+        rateBuckets.set(deviceId, recent);
+        return true;
+    }
+    recent.push(now);
+    rateBuckets.set(deviceId, recent);
+    return false;
+}
+
 async function runSearchToolCall(toolCall) {
     let content;
     try {
@@ -339,7 +367,7 @@ async function smartChat(messages, deviceId) {
                 setImmediate(() => smartLearningEngine(deviceId, lastUserMsg, reply));
 
                 console.log(`✅ ${providerName} success! (RT: ${duration}ms)`);
-                return { reply: capSentences(reply), provider: provider.name };
+                return { reply: capSentences(stripMarkdown(reply)), provider: provider.name };
             }
             console.warn(`⚠️ ${providerName} returned an empty reply, trying next provider...`);
         } catch (error) {
@@ -720,6 +748,13 @@ wss.on('connection', (ws, req) => {
 
             console.log(`📝 User [${botName}]: ${userMsg}`);
             safeSend(JSON.stringify({ type: 'user_text', text: userMsg }));
+
+            if (isRateLimited(deviceId)) {
+                console.warn(`⏳ Rate limit hit for ${deviceId}`);
+                safeSend(JSON.stringify({ type: 'bot_text', text: 'थोड़ा रुकिए, फिर बोलिए 🙏' }));
+                isProcessing = false;
+                return;
+            }
             // Fetch history BEFORE saving the new message so the current turn is not duplicated in the prompt.
             const previousHistory = await getConversationHistory(deviceId, 6);
             await saveConversation(deviceId, 'user', userMsg);
